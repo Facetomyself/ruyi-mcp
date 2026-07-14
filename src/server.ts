@@ -71,7 +71,7 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
   const server = new Server(
     {
       name: 'ruyi-mcp',
-      version: '0.1.0',
+      version: '0.1.1',
     },
     {
       capabilities: {

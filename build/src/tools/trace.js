@@ -1,6 +1,6 @@
 /**
- * Fingerprint trace tools: trace_start, trace_stop, trace_get_results.
- * ruyi unique — ruyitrace DOM API tracing integration.
+ * BiDi trace tools: trace_start, trace_stop, trace_get_results.
+ * These expose ruyipage's structured in-memory tracer, not kernel DOMTrace.
  */
 import { getPageIdx } from './types.js';
 function jsonResult(data) {
@@ -13,15 +13,16 @@ export function registerTraceTools(register, ctx) {
     register({
         tool: {
             name: 'ruyi_trace_start',
-            description: '⚠ BiDi trace 必须在 ruyi_new_page 时通过 traceEnabled:true 参数启用。' +
-                '浏览器启动后调用此工具仅记录追加的 BiDi 事件。' +
-                '如需完整 trace，请 ruyi_browser_quit 后用 traceEnabled:true 重新 ruyi_new_page。' +
-                '当前 trace 记录 BiDi 协议级事件（非 DOM API 级别）。',
+            description: '从当前时刻开始记录结构化 BiDi trace；首次在运行中的浏览器上启动时，会清空旧缓冲区并建立新的 trace 段。' +
+                '浏览器启动时已开启或重复调用时会保留现有缓冲区。' +
+                '浏览器启动后调用也会真实启用记录，但不包含此前的启动事件。' +
+                '如需覆盖启动阶段，请在 ruyi_new_page 时设置 traceEnabled:true。' +
+                '该工具记录 BiDi 协议级事件，不等同于 Firefox 内核 DOMTrace。',
             inputSchema: {
                 type: 'object',
                 properties: {
                     pageIdx: { type: 'number', default: 0 },
-                    outputFile: { type: 'string', description: '停止追踪后保存到的 NDJSON/JSON 文件路径' },
+                    outputFile: { type: 'string', description: '停止追踪后保存到的 JSON 文件路径' },
                 },
                 required: [],
             },

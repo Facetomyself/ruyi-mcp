@@ -31,13 +31,14 @@ if hasattr(sys.stderr, "reconfigure"):
 # ruyipage imports — all optional to allow graceful error if not installed
 # ---------------------------------------------------------------------------
 try:
-    from ruyipage import FirefoxPage, FirefoxOptions
+    from ruyipage import FirefoxPage, FirefoxOptions, Settings
     from ruyipage import NoneElement
     RUYIPAGE_AVAILABLE = True
 except ImportError:
     RUYIPAGE_AVAILABLE = False
     FirefoxPage = None  # type: ignore
     FirefoxOptions = None  # type: ignore
+    Settings = None  # type: ignore
     NoneElement = None  # type: ignore
 
 
@@ -60,6 +61,11 @@ def _serialize(obj: Any, depth: int = 0) -> Any:
         return [_serialize(x, depth + 1) for x in obj[:100]]  # cap at 100 items
     if isinstance(obj, dict):
         return {str(k): _serialize(v, depth + 1) for k, v in list(obj.items())[:100]}
+    if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict", None)):
+        try:
+            return _serialize(obj.to_dict(), depth + 1)
+        except Exception:
+            pass
     # For ruyipage objects (elements, tabs, etc.), try common attributes
     if hasattr(obj, 'text') and callable(getattr(obj, 'text', None)):
         try:
@@ -120,6 +126,7 @@ class RuyiBridge:
         self._breakpoints: list[dict] = []        # soft breakpoint registry
         self._trace_output: Optional[str] = None
         self._trace_enabled_at_launch: bool = False
+        self._trace_active: bool = False
         self._preload_scripts: dict[str, str] = {}  # scriptId → script text
         self._fingerprint_ctx: Any = None
 
@@ -242,6 +249,13 @@ class RuyiBridge:
         if not RUYIPAGE_AVAILABLE:
             raise RuntimeError("ruyipage not installed. Run: pip install ruyipage")
 
+        self._fingerprint_ctx = None
+        self._trace_output = None
+        self._trace_enabled_at_launch = bool(params.get("traceEnabled"))
+        self._trace_active = False
+        if Settings is not None:
+            Settings.trace_enabled = False
+
         opts = FirefoxOptions()
         browser_path = params.get("browserPath") or DEFAULT_FIREFOX_PATH
         if not browser_path:
@@ -281,12 +295,14 @@ class RuyiBridge:
             self._fingerprint_ctx = opts.smart_fingerprint(**fp_kwargs)
 
         # Trace
-        self._trace_enabled_at_launch = bool(params.get("traceEnabled"))
-        if params.get("traceEnabled"):
+        if self._trace_enabled_at_launch:
             opts.enable_trace(True)
 
         self.opts = opts
         self.page = FirefoxPage(opts)
+        if Settings is not None:
+            Settings.trace_enabled = self._trace_enabled_at_launch
+        self._trace_active = self._trace_enabled_at_launch
 
         # Apply fingerprint emulation AFTER page creation
         if self._fingerprint_ctx:
@@ -314,6 +330,11 @@ class RuyiBridge:
         }
 
     def _quit(self, params: dict) -> dict:
+        if Settings is not None:
+            Settings.trace_enabled = False
+        if self.opts is not None and hasattr(self.opts, "enable_trace"):
+            self.opts.enable_trace(False)
+        self._trace_active = False
         if self.page:
             try:
                 self.page.quit()
@@ -324,7 +345,11 @@ class RuyiBridge:
         self.pages = {}
         self._breakpoints = []
         self._trace_enabled_at_launch = False
+        self._trace_active = False
+        self._trace_output = None
         self._preload_scripts = {}
+        self._fingerprint_ctx = None
+        self._frame_obj = {}
         return {}
 
     def _status(self, params: dict) -> dict:
@@ -338,6 +363,7 @@ class RuyiBridge:
                 "pageCount": len(self.pages),
                 "breakpointCount": len(self._breakpoints),
                 "preloadScriptCount": len(self._preload_scripts),
+                "tracing": self._trace_active,
             }
         except Exception:
             return {"alive": False}
@@ -640,7 +666,7 @@ class RuyiBridge:
         if params.get("screenOrientation"):
             ori = params["screenOrientation"]
             page.set_screen_orientation(
-                orientation=ori.get("type", "portrait-primary"),
+                orientation_type=ori.get("type", "portrait-primary"),
                 angle=ori.get("angle", 0),
             )
 
@@ -1011,20 +1037,32 @@ class RuyiBridge:
     # Trace (ruyitrace integration)
     # ------------------------------------------------------------------
     def _trace_start(self, params: dict) -> dict:
-        """Enable BiDi trace via ruyipage's built-in tracer."""
+        """Start a fresh ruyipage BiDi trace segment."""
         page = self._get_page(params.get("pageIdx", 0))
+        if Settings is None:
+            raise RuntimeError("ruyipage Settings API is unavailable")
 
-        runtime_enable_attempted = False
-        runtime_enable_error = None
-
-        # Full trace must be enabled before browser launch. Calling
-        # enable_trace() here is best-effort and should be treated as partial.
-        if not self._trace_enabled_at_launch and self.opts and hasattr(self.opts, 'enable_trace'):
-            runtime_enable_attempted = True
-            try:
+        settings_was_enabled = bool(Settings.trace_enabled)
+        options_was_enabled = bool(
+            getattr(self.opts, "trace_enabled", settings_was_enabled)
+        )
+        was_tracing = bool(settings_was_enabled or self._trace_active)
+        try:
+            Settings.trace_enabled = True
+            if self.opts is not None and hasattr(self.opts, "enable_trace"):
                 self.opts.enable_trace(True)
-            except Exception as e:
-                runtime_enable_error = str(e)
+            tracer = page.trace
+        except Exception:
+            Settings.trace_enabled = settings_was_enabled
+            if self.opts is not None and hasattr(self.opts, "enable_trace"):
+                try:
+                    self.opts.enable_trace(options_was_enabled)
+                except Exception:
+                    pass
+            raise
+        if not self._trace_enabled_at_launch and not was_tracing and hasattr(tracer, "clear"):
+            tracer.clear()
+        self._trace_active = True
 
         output_file = params.get("outputFile")
         self._trace_output = output_file
@@ -1033,22 +1071,22 @@ class RuyiBridge:
             "tracing": True,
             "fullTrace": self._trace_enabled_at_launch,
             "partialTrace": not self._trace_enabled_at_launch,
-            "runtimeEnableAttempted": runtime_enable_attempted,
+            "startedAtRuntime": not self._trace_enabled_at_launch,
+            "alreadyTracing": was_tracing,
             "outputFile": output_file,
         }
         if not self._trace_enabled_at_launch:
             result["warning"] = (
-                "Trace was not enabled at browser launch. Runtime trace is partial; "
-                "call ruyi_browser_quit, then ruyi_new_page with traceEnabled:true for full trace."
+                "Runtime trace started successfully, but browser launch events are not included. "
+                "Use traceEnabled:true in ruyi_new_page when launch coverage is required."
             )
-        if runtime_enable_error:
-            result["runtimeEnableError"] = runtime_enable_error
         return result
 
     def _trace_stop(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))
 
-        result = {}
+        result = {"tracing": False}
+        tracer = None
         try:
             tracer = page.trace
             summary = tracer.summary() if hasattr(tracer, 'summary') else ""
@@ -1069,6 +1107,11 @@ class RuyiBridge:
         except Exception as e:
             result["dumpError"] = str(e)
 
+        if Settings is not None:
+            Settings.trace_enabled = False
+        if self.opts is not None and hasattr(self.opts, "enable_trace"):
+            self.opts.enable_trace(False)
+        self._trace_active = False
         self._trace_output = None
         return result
 
@@ -1080,11 +1123,25 @@ class RuyiBridge:
             tracer = page.trace
             if hasattr(tracer, 'latest'):
                 latest = tracer.latest(limit)
-                return {"entries": _serialize(latest)}
+                return {
+                    "tracing": bool(
+                        self._trace_active
+                        and Settings is not None
+                        and Settings.trace_enabled
+                    ),
+                    "entries": _serialize(latest),
+                }
             summary = tracer.summary() if hasattr(tracer, 'summary') else "Trace available"
-            return {"summary": str(summary)[:10000]}
+            return {
+                "tracing": bool(
+                    self._trace_active
+                    and Settings is not None
+                    and Settings.trace_enabled
+                ),
+                "summary": str(summary)[:10000],
+            }
         except Exception as e:
-            return {"error": str(e)}
+            return {"tracing": self._trace_active, "error": str(e)}
 
     # ------------------------------------------------------------------
     # Frame

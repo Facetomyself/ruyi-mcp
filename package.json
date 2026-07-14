@@ -1,6 +1,6 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ruyi MCP server — Firefox 反检测浏览器全链路逆向 (WebDriver BiDi + ruyitrace)",
   "private": true,
   "license": "MIT",
@@ -10,8 +10,9 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "check:python": "python -m py_compile bridge/ruyi_bridge.py",
+    "check:contract": "python scripts/contract_bridge.py",
     "smoke": "node scripts/smoke-list-tools.mjs",
-    "check": "npm run typecheck && npm run check:python && npm run build && npm run smoke",
+    "check": "npm run typecheck && npm run check:python && npm run check:contract && npm run build && npm run smoke",
     "start": "node build/src/index.js",
     "dev": "tsc && node build/src/index.js"
   },

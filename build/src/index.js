@@ -17,7 +17,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createServer } from './server.js';
 import { PythonBridge } from './bridge/python.js';
 async function main() {
-    console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.0...');
+    console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.1...');
     console.error('[ruyi-mcp] Browser: Firefox 151.0a1 (ruyipage)');
     console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
     console.error('[ruyi-mcp] Anti-detection: 22-dim fingerprint + human simulation');

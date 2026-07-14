@@ -14,7 +14,7 @@
 
 - Node.js 20 或更高版本。
 - Python 3.10 或更高版本；当前已在 Python 3.13 上验证。
-- `ruyiPage==1.2.43`，以及由 RuyiPage 安装或兼容的 Firefox。
+- `ruyiPage==1.2.46`，以及由 RuyiPage 安装或兼容的 Firefox。
 
 ## 安装
 
@@ -31,6 +31,12 @@ npm run check
 
 - `RUYI_MCP_PYTHON`：Node Bridge 使用的 Python 可执行文件。Windows 默认使用 `python`，其他平台默认使用 `python3`。
 - `RUYI_FIREFOX_PATH`：Firefox 可执行文件路径。未设置时，Bridge 会依次检查 reverse_ENV 便携目录、Windows RuyiPage 浏览器缓存和 `PATH`。
+
+## Firefox runtime 选择
+
+- `ruyi_trace_*` 暴露的是 RuyiPage 内存中的 WebDriver BiDi JSON Trace，不是 Firefox 内核 DOMTrace。
+- RuyiPage `1.2.46` 的安装器仍使用 `151-ruyi` runtime；如需验证 credentialed HTTP / SOCKS5 proxy，应单独下载上游 [`151-proxy`](https://github.com/LoseNine/ruyipage/releases/tag/151-proxy) release，并通过 `RUYI_FIREFOX_PATH` 显式指向解压后的 `firefox.exe`。
+- 本仓库不分发 Firefox 二进制、浏览器 Profile 或 DOMTrace 内核。
 
 ## MCP 配置
 
@@ -63,14 +69,11 @@ git -C "D:\reverse_ENV" submodule update --init "mcp/ruyi-mcp"
 ## 验证
 
 ```bash
-npm run typecheck
-python -m py_compile bridge/ruyi_bridge.py
-npm run build
-npm run smoke
+npm run check
 npm audit --audit-level=high
 ```
 
-`npm run smoke` 会通过 stdio 启动 MCP Server，并确认恰好注册了 56 个工具；该测试不会启动 Firefox。
+`npm run check` 会执行 TypeScript typecheck、Python 语法检查、Bridge contract、构建和 56 tools stdio smoke test；该命令不会启动 Firefox。
 
 ## 数据与凭据边界
 
