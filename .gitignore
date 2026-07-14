@@ -1,0 +1,15 @@
+node_modules/
+bridge/__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+.nyc_output/
+.pytest_cache/
+.cache/
+browser-profiles/
+captures/
+runtime/
+artifacts/
