@@ -1,7 +1,7 @@
 {
   "name": "ruyi-mcp",
   "version": "0.1.1",
-  "description": "ruyi MCP server — Firefox 反检测浏览器全链路逆向 (WebDriver BiDi + ruyitrace)",
+  "description": "Community MCP server for ruyiPage browser automation, network inspection, fingerprint analysis, and WebDriver BiDi trace workflows",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -16,7 +16,7 @@
     "start": "node build/src/index.js",
     "dev": "tsc && node build/src/index.js"
   },
-  "keywords": ["mcp", "reverse-engineering", "firefox", "bidi", "anti-detection"],
+  "keywords": ["mcp", "mcp-server", "ruyipage", "browser-automation", "firefox", "webdriver-bidi", "network-inspection", "fingerprinting", "trace"],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.21.1"
   },

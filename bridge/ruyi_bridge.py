@@ -116,7 +116,7 @@ DEFAULT_FIREFOX_PATH = _discover_firefox_path()
 # RuyiBridge
 # ---------------------------------------------------------------------------
 class RuyiBridge:
-    """JSON-RPC bridge wrapping ruyipage + ruyitrace capabilities."""
+    """JSON-RPC bridge wrapping ruyipage browser and BiDi trace capabilities."""
 
     def __init__(self):
         self.page: Optional[FirefoxPage] = None

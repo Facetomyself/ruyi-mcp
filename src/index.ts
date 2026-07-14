@@ -1,17 +1,10 @@
 #!/usr/bin/env node
 /**
- * ruyi-mcp — Firefox 反检测浏览器全链路逆向 MCP 服务。
+ * Community MCP server for ruyiPage browser automation and inspection.
  *
- * 双场景架构：
- *   - 弱检测/无反检测 → js-reverse-mcp (Chrome/CDP)
- *   - 强检测 (CF/hCaptcha) → ruyi-mcp (Firefox/BiDi, 本服务)
- *
- * 工作流（对齐 mcp-js-reverse-playbook）:
- *   Observe → Capture → Rebuild → Patch → DeepDive
- *
- * 启动方式：
+ * Start with:
  *   node build/src/index.js
- *   或通过 .mcp.json 由 Claude Code 自动拉起
+ * or configure the same entry point in an MCP client.
  */
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -20,10 +13,10 @@ import { PythonBridge } from './bridge/python.js';
 
 async function main(): Promise<void> {
   console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.1...');
-  console.error('[ruyi-mcp] Browser: Firefox 151.0a1 (ruyipage)');
+  console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
   console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
-  console.error('[ruyi-mcp] Anti-detection: 22-dim fingerprint + human simulation');
-  console.error('[ruyi-mcp] Trace: BiDi events + ruyitrace DOM API hooks');
+  console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
+  console.error('[ruyi-mcp] Trace: ruyiPage WebDriver BiDi JSON Trace');
 
   const bridge = new PythonBridge();
   let shuttingDown = false;
