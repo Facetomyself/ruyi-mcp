@@ -3,7 +3,7 @@
 [简体中文](README.md) | [English](README_EN.md)
 
 [![CI](https://github.com/Facetomyself/ruyi-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Facetomyself/ruyi-mcp/actions/workflows/ci.yml)
-[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.46-blue)](https://pypi.org/project/ruyiPage/1.2.46/)
+[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.50-blue)](https://pypi.org/project/ruyiPage/1.2.50/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `ruyi-mcp` is a community MCP server for [ruyiPage](https://github.com/LoseNine/ruyipage). It exposes Firefox / WebDriver BiDi browser automation, runtime inspection, fingerprint analysis, trace, network interception, and human-like interaction workflows to MCP clients such as Claude Code, Codex, and Cursor.
@@ -12,7 +12,8 @@ This project is independently maintained by the community. It is not an official
 
 ## Highlights
 
-- 56 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, session export, and trace workflows.
+- 57 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, session export, and trace workflows.
+- `ruyi_human_drag` provides an atomic human-like drag chain, while `ruyi_set_fingerprint.windowSize` synchronizes window, viewport, and screen metrics.
 - A Node.js MCP server backed by a persistent Python JSON-RPC bridge to ruyiPage.
 - Tracked TypeScript build output, allowing MCP hosts to start directly from `build/src/index.js` after dependencies are installed.
 
@@ -20,15 +21,15 @@ This project is independently maintained by the community. It is not an official
 
 - Node.js 20 or later.
 - Python 3.10 or later; CI currently verifies Python 3.13.
-- `ruyiPage==1.2.46` and a Firefox runtime installed by or compatible with ruyiPage.
+- `ruyiPage==1.2.50` and a Firefox runtime installed by or compatible with ruyiPage.
 
 ## Compatibility
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
-| `v0.1.1` | `1.2.46` | `>=20` | `>=3.10` | GitHub Actions: Node.js 20 + Python 3.13 |
+| `v0.1.2` | `1.2.50` | `>=20` | `>=3.10` | GitHub Actions: Node.js 20 + Python 3.13 |
 
-The repository pins an exact ruyiPage version. Before changing that compatibility target, the Bridge contract, TypeScript build, and 56-tool stdio smoke test are run again.
+The repository pins an exact ruyiPage version. Before changing that compatibility target, the Bridge contract, TypeScript build, and 57-tool stdio smoke test are run again.
 
 ## Installation
 
@@ -49,7 +50,8 @@ npm run check
 ## Firefox Runtime Selection
 
 - The `ruyi_trace_*` tools expose ruyiPage's in-memory WebDriver BiDi JSON trace, not Firefox kernel DOMTrace.
-- The ruyiPage `1.2.46` installer still selects the `151-ruyi` runtime. To verify credentialed HTTP / SOCKS5 proxies, download the upstream [`151-proxy`](https://github.com/LoseNine/ruyipage/releases/tag/151-proxy) release separately and point `RUYI_FIREFOX_PATH` to the extracted `firefox.exe`.
+- The ruyiPage `1.2.50` installer still selects the `151-ruyi` runtime. To verify credentialed HTTP / SOCKS5 proxies, download the upstream [`151-proxy`](https://github.com/LoseNine/ruyipage/releases/tag/151-proxy) release separately and point `RUYI_FIREFOX_PATH` to the extracted `firefox.exe`.
+- On `151-proxy`, synchronized window sizing may wait three seconds for `browsingContext.setViewport` before ruyiPage switches to its JavaScript viewport fallback. This is the compatibility path and does not repeat while reusing the same browser.
 - This repository does not distribute Firefox binaries, browser profiles, or a DOMTrace-enabled browser kernel.
 
 ## MCP Configuration
@@ -87,7 +89,7 @@ npm run check
 npm audit --audit-level=high
 ```
 
-`npm run check` runs TypeScript type checking, Python syntax checks, the Bridge contract, the build, and a 56-tool stdio smoke test. It does not launch Firefox.
+`npm run check` runs TypeScript type checking, Python syntax checks, the Bridge contract, the build, and a 57-tool stdio smoke test. It does not launch Firefox.
 
 ## Data and Credential Boundaries
 

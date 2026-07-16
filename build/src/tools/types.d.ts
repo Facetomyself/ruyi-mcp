@@ -6,10 +6,13 @@ export interface ToolProperty {
     description?: string;
     enum?: string[];
     default?: unknown;
+    minimum?: number;
+    maximum?: number;
     items?: {
         type: string;
     };
     properties?: Record<string, ToolProperty>;
+    required?: string[];
 }
 export interface ToolDef {
     name: string;

@@ -177,6 +177,7 @@ class RuyiBridge:
             # Human simulation
             "human.move":            self._human_move,
             "human.click":           self._human_click,
+            "human.drag":            self._human_drag,
             "human.input":           self._human_input,
             # Session export
             "session.export":        self._export_session,
@@ -233,6 +234,37 @@ class RuyiBridge:
             return s
         # CSS patterns: #id, .class, [attr], tag, tag.class, etc.
         return f"css:{s}"
+
+    def _resolve_action_target(self, page: Any, value: Any, label: str) -> tuple[Any, Any]:
+        """Resolve a selector or viewport coordinate for human actions."""
+        if isinstance(value, str):
+            selector = self._norm_selector(value)
+            element = page.ele(selector)
+            if element is None or (NoneElement and isinstance(element, NoneElement)):
+                raise ValueError(f"{label} element not found: {selector}")
+            return element, selector
+
+        if isinstance(value, dict) and "x" in value and "y" in value:
+            point = {"x": int(value["x"]), "y": int(value["y"])}
+            return point, point
+
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            point = {"x": int(value[0]), "y": int(value[1])}
+            return point, point
+
+        raise ValueError(
+            f"{label} must be a selector string or a coordinate object with x/y"
+        )
+
+    @staticmethod
+    def _normalize_human_style(style: Any) -> str:
+        value = str(style or "arc").strip().lower()
+        if value == "linear":
+            value = "line"
+        allowed = {"line", "arc", "line_then_arc", "line_overshoot_arc_back"}
+        if value not in allowed:
+            raise ValueError(f"Unsupported human movement style: {value}")
+        return value
 
     def _ok(self, req_id: Any, result: Any = None) -> dict:
         return {"id": req_id, "result": result}
@@ -641,6 +673,11 @@ class RuyiBridge:
     def _set_fingerprint(self, params: dict) -> dict:
         """Apply fingerprint emulation to an already-launched page."""
         page = self._get_page(params.get("pageIdx", 0))
+        viewport = params.get("viewport")
+        window_size = params.get("windowSize")
+
+        if viewport and window_size:
+            raise ValueError("viewport and windowSize are mutually exclusive")
 
         # Apply individual emulation settings
         if params.get("geolocation"):
@@ -656,9 +693,31 @@ class RuyiBridge:
             page.set_locale(params["locale"])
         if params.get("userAgent"):
             page.set_useragent(params["userAgent"])
-        if params.get("viewport"):
-            vp = params["viewport"]
-            page.set_viewport(vp.get("width", 1920), vp.get("height", 1080))
+        applied_size = None
+        if viewport:
+            width = int(viewport.get("width", 1920))
+            height = int(viewport.get("height", 1080))
+            if width <= 0 or height <= 0:
+                raise ValueError("viewport width and height must be positive")
+            page.set_viewport(width, height)
+            applied_size = {"mode": "viewport", "width": width, "height": height}
+        elif window_size:
+            width = int(window_size.get("width", 1280))
+            height = int(window_size.get("height", 720))
+            dpr = window_size.get("devicePixelRatio")
+            if width <= 0 or height <= 0:
+                raise ValueError("windowSize width and height must be positive")
+            if dpr is not None:
+                dpr = float(dpr)
+                if dpr <= 0:
+                    raise ValueError("windowSize devicePixelRatio must be positive")
+            page.set_window_size(width, height, device_pixel_ratio=dpr)
+            applied_size = {
+                "mode": "windowSize",
+                "width": width,
+                "height": height,
+                "devicePixelRatio": dpr,
+            }
         if params.get("bypassCsp"):
             page.set_bypass_csp(True)
 
@@ -670,7 +729,10 @@ class RuyiBridge:
                 angle=ori.get("angle", 0),
             )
 
-        return {"fingerprintApplied": True}
+        result = {"fingerprintApplied": True}
+        if applied_size:
+            result["size"] = applied_size
+        return result
 
     def _set_proxy(self, params: dict) -> dict:
         """Note: proxy must be set BEFORE browser launch via browser.launch params.
@@ -846,14 +908,19 @@ class RuyiBridge:
         page = self._get_page(params.get("pageIdx", 0))
         selector = self._norm_selector(params["target"])
         algorithm = params.get("algorithm", "bezier")
-        style = params.get("style", "arc")
+        style = self._normalize_human_style(params.get("style", "arc"))
 
         el = page.ele(selector)
         if el is None or (NoneElement and isinstance(el, NoneElement)):
             return {"found": False, "error": f"Element not found: {selector}"}
 
         page.actions.human_move(el, algorithm=algorithm, style=style).perform()
-        return {"moved": True, "target": selector, "algorithm": algorithm}
+        return {
+            "moved": True,
+            "target": selector,
+            "algorithm": algorithm,
+            "style": style,
+        }
 
     def _human_click(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))
@@ -866,6 +933,51 @@ class RuyiBridge:
 
         page.actions.human_click(el, algorithm=algorithm).perform()
         return {"clicked": True, "target": selector, "algorithm": algorithm}
+
+    def _human_drag(self, params: dict) -> dict:
+        """Perform one atomic, human-like pointer drag."""
+        page = self._get_page(params.get("pageIdx", 0))
+        source, source_desc = self._resolve_action_target(page, params.get("source"), "source")
+        target, target_desc = self._resolve_action_target(page, params.get("target"), "target")
+        algorithm = str(params.get("algorithm", "bezier")).strip().lower()
+        if algorithm not in {"bezier", "windmouse"}:
+            raise ValueError("algorithm must be bezier or windmouse")
+        style = self._normalize_human_style(params.get("style", "arc"))
+        hold_ms = int(params.get("holdMs", 120))
+        release_ms = int(params.get("releaseMs", 80))
+        button = int(params.get("button", 0))
+
+        if not 0 <= hold_ms <= 10000 or not 0 <= release_ms <= 10000:
+            raise ValueError("holdMs and releaseMs must be between 0 and 10000")
+        if button not in {0, 1, 2}:
+            raise ValueError("button must be 0, 1, or 2")
+
+        actions = page.actions
+        try:
+            chain = actions.move_to(source).hold(button=button)
+            if hold_ms:
+                chain.wait(hold_ms / 1000.0)
+            chain.human_move(target, algorithm=algorithm, style=style)
+            if release_ms:
+                chain.wait(release_ms / 1000.0)
+            chain.release(button=button).perform()
+        except Exception:
+            try:
+                actions.release_all()
+            except Exception:
+                pass
+            raise
+
+        return {
+            "dragged": True,
+            "source": source_desc,
+            "target": target_desc,
+            "algorithm": algorithm,
+            "style": style,
+            "holdMs": hold_ms,
+            "releaseMs": release_ms,
+            "button": button,
+        }
 
     def _human_input(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))

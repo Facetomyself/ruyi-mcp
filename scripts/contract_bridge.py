@@ -11,16 +11,20 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import json
+import random
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import ruyipage
 from ruyipage import FirefoxOptions
+from ruyipage._fingerprint.builder import _safe_startup_window_size
+from ruyipage._units.actions import Actions
 
 
-EXPECTED_RUYIPAGE_VERSION = "1.2.46"
+EXPECTED_RUYIPAGE_VERSION = "1.2.50"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "bridge" / "ruyi_bridge.py"
 REQUIREMENTS_PATH = REPO_ROOT / "requirements.txt"
@@ -83,6 +87,62 @@ class FakeOrientationPage:
 
     def set_screen_orientation(self, *, orientation_type, angle=0):
         self.calls.append((orientation_type, angle))
+
+
+class FakeFingerprintPage:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def set_viewport(self, width, height):
+        self.calls.append(("set_viewport", width, height))
+
+    def set_window_size(self, width, height, device_pixel_ratio=None):
+        self.calls.append(("set_window_size", width, height, device_pixel_ratio))
+
+
+class FakeHumanActions:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def move_to(self, target):
+        self.calls.append(("move_to", target))
+        return self
+
+    def hold(self, on_ele=None, button=0):
+        self.calls.append(("hold", on_ele, button))
+        return self
+
+    def wait(self, seconds):
+        self.calls.append(("wait", seconds))
+        return self
+
+    def human_move(self, target, style=None, algorithm=None):
+        self.calls.append(("human_move", target, style, algorithm))
+        return self
+
+    def release(self, on_ele=None, button=0):
+        self.calls.append(("release", on_ele, button))
+        return self
+
+    def perform(self):
+        self.calls.append(("perform",))
+        return self
+
+    def release_all(self):
+        self.calls.append(("release_all",))
+        return self
+
+
+class FakeHumanPage:
+    def __init__(self):
+        self.actions = FakeHumanActions()
+        self.elements = {
+            "css:#source": object(),
+            "css:#target": object(),
+        }
+
+    def ele(self, selector):
+        return self.elements.get(selector)
 
 
 class FakeTracer:
@@ -179,6 +239,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "browser.quit",
             "browser.status",
             "fingerprint.set",
+            "human.drag",
             "trace.start",
             "trace.stop",
             "trace.results",
@@ -251,6 +312,106 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 self.assertIn('proxy.example.com', user_js)
                 self.assertNotIn("user%", user_js)
                 self.assertNotIn("pa%24%24", user_js)
+
+    def test_ruyipage_1250_window_and_action_regressions(self):
+        self.assertEqual(_safe_startup_window_size(1366, 768), (1286, 688))
+
+        options = FirefoxOptions().set_window_size(1366, 768)
+        self.assertEqual(options.startup_window_size, (1366, 768))
+        self.assertTrue(hasattr(ruyipage.FirefoxPage, "set_window_size"))
+
+        actions = Actions(SimpleNamespace())
+        random.seed(70)
+        path = actions._build_windmouse_path((100, 100), (500, 300))
+        self.assertLess(len(path), 120)
+        self.assertEqual(path[-1], (500.0, 300.0))
+
+        stages = [
+            {"source": "pointer", "actions": [{"type": "pointerDown", "button": 0}]},
+            {"source": "wait", "actions": [], "duration": 100},
+            {"source": "pointer", "actions": [{"type": "pointerMove", "x": 200, "y": 100}]},
+            {"source": "pointer", "actions": [{"type": "pointerUp", "button": 0}]},
+        ]
+        merged = actions._coalesce_pointer_drag_stages(stages)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(
+            [item["type"] for item in merged[0]["actions"]],
+            ["pointerDown", "pause", "pointerMove", "pointerUp"],
+        )
+
+    def test_window_size_handler_uses_synchronized_api_and_rejects_viewport_mix(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeFingerprintPage()
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 18,
+                "method": "fingerprint.set",
+                "params": {
+                    "pageIdx": 0,
+                    "windowSize": {
+                        "width": 1280,
+                        "height": 720,
+                        "devicePixelRatio": 1.25,
+                    },
+                },
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(page.calls, [("set_window_size", 1280, 720, 1.25)])
+        self.assertEqual(response["result"]["size"]["mode"], "windowSize")
+
+        invalid = bridge.handle(
+            {
+                "id": 19,
+                "method": "fingerprint.set",
+                "params": {
+                    "pageIdx": 0,
+                    "viewport": {"width": 800, "height": 600},
+                    "windowSize": {"width": 1280, "height": 720},
+                },
+            }
+        )
+        self.assertIn("error", invalid)
+
+    def test_human_drag_builds_atomic_waited_chain(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeHumanPage()
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 21,
+                "method": "human.drag",
+                "params": {
+                    "pageIdx": 0,
+                    "source": "#source",
+                    "target": "#target",
+                    "algorithm": "windmouse",
+                    "style": "linear",
+                    "holdMs": 120,
+                    "releaseMs": 80,
+                },
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertTrue(response["result"]["dragged"])
+        self.assertEqual(response["result"]["style"], "line")
+        self.assertEqual(
+            page.actions.calls,
+            [
+                ("move_to", page.elements["css:#source"]),
+                ("hold", None, 0),
+                ("wait", 0.12),
+                ("human_move", page.elements["css:#target"], "line", "windmouse"),
+                ("wait", 0.08),
+                ("release", None, 0),
+                ("perform",),
+            ],
+        )
 
     def test_orientation_handler_uses_orientation_type_keyword(self):
         bridge = BRIDGE_MODULE.RuyiBridge()

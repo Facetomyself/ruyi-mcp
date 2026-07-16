@@ -15,8 +15,16 @@ const client = new Client({ name: 'ruyi-mcp-smoke', version: '1.0.0' }, { capabi
 try {
   await client.connect(transport);
   const result = await client.listTools();
-  if (result.tools.length !== 56) {
-    throw new Error(`Expected 56 tools, received ${result.tools.length}`);
+  if (result.tools.length !== 57) {
+    throw new Error(`Expected 57 tools, received ${result.tools.length}`);
+  }
+  const humanDrag = result.tools.find((tool) => tool.name === 'ruyi_human_drag');
+  if (!humanDrag) {
+    throw new Error('ruyi_human_drag is not registered');
+  }
+  const fingerprint = result.tools.find((tool) => tool.name === 'ruyi_set_fingerprint');
+  if (!fingerprint?.inputSchema?.properties?.windowSize) {
+    throw new Error('ruyi_set_fingerprint.windowSize is not exposed');
   }
   console.log(`ruyi-mcp smoke OK: ${result.tools.length} tools`);
 } finally {

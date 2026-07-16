@@ -1,5 +1,5 @@
 /**
- * Human behavior simulation tools: human_move, human_click, human_input.
+ * Human behavior simulation tools: human_move, human_click, human_drag, human_input.
  * ruyi unique — no equivalent in js-reverse-mcp.
  */
 import { RuyiContext } from '../ruyi-context.js';
