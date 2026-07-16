@@ -16,7 +16,7 @@ export function registerAntiDetectTools(register, ctx) {
     register({
         tool: {
             name: 'ruyi_set_fingerprint',
-            description: '对当前页面应用指纹伪装。可设置地理位置、时区、语言、UserAgent、视口、CSP 绕过等。' +
+            description: '对当前页面应用指纹伪装。可设置地理位置、时区、语言、UserAgent、视口、同步窗口尺寸、CSP 绕过等。' +
                 'ruyipage 支持 22 维硬件指纹随机化（需在 ruyi_new_page 时通过 fingerprint 参数配置）。',
             inputSchema: {
                 type: 'object',
@@ -36,11 +36,23 @@ export function registerAntiDetectTools(register, ctx) {
                     userAgent: { type: 'string', description: '自定义 UserAgent 字符串' },
                     viewport: {
                         type: 'object',
-                        description: '视口大小',
+                        description: '仅设置 viewport；与 windowSize 互斥',
                         properties: {
                             width: { type: 'number', default: 1920 },
                             height: { type: 'number', default: 1080 },
                         },
+                        required: ['width', 'height'],
+                    },
+                    windowSize: {
+                        type: 'object',
+                        description: '同步设置 window outer、viewport 和 screen；与 viewport 互斥。' +
+                            '在 151-proxy 上 setViewport 可能等待 3 秒后使用 JS fallback。',
+                        properties: {
+                            width: { type: 'number', default: 1280 },
+                            height: { type: 'number', default: 720 },
+                            devicePixelRatio: { type: 'number', description: '可选 DPR，必须大于 0' },
+                        },
+                        required: ['width', 'height'],
                     },
                     screenOrientation: {
                         type: 'object',
@@ -56,6 +68,9 @@ export function registerAntiDetectTools(register, ctx) {
         },
         handler: (async (args) => {
             const pageIdx = getPageIdx(args, ctx);
+            if (args.viewport !== undefined && args.windowSize !== undefined) {
+                throw new Error('viewport and windowSize are mutually exclusive');
+            }
             const result = await ctx.bridgeInstance.call('fingerprint.set', {
                 pageIdx,
                 geolocation: args.geolocation,
@@ -63,6 +78,7 @@ export function registerAntiDetectTools(register, ctx) {
                 locale: args.locale,
                 userAgent: args.userAgent,
                 viewport: args.viewport,
+                windowSize: args.windowSize,
                 screenOrientation: args.screenOrientation,
                 bypassCsp: args.bypassCsp,
             });

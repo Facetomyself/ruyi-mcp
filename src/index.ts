@@ -12,7 +12,7 @@ import { createServer } from './server.js';
 import { PythonBridge } from './bridge/python.js';
 
 async function main(): Promise<void> {
-  console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.1...');
+  console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.2...');
   console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
   console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
   console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
