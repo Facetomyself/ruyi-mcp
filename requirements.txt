@@ -1,1 +1,1 @@
-ruyiPage==1.2.50
+ruyiPage==1.2.54

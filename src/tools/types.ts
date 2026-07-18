@@ -21,6 +21,7 @@ export interface ToolDef {
     type: 'object';
     properties: Record<string, ToolProperty>;
     required?: string[];
+    oneOf?: Array<{ required: string[] }>;
   };
 }
 
