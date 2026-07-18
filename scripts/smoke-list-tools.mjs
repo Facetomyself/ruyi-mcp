@@ -26,6 +26,19 @@ try {
   if (!fingerprint?.inputSchema?.properties?.windowSize) {
     throw new Error('ruyi_set_fingerprint.windowSize is not exposed');
   }
+  if (!fingerprint?.inputSchema?.properties?.screenSize) {
+    throw new Error('ruyi_set_fingerprint.screenSize is not exposed');
+  }
+  if (!fingerprint?.inputSchema?.properties?.viewport?.properties?.devicePixelRatio) {
+    throw new Error('ruyi_set_fingerprint.viewport.devicePixelRatio is not exposed');
+  }
+  const selectFrame = result.tools.find((tool) => tool.name === 'ruyi_select_frame');
+  if (!selectFrame?.inputSchema?.properties?.selector) {
+    throw new Error('ruyi_select_frame.selector is not exposed');
+  }
+  if (!Array.isArray(selectFrame.inputSchema.oneOf) || selectFrame.inputSchema.oneOf.length !== 2) {
+    throw new Error('ruyi_select_frame contextId/selector exclusivity is not exposed');
+  }
   console.log(`ruyi-mcp smoke OK: ${result.tools.length} tools`);
 } finally {
   await client.close();

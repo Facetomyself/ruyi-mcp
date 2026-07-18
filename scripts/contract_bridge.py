@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import inspect
 import json
 import random
 import tempfile
@@ -20,11 +21,12 @@ from unittest.mock import patch
 
 import ruyipage
 from ruyipage import FirefoxOptions
-from ruyipage._fingerprint.builder import _safe_startup_window_size
+from ruyipage._fingerprint import builder as fingerprint_builder
+from ruyipage._pages.firefox_base import FirefoxBase
 from ruyipage._units.actions import Actions
 
 
-EXPECTED_RUYIPAGE_VERSION = "1.2.50"
+EXPECTED_RUYIPAGE_VERSION = "1.2.54"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "bridge" / "ruyi_bridge.py"
 REQUIREMENTS_PATH = REPO_ROOT / "requirements.txt"
@@ -92,12 +94,132 @@ class FakeOrientationPage:
 class FakeFingerprintPage:
     def __init__(self):
         self.calls: list[tuple] = []
+        self.emulation = self
+        self.actual_screen = {
+            "width": 1366,
+            "height": 768,
+            "devicePixelRatio": 1.0,
+        }
 
-    def set_viewport(self, width, height):
-        self.calls.append(("set_viewport", width, height))
+    def set_viewport(self, width, height, device_pixel_ratio=None):
+        self.calls.append(("set_viewport", width, height, device_pixel_ratio))
 
     def set_window_size(self, width, height, device_pixel_ratio=None):
         self.calls.append(("set_window_size", width, height, device_pixel_ratio))
+
+    def set_screen_size(self, width, height, device_pixel_ratio=None):
+        self.calls.append(("set_screen_size", width, height, device_pixel_ratio))
+
+    def run_js(self, script):
+        return dict(self.actual_screen)
+
+
+class FakeRuntimeWindow:
+    def __init__(self):
+        self.calls: list[tuple[int, int]] = []
+
+    def _set_size_only(self, width, height):
+        self.calls.append((width, height))
+
+
+class FakeFingerprintContext:
+    def __init__(self, events=None):
+        self.calls: list[object] = []
+        self.events = events
+
+    def apply_emulation(self, page, *, set_screen_size=True):
+        self.calls.append((page, set_screen_size))
+        if self.events is not None:
+            self.events.append(("emulate", page, set_screen_size))
+        return {
+            "screen": bool(set_screen_size),
+            "geolocation": True,
+            "locale": True,
+            "timezone": True,
+            "headers": True,
+        }
+
+
+class FakeContainerTab:
+    def __init__(self, events):
+        self.events = events
+        self.url = "about:blank"
+        self.closed = False
+
+    def get(self, url, timeout=30):
+        self.events.append(("navigate", url, timeout))
+        self.url = url
+
+    def close(self):
+        self.closed = True
+
+
+class FakeContainerPage:
+    url = "about:blank"
+
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.container_calls: list[str | None] = []
+        self.normal_calls: list[str | None] = []
+        self.tab = FakeContainerTab(self.events)
+
+    def new_container_tab(self, url=None):
+        self.container_calls.append(url)
+        self.events.append(("create-container", url))
+        return self.tab
+
+    def new_tab(self, url=None):
+        self.normal_calls.append(url)
+        self.events.append(("create-normal", url))
+        return self.tab
+
+
+class FakeFailingContainerPage:
+    url = "about:blank"
+
+    def __init__(self):
+        self.fallback_calls = 0
+
+    def new_container_tab(self, url=None):
+        raise RuntimeError("fixture container failure")
+
+    def run_js(self, script):
+        self.fallback_calls += 1
+        raise AssertionError("container creation must not use normal-tab fallback")
+
+
+class FakeNavigationFailureTab(FakeContainerTab):
+    def get(self, url, timeout=30):
+        self.events.append(("navigate", url, timeout))
+        raise RuntimeError("fixture navigation failure")
+
+
+class FakeNavigationFailurePage:
+    url = "about:blank"
+
+    def __init__(self):
+        self.events = []
+        self.tab = FakeNavigationFailureTab(self.events)
+
+    def new_tab(self, url=None):
+        self.events.append(("create-normal", url))
+        return self.tab
+
+
+class FakeFrame:
+    _context_id = "frame-selector-context"
+    url = "about:srcdoc"
+    title = "fixture frame"
+    is_cross_origin = False
+
+
+class FakeFramePage:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def get_frame(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeFrame()
 
 
 class FakeHumanActions:
@@ -313,12 +435,29 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 self.assertNotIn("user%", user_js)
                 self.assertNotIn("pa%24%24", user_js)
 
-    def test_ruyipage_1250_window_and_action_regressions(self):
-        self.assertEqual(_safe_startup_window_size(1366, 768), (1286, 688))
+    def test_ruyipage_1254_window_fingerprint_and_action_contracts(self):
+        smart_signature = inspect.signature(fingerprint_builder.apply_smart_fingerprint)
+        self.assertFalse(smart_signature.parameters["set_window_size_on_opts"].default)
+        emulation_signature = inspect.signature(
+            fingerprint_builder.FingerprintContext.apply_emulation
+        )
+        self.assertTrue(emulation_signature.parameters["set_screen_size"].default)
+        self.assertFalse(hasattr(fingerprint_builder, "_safe_startup_window_size"))
+
+        fpfile_source = inspect.getsource(fingerprint_builder.write_fpfile)
+        self.assertNotIn('a("width:"', fpfile_source)
+        self.assertNotIn('a("height:"', fpfile_source)
 
         options = FirefoxOptions().set_window_size(1366, 768)
         self.assertEqual(options.startup_window_size, (1366, 768))
         self.assertTrue(hasattr(ruyipage.FirefoxPage, "set_window_size"))
+
+        runtime_page = FirefoxBase.__new__(FirefoxBase)
+        FirefoxBase.__init__(runtime_page)
+        runtime_window = FakeRuntimeWindow()
+        runtime_page._window = runtime_window
+        runtime_page.set_window_size(960, 640, device_pixel_ratio=1.25)
+        self.assertEqual(runtime_window.calls, [(960, 640)])
 
         actions = Actions(SimpleNamespace())
         random.seed(70)
@@ -339,7 +478,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
             ["pointerDown", "pause", "pointerMove", "pointerUp"],
         )
 
-    def test_window_size_handler_uses_synchronized_api_and_rejects_viewport_mix(self):
+    def test_window_and_screen_size_handlers_are_explicit_and_separate(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
         page = FakeFingerprintPage()
         bridge.pages[0] = page
@@ -355,13 +494,70 @@ class RuyiBridgeContractTests(unittest.TestCase):
                         "height": 720,
                         "devicePixelRatio": 1.25,
                     },
+                    "screenSize": {
+                        "width": 1366,
+                        "height": 768,
+                        "devicePixelRatio": 1.25,
+                    },
                 },
             }
         )
 
         self.assertNotIn("error", response)
-        self.assertEqual(page.calls, [("set_window_size", 1280, 720, 1.25)])
+        self.assertEqual(
+            page.calls,
+            [
+                ("set_window_size", 1280, 720, None),
+                ("set_screen_size", 1366, 768, 1.25),
+            ],
+        )
         self.assertEqual(response["result"]["size"]["mode"], "windowSize")
+        self.assertTrue(response["result"]["size"]["naturalViewport"])
+        self.assertEqual(
+            response["result"]["screenSize"]["requested"],
+            {"width": 1366, "height": 768, "devicePixelRatio": 1.25},
+        )
+        self.assertTrue(response["result"]["screenSize"]["verified"])
+        self.assertTrue(response["result"]["screenSize"]["screenSizeApplied"])
+        self.assertEqual(
+            response["result"]["screenSize"]["actual"],
+            page.actual_screen,
+        )
+        self.assertFalse(response["result"]["screenSize"]["devicePixelRatioApplied"])
+        self.assertIn("ignored", response["result"]["warnings"][0])
+        self.assertIn("not applied", response["result"]["warnings"][1])
+
+        viewport_bridge = BRIDGE_MODULE.RuyiBridge()
+        viewport_page = FakeFingerprintPage()
+        viewport_bridge.pages[0] = viewport_page
+        viewport_response = viewport_bridge.handle(
+            {
+                "id": 181,
+                "method": "fingerprint.set",
+                "params": {
+                    "pageIdx": 0,
+                    "viewport": {
+                        "width": 800,
+                        "height": 600,
+                        "devicePixelRatio": 1.25,
+                    },
+                },
+            }
+        )
+        self.assertNotIn("error", viewport_response)
+        self.assertEqual(
+            viewport_page.calls,
+            [("set_viewport", 800, 600, 1.25)],
+        )
+        self.assertEqual(
+            viewport_response["result"]["size"],
+            {
+                "mode": "viewport",
+                "width": 800,
+                "height": 600,
+                "devicePixelRatio": 1.25,
+            },
+        )
 
         invalid = bridge.handle(
             {
@@ -375,6 +571,116 @@ class RuyiBridgeContractTests(unittest.TestCase):
             }
         )
         self.assertIn("error", invalid)
+
+    def test_new_tabs_reapply_fingerprint_before_first_navigation(self):
+        for container in (False, True):
+            with self.subTest(container=container):
+                events = []
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                page = FakeContainerPage(events)
+                fingerprint = FakeFingerprintContext(events)
+                bridge.page = page
+                bridge.pages[0] = page
+                bridge._next_page_idx = 1
+                bridge._fingerprint_ctx = fingerprint
+
+                target_url = "https://fixture.invalid/target"
+                response = bridge.handle(
+                    {
+                        "id": 20,
+                        "method": "page.new",
+                        "params": {
+                            "url": target_url,
+                            "timeout": 17,
+                            "container": container,
+                        },
+                    }
+                )
+
+                self.assertNotIn("error", response)
+                create_event = "create-container" if container else "create-normal"
+                self.assertEqual(
+                    events,
+                    [
+                        (create_event, None),
+                        ("emulate", page.tab, container),
+                        ("navigate", target_url, 17),
+                    ],
+                )
+                self.assertEqual(fingerprint.calls, [(page.tab, container)])
+                self.assertEqual(
+                    response["result"]["fingerprintEmulation"]["screen"],
+                    container,
+                )
+
+    def test_container_creation_failure_never_downgrades_to_normal_tab(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeFailingContainerPage()
+        bridge.page = page
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 201,
+                "method": "page.new",
+                "params": {
+                    "url": "https://fixture.invalid/container",
+                    "container": True,
+                },
+            }
+        )
+
+        self.assertIn("error", response)
+        self.assertIn("refusing to fall back", response["error"]["message"])
+        self.assertEqual(page.fallback_calls, 0)
+
+    def test_navigation_failure_closes_tab_without_registering_it(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeNavigationFailurePage()
+        bridge.page = page
+        bridge.pages[0] = page
+        bridge._next_page_idx = 1
+
+        response = bridge.handle(
+            {
+                "id": 202,
+                "method": "page.new",
+                "params": {
+                    "url": "https://fixture.invalid/fail",
+                    "container": False,
+                },
+            }
+        )
+
+        self.assertIn("error", response)
+        self.assertEqual(
+            page.events,
+            [
+                ("create-normal", None),
+                ("navigate", "https://fixture.invalid/fail", 30),
+            ],
+        )
+        self.assertTrue(page.tab.closed)
+        self.assertEqual(bridge.pages, {0: page})
+        self.assertEqual(bridge._next_page_idx, 1)
+
+    def test_frame_selector_uses_ruyipage_1254_content_window_mapping(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeFramePage()
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 21,
+                "method": "frame.select",
+                "params": {"pageIdx": 0, "selector": "#second"},
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(page.calls, [{"locator": "css:#second"}])
+        self.assertEqual(response["result"]["selectedBy"], "selector")
+        self.assertEqual(response["result"]["contextId"], "frame-selector-context")
 
     def test_human_drag_builds_atomic_waited_chain(self):
         bridge = BRIDGE_MODULE.RuyiBridge()

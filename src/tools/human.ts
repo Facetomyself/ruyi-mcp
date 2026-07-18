@@ -66,7 +66,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
       name: 'ruyi_human_drag',
       description:
         '执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。' +
-        'ruyiPage 1.2.50 会把按下到释放合并为单次 BiDi input.performActions，' +
+        'ruyiPage 1.2.54 会把按下到释放合并为单次 BiDi input.performActions，' +
         '适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。',
       inputSchema: {
         type: 'object',

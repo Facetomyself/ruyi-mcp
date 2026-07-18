@@ -3,7 +3,7 @@
 [简体中文](README.md) | [English](README_EN.md)
 
 [![CI](https://github.com/Facetomyself/ruyi-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Facetomyself/ruyi-mcp/actions/workflows/ci.yml)
-[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.50-blue)](https://pypi.org/project/ruyiPage/1.2.50/)
+[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.54-blue)](https://pypi.org/project/ruyiPage/1.2.54/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `ruyi-mcp` is a community MCP server for [ruyiPage](https://github.com/LoseNine/ruyipage). It exposes Firefox / WebDriver BiDi browser automation, runtime inspection, fingerprint analysis, trace, network interception, and human-like interaction workflows to MCP clients such as Claude Code, Codex, and Cursor.
@@ -13,7 +13,8 @@ This project is independently maintained by the community. It is not an official
 ## Highlights
 
 - 57 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, session export, and trace workflows.
-- `ruyi_human_drag` provides an atomic human-like drag chain, while `ruyi_set_fingerprint.windowSize` synchronizes window, viewport, and screen metrics.
+- `ruyi_human_drag` provides an atomic human-like drag chain. `ruyi_set_fingerprint` exposes outer-window, viewport, and screen sizing as separate operations instead of spoofing Firefox's native window geometry.
+- `ruyi_select_frame.selector` uses ruyiPage 1.2.54's `iframe.contentWindow` mapping to distinguish `srcdoc` and same-URL frames precisely.
 - A Node.js MCP server backed by a persistent Python JSON-RPC bridge to ruyiPage.
 - Tracked TypeScript build output, allowing MCP hosts to start directly from `build/src/index.js` after dependencies are installed.
 
@@ -21,15 +22,18 @@ This project is independently maintained by the community. It is not an official
 
 - Node.js 20 or later.
 - Python 3.10 or later; CI currently verifies Python 3.13.
-- `ruyiPage==1.2.50` and a Firefox runtime installed by or compatible with ruyiPage.
+- `ruyiPage==1.2.54` and a Firefox runtime installed by or compatible with ruyiPage.
 
 ## Compatibility
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
+| `v0.1.3` | `1.2.54` | `>=20` | `>=3.10` | Local: Node.js 20 + Python 3.13 + `151-proxy` runtime gate |
 | `v0.1.2` | `1.2.50` | `>=20` | `>=3.10` | GitHub Actions: Node.js 20 + Python 3.13 |
 
 The repository pins an exact ruyiPage version. Before changing that compatibility target, the Bridge contract, TypeScript build, and 57-tool stdio smoke test are run again.
+
+See [`docs/upstream-audit-2026-07-18.md`](docs/upstream-audit-2026-07-18.md) for the release, commit, issue, PR, and Trace adoption audit behind this update.
 
 ## Installation
 
@@ -50,9 +54,17 @@ npm run check
 ## Firefox Runtime Selection
 
 - The `ruyi_trace_*` tools expose ruyiPage's in-memory WebDriver BiDi JSON trace, not Firefox kernel DOMTrace.
-- The ruyiPage `1.2.50` installer still selects the `151-ruyi` runtime. To verify credentialed HTTP / SOCKS5 proxies, download the upstream [`151-proxy`](https://github.com/LoseNine/ruyipage/releases/tag/151-proxy) release separately and point `RUYI_FIREFOX_PATH` to the extracted `firefox.exe`.
-- On `151-proxy`, synchronized window sizing may wait three seconds for `browsingContext.setViewport` before ruyiPage switches to its JavaScript viewport fallback. This is the compatibility path and does not repeat while reusing the same browser.
+- The ruyiPage `1.2.54` installer still selects the `151-ruyi` runtime. To verify credentialed HTTP / SOCKS5 proxies, download the upstream [`151-proxy`](https://github.com/LoseNine/ruyipage/releases/tag/151-proxy) release separately and point `RUYI_FIREFOX_PATH` to the extracted `firefox.exe`.
+- `windowSize` changes only the outer window while Firefox computes inner/viewport geometry naturally. Use `viewport` for an explicit viewport and its DPR, and `screenSize` for explicit `screen.*` emulation. Firefox may ignore `screenSize.devicePixelRatio`; the Bridge separates `requested` / `actual` / `devicePixelRatioApplied` instead of echoing a requested value as success.
+- Smart fingerprinting no longer writes screen dimensions into fpfile or resizes implicitly. Before first navigation, the Bridge reapplies context-scoped overlays to normal tabs while preserving their shared user-context screen, reapplies the complete fingerprint to containers, and refuses to silently downgrade a failed container into a normal tab.
 - This repository does not distribute Firefox binaries, browser profiles, or a DOMTrace-enabled browser kernel.
+
+Optional local runtime gate (no external network access):
+
+```powershell
+$env:RUYI_FIREFOX_PATH='D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox\firefox.exe'
+& 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:runtime
+```
 
 ## MCP Configuration
 

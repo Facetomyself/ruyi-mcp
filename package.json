@@ -1,6 +1,6 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Community MCP server for ruyiPage browser automation, network inspection, fingerprint analysis, and WebDriver BiDi trace workflows",
   "private": true,
   "license": "MIT",
@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "check:python": "python -m py_compile bridge/ruyi_bridge.py",
     "check:contract": "python scripts/contract_bridge.py",
+    "check:runtime": "python scripts/runtime_ruyipage_1254.py",
     "smoke": "node scripts/smoke-list-tools.mjs",
     "check": "npm run typecheck && npm run check:python && npm run check:contract && npm run build && npm run smoke",
     "start": "node build/src/index.js",

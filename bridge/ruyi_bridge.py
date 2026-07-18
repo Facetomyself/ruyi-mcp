@@ -418,31 +418,65 @@ class RuyiBridge:
             raise RuntimeError("No browser session. Call browser.launch first.")
 
         url = params.get("url", "")
+        timeout = params.get("timeout", 30)
         container = params.get("container", False)
         tab = None
+        fingerprint_required = self._fingerprint_ctx is not None
 
         try:
             if container:
-                tab = self.page.new_container_tab(url=url if url else None)
+                tab = self.page.new_container_tab(url=None)
             else:
-                tab = self.page.new_tab(url=url if url else None)
-        except Exception:
-            # Fallback: create via JS and then resync the latest tab.
-            self.page.run_js(f"(() => window.open({json.dumps(url or '')}, '_blank'))()")
+                tab = self.page.new_tab(url=None)
+        except Exception as e:
+            if container:
+                raise RuntimeError(
+                    "Container tab creation failed; refusing to fall back to a normal tab"
+                ) from e
+            # Fallback: create about:blank via JS and then resync the latest
+            # tab. Target navigation stays outside the creation try/except so
+            # a navigation timeout cannot create a duplicate or ghost tab.
+            self.page.run_js("(() => window.open('', '_blank'))()")
             try:
                 tabs = self.page.get_tabs() or []
-                tab = tabs[-1] if tabs else self.page
+                if not tabs:
+                    raise RuntimeError("Fallback did not create a new tab")
+                tab = tabs[-1]
+            except Exception as fallback_error:
+                raise RuntimeError("Normal tab fallback failed") from fallback_error
+
+        fingerprint_emulation = None
+        if tab is not None:
+            # ruyiPage 1.2.54 scopes screen to userContext, while geo/locale/
+            # timezone/headers remain browsing-context scoped. Reapply the
+            # complete context before the first target navigation for both
+            # normal and container tabs.
+            try:
+                if fingerprint_required:
+                    fingerprint_emulation = self._fingerprint_ctx.apply_emulation(
+                        tab,
+                        set_screen_size=bool(container),
+                    )
+                if url:
+                    tab.get(url, timeout=timeout)
             except Exception:
-                tab = self.page
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+                raise
 
         idx = self._next_page_idx
         self.pages[idx] = tab
         self._next_page_idx += 1
 
-        return {
+        result = {
             "pageIdx": idx,
             "url": getattr(tab, 'url', url) if tab else url,
         }
+        if fingerprint_emulation is not None:
+            result["fingerprintEmulation"] = _serialize(fingerprint_emulation)
+        return result
 
     def _close_tab(self, params: dict) -> dict:
         idx = params.get("pageIdx", 0)
@@ -675,6 +709,7 @@ class RuyiBridge:
         page = self._get_page(params.get("pageIdx", 0))
         viewport = params.get("viewport")
         window_size = params.get("windowSize")
+        screen_size = params.get("screenSize")
 
         if viewport and window_size:
             raise ValueError("viewport and windowSize are mutually exclusive")
@@ -694,13 +729,25 @@ class RuyiBridge:
         if params.get("userAgent"):
             page.set_useragent(params["userAgent"])
         applied_size = None
+        applied_screen_size = None
+        warnings = []
         if viewport:
             width = int(viewport.get("width", 1920))
             height = int(viewport.get("height", 1080))
+            dpr = viewport.get("devicePixelRatio")
             if width <= 0 or height <= 0:
                 raise ValueError("viewport width and height must be positive")
-            page.set_viewport(width, height)
-            applied_size = {"mode": "viewport", "width": width, "height": height}
+            if dpr is not None:
+                dpr = float(dpr)
+                if dpr <= 0:
+                    raise ValueError("viewport devicePixelRatio must be positive")
+            page.set_viewport(width, height, dpr)
+            applied_size = {
+                "mode": "viewport",
+                "width": width,
+                "height": height,
+                "devicePixelRatio": dpr,
+            }
         elif window_size:
             width = int(window_size.get("width", 1280))
             height = int(window_size.get("height", 720))
@@ -711,13 +758,77 @@ class RuyiBridge:
                 dpr = float(dpr)
                 if dpr <= 0:
                     raise ValueError("windowSize devicePixelRatio must be positive")
-            page.set_window_size(width, height, device_pixel_ratio=dpr)
+                warnings.append(
+                    "windowSize.devicePixelRatio is ignored by ruyiPage 1.2.54; "
+                    "use viewport.devicePixelRatio for DPR; screenSize DPR is runtime-dependent"
+                )
+            page.set_window_size(width, height)
             applied_size = {
                 "mode": "windowSize",
                 "width": width,
                 "height": height,
-                "devicePixelRatio": dpr,
+                "naturalViewport": True,
             }
+        if screen_size:
+            width = int(screen_size.get("width", 1920))
+            height = int(screen_size.get("height", 1080))
+            dpr = screen_size.get("devicePixelRatio")
+            if width <= 0 or height <= 0:
+                raise ValueError("screenSize width and height must be positive")
+            if dpr is not None:
+                dpr = float(dpr)
+                if dpr <= 0:
+                    raise ValueError("screenSize devicePixelRatio must be positive")
+            page.emulation.set_screen_size(
+                width,
+                height,
+                device_pixel_ratio=dpr,
+            )
+            applied_screen_size = {
+                "requested": {
+                    "width": width,
+                    "height": height,
+                    "devicePixelRatio": dpr,
+                },
+                "verified": False,
+            }
+            try:
+                actual_screen_size = page.run_js(
+                    """
+                    return {
+                      width: screen.width,
+                      height: screen.height,
+                      devicePixelRatio: window.devicePixelRatio
+                    };
+                    """
+                )
+            except Exception:
+                actual_screen_size = None
+            if isinstance(actual_screen_size, dict):
+                applied_screen_size["verified"] = True
+                applied_screen_size["actual"] = _serialize(actual_screen_size)
+                screen_size_applied = (
+                    actual_screen_size.get("width") == width
+                    and actual_screen_size.get("height") == height
+                )
+                applied_screen_size["screenSizeApplied"] = screen_size_applied
+                if not screen_size_applied:
+                    warnings.append(
+                        "screenSize dimensions were not applied by the active Firefox runtime"
+                    )
+                requested_dpr = applied_screen_size["requested"].get("devicePixelRatio")
+                actual_dpr = actual_screen_size.get("devicePixelRatio")
+                if requested_dpr is not None and actual_dpr is not None:
+                    dpr_applied = abs(float(requested_dpr) - float(actual_dpr)) < 1e-9
+                    applied_screen_size["devicePixelRatioApplied"] = dpr_applied
+                    if not dpr_applied:
+                        warnings.append(
+                            "screenSize.devicePixelRatio was not applied by the active Firefox runtime"
+                        )
+            else:
+                warnings.append(
+                    "screenSize was requested but the active page metrics could not be verified"
+                )
         if params.get("bypassCsp"):
             page.set_bypass_csp(True)
 
@@ -732,6 +843,10 @@ class RuyiBridge:
         result = {"fingerprintApplied": True}
         if applied_size:
             result["size"] = applied_size
+        if applied_screen_size:
+            result["screenSize"] = applied_screen_size
+        if warnings:
+            result["warnings"] = warnings
         return result
 
     def _set_proxy(self, params: dict) -> dict:
@@ -1280,15 +1395,25 @@ class RuyiBridge:
     def _frame_select(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))
         context_id = params.get("contextId", "")
+        selector = params.get("selector", "")
         try:
-            frame = page.get_frame(context_id=context_id) if context_id else page.get_frame()
+            if bool(context_id) == bool(selector):
+                raise ValueError("Exactly one of contextId or selector is required")
+            if context_id:
+                frame = page.get_frame(context_id=context_id)
+                selected_by = "contextId"
+            else:
+                normalized_selector = self._norm_selector(selector)
+                frame = page.get_frame(locator=normalized_selector)
+                selected_by = "selector"
             if frame is None:
-                return {"found": False}
+                return {"found": False, "selectedBy": selected_by}
             cid = getattr(frame, "_context_id", "")
             self._frame_obj[cid] = frame
             return {
                 "found": True,
                 "contextId": cid,
+                "selectedBy": selected_by,
                 "url": getattr(frame, "url", ""),
                 "title": getattr(frame, "title", ""),
                 "isCrossOrigin": getattr(frame, "is_cross_origin", None),

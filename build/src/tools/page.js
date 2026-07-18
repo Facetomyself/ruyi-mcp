@@ -75,6 +75,7 @@ export function registerPageTools(register, ctx) {
             // silently navigate the current active page.
             const result = await ctx.bridgeInstance.call('page.new', {
                 url,
+                timeout,
                 container: args.container ?? false,
             });
             const newPageIdx = result.pageIdx;
@@ -239,22 +240,38 @@ export function registerPageTools(register, ctx) {
     register({
         tool: {
             name: 'ruyi_select_frame',
-            description: '选择指定的 iframe/frame。传入 contextId（从 ruyi_list_frames 获取）。' +
+            description: '选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；' +
+                '也可传 selector，由 ruyiPage 1.2.54 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。' +
                 '选择后的 frame 可在后续 evaluate_script 中通过 frameContextId 参数操作。',
             inputSchema: {
                 type: 'object',
                 properties: {
                     contextId: { type: 'string', description: 'frame 的 browsing context ID' },
+                    selector: { type: 'string', description: 'iframe/frame 元素选择器；与 contextId 二选一' },
                     pageIdx: { type: 'number', description: '标签页索引', default: 0 },
                 },
-                required: ['contextId'],
+                required: [],
+                oneOf: [
+                    { required: ['contextId'] },
+                    { required: ['selector'] },
+                ],
             },
         },
         handler: (async (args) => {
             const pageIdx = getPageIdx(args, ctx);
+            const contextId = typeof args.contextId === 'string' && args.contextId.trim()
+                ? args.contextId.trim()
+                : undefined;
+            const selector = typeof args.selector === 'string' && args.selector.trim()
+                ? args.selector.trim()
+                : undefined;
+            if ((contextId ? 1 : 0) + (selector ? 1 : 0) !== 1) {
+                throw new Error('Exactly one of contextId or selector is required');
+            }
             const result = await ctx.bridgeInstance.call('frame.select', {
                 pageIdx,
-                contextId: args.contextId,
+                contextId,
+                selector,
             });
             return {
                 content: [{ type: 'text', text: jsonResult(result) }],
