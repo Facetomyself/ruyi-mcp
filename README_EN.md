@@ -15,6 +15,7 @@ This project is independently maintained by the community. It is not an official
 - 57 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, session export, and trace workflows.
 - `ruyi_human_drag` provides an atomic human-like drag chain. `ruyi_set_fingerprint` exposes outer-window, viewport, and screen sizing as separate operations instead of spoofing Firefox's native window geometry.
 - `ruyi_select_frame.selector` uses ruyiPage 1.2.54's `iframe.contentWindow` mapping to distinguish `srcdoc` and same-URL frames precisely.
+- `ruyi_capture_wait` normalizes ruyiPage's single `CapturePacket`, `None`, or multi-packet list into an MCP-side `packets` array.
 - A Node.js MCP server backed by a persistent Python JSON-RPC bridge to ruyiPage.
 - Tracked TypeScript build output, allowing MCP hosts to start directly from `build/src/index.js` after dependencies are installed.
 
@@ -28,6 +29,7 @@ This project is independently maintained by the community. It is not an official
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
+| `v0.1.4` | `1.2.54` | `>=20` | `>=3.10` | Bridge contract + TypeScript build + 57-tool stdio smoke |
 | `v0.1.3` | `1.2.54` | `>=20` | `>=3.10` | Local: Node.js 20 + Python 3.13 + `151-proxy` runtime gate |
 | `v0.1.2` | `1.2.50` | `>=20` | `>=3.10` | GitHub Actions: Node.js 20 + Python 3.13 |
 

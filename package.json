@@ -1,6 +1,6 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Community MCP server for ruyiPage browser automation, network inspection, fingerprint analysis, and WebDriver BiDi trace workflows",
   "private": true,
   "license": "MIT",

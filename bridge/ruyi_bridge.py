@@ -644,9 +644,15 @@ class RuyiBridge:
         page = self._get_page(params.get("pageIdx", 0))
         timeout = params.get("timeout", 10)
         count = params.get("count", 5)
-        packets = page.capture.wait(timeout=timeout, count=count)
+        capture_result = page.capture.wait(timeout=timeout, count=count)
+        if isinstance(capture_result, list):
+            packets = capture_result
+        elif capture_result is None:
+            packets = []
+        else:
+            packets = [capture_result]
         results = []
-        for p in (packets or []):
+        for p in packets:
             try:
                 results.append({
                     "url": getattr(p, 'url', str(p)),
