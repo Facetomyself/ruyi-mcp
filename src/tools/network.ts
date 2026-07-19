@@ -99,22 +99,40 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
   register({
     tool: {
       name: 'ruyi_capture_stop',
-      description: '停止被动抓包。',
+      description:
+        '停止被动抓包。会先清空尚未消费的队列/历史，避免 ruyiPage stop 隐式补读全部 body；' +
+        '需要结果时应先调用 ruyi_capture_wait。',
       inputSchema: {
         type: 'object',
         properties: {
           pageIdx: { type: 'number', default: 0 },
+          cleanupTimeout: {
+            type: 'number',
+            description: '每个 BiDi 清理命令的超时秒数，默认 5，范围 0.1–30',
+            minimum: 0.1,
+            maximum: 30,
+            default: 5,
+          },
         },
         required: [],
       },
     },
     handler: (async (args) => {
       const pageIdx = getPageIdx(args, ctx);
-      await ctx.bridgeInstance.call('network.capture_stop', { pageIdx });
+      const rawCleanupTimeout = Number(args.cleanupTimeout ?? 5);
+      const cleanupTimeout = Number.isFinite(rawCleanupTimeout)
+        ? Math.min(30, Math.max(0.1, rawCleanupTimeout))
+        : 5;
+      const bridgeTimeoutMs = Math.ceil(cleanupTimeout * 2 * 1000) + 5000;
+      const result = await ctx.bridgeInstance.call(
+        'network.capture_stop',
+        { pageIdx, cleanupTimeout },
+        bridgeTimeoutMs
+      ) as Record<string, unknown>;
       ctx.setCaptureActive(false);
 
       return {
-        content: [{ type: 'text', text: jsonResult({ capturing: false }) }],
+        content: [{ type: 'text', text: jsonResult(result) }],
       };
     }) as ToolHandler,
   });

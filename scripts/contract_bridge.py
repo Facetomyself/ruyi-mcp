@@ -115,18 +115,45 @@ class FakeFingerprintPage:
 
 
 class FakeCaptureManager:
-    def __init__(self, result):
+    def __init__(self, result, history=None, stop_error=None):
         self.result = result
         self.wait_calls: list[tuple[float, int]] = []
+        self._history = list(history or [])
+        self.stop_error = stop_error
+        self.clear_calls = 0
+        self.stop_calls: list[tuple[int, float]] = []
+        self.active = True
+
+    @property
+    def steps(self):
+        return self._history[:]
 
     def wait(self, *, timeout, count):
         self.wait_calls.append((timeout, count))
         return self.result
 
+    def clear(self):
+        self.clear_calls += 1
+        self._history = []
+        return self
+
+    def stop(self):
+        self.stop_calls.append(
+            (len(self._history), BRIDGE_MODULE.Settings.bidi_timeout)
+        )
+        if self.stop_error is not None:
+            raise self.stop_error
+        self.active = False
+        return self
+
 
 class FakeCapturePage:
-    def __init__(self, result):
-        self.capture = FakeCaptureManager(result)
+    def __init__(self, result, history=None, stop_error=None):
+        self.capture = FakeCaptureManager(
+            result,
+            history=history,
+            stop_error=stop_error,
+        )
 
 
 class FakeRuntimeWindow:
@@ -655,6 +682,62 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     [item["url"] for item in response["result"]["packets"]],
                     expected_urls,
                 )
+
+    def test_capture_stop_clears_history_and_bounds_bidi_cleanup(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeCapturePage(None, history=[object(), object(), object()])
+        bridge.pages[0] = page
+        original_bidi_timeout = self.settings.bidi_timeout
+
+        response = bridge.handle(
+            {
+                "id": 24,
+                "method": "network.capture_stop",
+                "params": {"pageIdx": 0, "cleanupTimeout": 2.5},
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(page.capture.clear_calls, 1)
+        self.assertEqual(page.capture.stop_calls, [(0, 2.5)])
+        self.assertFalse(page.capture.active)
+        self.assertEqual(self.settings.bidi_timeout, original_bidi_timeout)
+        self.assertEqual(response["result"]["capturing"], False)
+        self.assertEqual(response["result"]["clearedPacketHistory"], 3)
+        self.assertEqual(response["result"]["cleanupTimeoutSeconds"], 2.5)
+        self.assertGreaterEqual(response["result"]["elapsedMs"], 0)
+
+        invalid = bridge.handle(
+            {
+                "id": 25,
+                "method": "network.capture_stop",
+                "params": {"pageIdx": 0, "cleanupTimeout": 0},
+            }
+        )
+        self.assertIn("error", invalid)
+
+    def test_capture_stop_restores_global_timeout_when_cleanup_raises(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeCapturePage(
+            None,
+            history=[object()],
+            stop_error=RuntimeError("fixture cleanup failure"),
+        )
+        bridge.pages[0] = page
+        original_bidi_timeout = self.settings.bidi_timeout
+
+        response = bridge.handle(
+            {
+                "id": 26,
+                "method": "network.capture_stop",
+                "params": {"pageIdx": 0, "cleanupTimeout": 1.5},
+            }
+        )
+
+        self.assertIn("error", response)
+        self.assertEqual(page.capture.clear_calls, 1)
+        self.assertEqual(page.capture.stop_calls, [(0, 1.5)])
+        self.assertEqual(self.settings.bidi_timeout, original_bidi_timeout)
 
     def test_new_tabs_reapply_fingerprint_before_first_navigation(self):
         for container in (False, True):

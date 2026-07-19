@@ -16,6 +16,8 @@ import json
 import traceback
 import os
 import shutil
+import math
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -637,8 +639,42 @@ class RuyiBridge:
 
     def _capture_stop(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))
-        page.capture.stop()
-        return {"capturing": False}
+        cleanup_timeout = float(params.get("cleanupTimeout", 5))
+        if not math.isfinite(cleanup_timeout) or cleanup_timeout <= 0:
+            raise ValueError("cleanupTimeout must be a positive finite number")
+        cleanup_timeout = min(cleanup_timeout, 30.0)
+
+        capture = page.capture
+        history_count = len(capture.steps)
+
+        # ruyiPage CaptureManager.stop() hydrates every packet body before it
+        # releases the subscription and DataCollector. Each network.getData
+        # call can consume the full global BiDi timeout, so an O(N) stop can
+        # outlive the MCP bridge's fixed 120-second envelope. MCP callers have
+        # already consumed packet data through capture_wait; clear the internal
+        # queue/history first so stop remains a bounded cleanup operation.
+        capture.clear()
+
+        previous_bidi_timeout = None
+        applied_bidi_timeout = cleanup_timeout
+        if Settings is not None:
+            previous_bidi_timeout = Settings.bidi_timeout
+            applied_bidi_timeout = min(float(previous_bidi_timeout), cleanup_timeout)
+            Settings.bidi_timeout = applied_bidi_timeout
+
+        started = time.monotonic()
+        try:
+            capture.stop()
+        finally:
+            if Settings is not None and previous_bidi_timeout is not None:
+                Settings.bidi_timeout = previous_bidi_timeout
+
+        return {
+            "capturing": bool(getattr(capture, "active", False)),
+            "clearedPacketHistory": history_count,
+            "cleanupTimeoutSeconds": applied_bidi_timeout,
+            "elapsedMs": round((time.monotonic() - started) * 1000),
+        }
 
     def _capture_wait(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))

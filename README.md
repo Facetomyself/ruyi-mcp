@@ -16,6 +16,7 @@
 - `ruyi_human_drag` 提供原子的拟人拖拽动作链；`ruyi_set_fingerprint` 将 outer window、viewport 与 screen 分成显式参数，不再伪造 Firefox 原生窗口几何。
 - `ruyi_select_frame.selector` 使用 ruyiPage 1.2.54 的 `iframe.contentWindow` 映射，可精确区分 `srcdoc` 或同 URL frame。
 - `ruyi_capture_wait` 会把 ruyiPage 的单个 `CapturePacket`、`None` 或多包列表统一为 MCP 侧的 `packets` 数组。
+- `ruyi_capture_stop` 会先清空 MCP 不再消费的队列/历史，再以 `cleanupTimeout` 有界释放 BiDi 订阅与 DataCollector，避免 stop 隐式补读全部 body。
 - Node.js MCP Server 通过常驻 Python JSON-RPC Bridge 调用 ruyiPage。
 - 仓库跟踪 TypeScript 构建产物；依赖安装完成后，MCP Host 可直接从 `build/src/index.js` 启动。
 
@@ -29,6 +30,7 @@
 
 | ruyi-mcp | ruyiPage | Node.js | Python | 验证环境 |
 |----------|----------|---------|--------|----------|
+| `v0.1.5` | `1.2.54` | `>=20` | `>=3.10` | 21 Bridge contracts + 20 轮 capture runtime gate + 57 tools stdio smoke |
 | `v0.1.4` | `1.2.54` | `>=20` | `>=3.10` | Bridge contract + TypeScript build + 57 tools stdio smoke |
 | `v0.1.3` | `1.2.54` | `>=20` | `>=3.10` | 本地：Node.js 20 + Python 3.13 + `151-proxy` runtime gate |
 | `v0.1.2` | `1.2.50` | `>=20` | `>=3.10` | GitHub Actions：Node.js 20 + Python 3.13 |
@@ -66,6 +68,7 @@ npm run check
 ```powershell
 $env:RUYI_FIREFOX_PATH='D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox\firefox.exe'
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:runtime
+& 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:capture-runtime
 ```
 
 ## MCP 配置
@@ -103,7 +106,7 @@ npm run check
 npm audit --audit-level=high
 ```
 
-`npm run check` 会执行 TypeScript typecheck、Python 语法检查、Bridge contract、构建和 57 tools stdio smoke test；该命令不会启动 Firefox。
+`npm run check` 会执行 TypeScript typecheck、Python 语法检查、Bridge contract、构建和 57 tools stdio smoke test；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 20 轮 start/wait/stop。
 
 ## 数据与凭据边界
 

@@ -39,6 +39,11 @@ try {
   if (!Array.isArray(selectFrame.inputSchema.oneOf) || selectFrame.inputSchema.oneOf.length !== 2) {
     throw new Error('ruyi_select_frame contextId/selector exclusivity is not exposed');
   }
+  const captureStop = result.tools.find((tool) => tool.name === 'ruyi_capture_stop');
+  const cleanupTimeout = captureStop?.inputSchema?.properties?.cleanupTimeout;
+  if (!cleanupTimeout || cleanupTimeout.minimum !== 0.1 || cleanupTimeout.maximum !== 30) {
+    throw new Error('ruyi_capture_stop.cleanupTimeout bounds are not exposed');
+  }
   console.log(`ruyi-mcp smoke OK: ${result.tools.length} tools`);
 } finally {
   await client.close();
