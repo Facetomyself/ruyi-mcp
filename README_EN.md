@@ -16,6 +16,7 @@ This project is independently maintained by the community. It is not an official
 - `ruyi_human_drag` provides an atomic human-like drag chain. `ruyi_set_fingerprint` exposes outer-window, viewport, and screen sizing as separate operations instead of spoofing Firefox's native window geometry.
 - `ruyi_select_frame.selector` uses ruyiPage 1.2.54's `iframe.contentWindow` mapping to distinguish `srcdoc` and same-URL frames precisely.
 - `ruyi_capture_wait` normalizes ruyiPage's single `CapturePacket`, `None`, or multi-packet list into an MCP-side `packets` array.
+- `ruyi_capture_stop` clears MCP-unconsumed queue/history first, then releases the BiDi subscription and DataCollector within `cleanupTimeout` instead of implicitly hydrating every body during stop.
 - A Node.js MCP server backed by a persistent Python JSON-RPC bridge to ruyiPage.
 - Tracked TypeScript build output, allowing MCP hosts to start directly from `build/src/index.js` after dependencies are installed.
 
@@ -29,6 +30,7 @@ This project is independently maintained by the community. It is not an official
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
+| `v0.1.5` | `1.2.54` | `>=20` | `>=3.10` | 21 Bridge contracts + 20-cycle capture runtime gate + 57-tool stdio smoke |
 | `v0.1.4` | `1.2.54` | `>=20` | `>=3.10` | Bridge contract + TypeScript build + 57-tool stdio smoke |
 | `v0.1.3` | `1.2.54` | `>=20` | `>=3.10` | Local: Node.js 20 + Python 3.13 + `151-proxy` runtime gate |
 | `v0.1.2` | `1.2.50` | `>=20` | `>=3.10` | GitHub Actions: Node.js 20 + Python 3.13 |
@@ -66,6 +68,7 @@ Optional local runtime gate (no external network access):
 ```powershell
 $env:RUYI_FIREFOX_PATH='D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox\firefox.exe'
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:runtime
+& 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:capture-runtime
 ```
 
 ## MCP Configuration
@@ -103,7 +106,7 @@ npm run check
 npm audit --audit-level=high
 ```
 
-`npm run check` runs TypeScript type checking, Python syntax checks, the Bridge contract, the build, and a 57-tool stdio smoke test. It does not launch Firefox.
+`npm run check` runs TypeScript type checking, Python syntax checks, the Bridge contract, the build, and a 57-tool stdio smoke test. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify 20 consecutive start/wait/stop cycles.
 
 ## Data and Credential Boundaries
 
