@@ -114,6 +114,21 @@ class FakeFingerprintPage:
         return dict(self.actual_screen)
 
 
+class FakeCaptureManager:
+    def __init__(self, result):
+        self.result = result
+        self.wait_calls: list[tuple[float, int]] = []
+
+    def wait(self, *, timeout, count):
+        self.wait_calls.append((timeout, count))
+        return self.result
+
+
+class FakeCapturePage:
+    def __init__(self, result):
+        self.capture = FakeCaptureManager(result)
+
+
 class FakeRuntimeWindow:
     def __init__(self):
         self.calls: list[tuple[int, int]] = []
@@ -571,6 +586,75 @@ class RuyiBridgeContractTests(unittest.TestCase):
             }
         )
         self.assertIn("error", invalid)
+
+    def test_capture_wait_normalizes_count_one_packet_to_list(self):
+        packet = SimpleNamespace(
+            url="https://fixture.invalid/api",
+            status=200,
+            method="POST",
+            request_body='{"fixture":true}',
+            response_body='{"ok":true}',
+        )
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeCapturePage(packet)
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 22,
+                "method": "network.capture_wait",
+                "params": {"pageIdx": 0, "timeout": 3, "count": 1},
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(page.capture.wait_calls, [(3, 1)])
+        self.assertEqual(
+            response["result"]["packets"],
+            [
+                {
+                    "url": "https://fixture.invalid/api",
+                    "status": 200,
+                    "method": "POST",
+                    "requestBody": '{"fixture":true}',
+                    "responseBody": '{"ok":true}',
+                }
+            ],
+        )
+
+    def test_capture_wait_preserves_empty_and_multi_packet_results(self):
+        cases = (
+            ("empty", None, 1, []),
+            (
+                "multi",
+                [
+                    SimpleNamespace(url="https://fixture.invalid/1", status=200),
+                    SimpleNamespace(url="https://fixture.invalid/2", status=204),
+                ],
+                2,
+                ["https://fixture.invalid/1", "https://fixture.invalid/2"],
+            ),
+        )
+
+        for label, capture_result, count, expected_urls in cases:
+            with self.subTest(label=label):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                page = FakeCapturePage(capture_result)
+                bridge.pages[0] = page
+                response = bridge.handle(
+                    {
+                        "id": 23,
+                        "method": "network.capture_wait",
+                        "params": {"pageIdx": 0, "timeout": 2, "count": count},
+                    }
+                )
+
+                self.assertNotIn("error", response)
+                self.assertEqual(page.capture.wait_calls, [(2, count)])
+                self.assertEqual(
+                    [item["url"] for item in response["result"]["packets"]],
+                    expected_urls,
+                )
 
     def test_new_tabs_reapply_fingerprint_before_first_navigation(self):
         for container in (False, True):

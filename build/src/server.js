@@ -47,7 +47,7 @@ export async function createServer(bridge) {
     const tools = Array.from(toolHandlers.values()).map((h) => h.tool);
     const server = new Server({
         name: 'ruyi-mcp',
-        version: '0.1.3',
+        version: '0.1.4',
     }, {
         capabilities: {
             tools: {},

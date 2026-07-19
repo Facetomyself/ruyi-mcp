@@ -15,6 +15,7 @@
 - 提供 57 个 MCP 工具，覆盖页面生命周期、脚本与运行时分析、网络抓取、Cookie、DOM、Frame、请求/响应拦截、WebSocket、浏览器指纹、人类行为模拟、Session 导出和 Trace。
 - `ruyi_human_drag` 提供原子的拟人拖拽动作链；`ruyi_set_fingerprint` 将 outer window、viewport 与 screen 分成显式参数，不再伪造 Firefox 原生窗口几何。
 - `ruyi_select_frame.selector` 使用 ruyiPage 1.2.54 的 `iframe.contentWindow` 映射，可精确区分 `srcdoc` 或同 URL frame。
+- `ruyi_capture_wait` 会把 ruyiPage 的单个 `CapturePacket`、`None` 或多包列表统一为 MCP 侧的 `packets` 数组。
 - Node.js MCP Server 通过常驻 Python JSON-RPC Bridge 调用 ruyiPage。
 - 仓库跟踪 TypeScript 构建产物；依赖安装完成后，MCP Host 可直接从 `build/src/index.js` 启动。
 
@@ -28,6 +29,7 @@
 
 | ruyi-mcp | ruyiPage | Node.js | Python | 验证环境 |
 |----------|----------|---------|--------|----------|
+| `v0.1.4` | `1.2.54` | `>=20` | `>=3.10` | Bridge contract + TypeScript build + 57 tools stdio smoke |
 | `v0.1.3` | `1.2.54` | `>=20` | `>=3.10` | 本地：Node.js 20 + Python 3.13 + `151-proxy` runtime gate |
 | `v0.1.2` | `1.2.50` | `>=20` | `>=3.10` | GitHub Actions：Node.js 20 + Python 3.13 |
 
