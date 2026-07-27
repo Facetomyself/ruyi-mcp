@@ -65,7 +65,7 @@ export class PythonBridge {
             this.rl = null;
         }
     }
-    killProcessTree(reason) {
+    killBridgeProcess(reason) {
         const proc = this.proc;
         if (!proc)
             return;
@@ -75,7 +75,10 @@ export class PythonBridge {
         this.proc = null;
         this.ready = false;
         if (pid && process.platform === 'win32') {
-            const killer = spawn('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+            // Kill only the wedged Python bridge. `/T` also terminates Firefox,
+            // destroying the very session that ruyi_attach_browser is meant to
+            // recover after a timeout.
+            const killer = spawn('taskkill.exe', ['/PID', String(pid), '/F'], {
                 stdio: 'ignore',
                 windowsHide: true,
             });
@@ -200,7 +203,7 @@ export class PythonBridge {
             // Force kill
         }
         if (this.proc) {
-            this.killProcessTree('stop requested');
+            this.killBridgeProcess('stop requested');
         }
     }
     async waitForExit(timeoutMs) {
@@ -229,7 +232,7 @@ export class PythonBridge {
                 this.pending.delete(id);
                 reject(new Error(`Python bridge call timeout: ${method} (${timeoutMs}ms)`));
                 this.rejectAllPending(`Python bridge reset after timeout in ${method} (${timeoutMs}ms)`, id);
-                this.killProcessTree(`call timeout in ${method} (${timeoutMs}ms)`);
+                this.killBridgeProcess(`call timeout in ${method} (${timeoutMs}ms)`);
             }, timeoutMs);
             this.pending.set(id, { resolve, reject, timer });
             const line = JSON.stringify(request);

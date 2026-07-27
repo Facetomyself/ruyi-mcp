@@ -104,7 +104,7 @@ export function registerUtilTools(register: ToolRegistrar, ctx: RuyiContext): vo
   register({
     tool: {
       name: 'ruyi_browser_quit',
-      description: '关闭浏览器并清理所有会话状态。',
+      description: '关闭由 MCP 启动的浏览器并清理状态；端口接管的外部浏览器只断开连接，不关闭进程。',
       inputSchema: {
         type: 'object',
         properties: {},

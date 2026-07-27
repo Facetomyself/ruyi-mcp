@@ -12,6 +12,50 @@ function jsonResult(data: unknown): string {
 export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): void {
 
   // -------------------------------------------------------------------------
+  // ruyi_attach_browser
+  // -------------------------------------------------------------------------
+  register({
+    tool: {
+      name: 'ruyi_attach_browser',
+      description:
+        '通过 Firefox WebDriver BiDi 端口接管已启动的浏览器，不新建进程、不导航页面，' +
+        'MCP 退出或 bridge 超时时保留外部浏览器。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          address: { type: 'string', description: '监听地址，默认 127.0.0.1', default: '127.0.0.1' },
+          port: { type: 'number', description: 'Firefox --remote-debugging-port', minimum: 1, maximum: 65535 },
+          profilePath: { type: 'string', description: '现有 Firefox profile 绝对路径（可选）' },
+          traceEnabled: { type: 'boolean', description: '接管后启用 BiDi trace，默认 false', default: false },
+        },
+        required: ['port'],
+      },
+    },
+    handler: (async (args) => {
+      if (ctx.state.browserLaunched) {
+        const pages = await ctx.refreshPages();
+        if (pages.length > 0) {
+          throw new Error('A browser session is already active; detach or restart the MCP bridge before attaching another one.');
+        }
+        ctx.reset();
+      }
+
+      const result = await ctx.launch({
+        existingOnly: true,
+        address: args.address ?? '127.0.0.1',
+        port: args.port,
+        profilePath: args.profilePath,
+        traceEnabled: args.traceEnabled ?? false,
+        closeOnExit: false,
+      });
+
+      return {
+        content: [{ type: 'text', text: jsonResult({ attached: true, ...result }) }],
+      };
+    }) as ToolHandler,
+  });
+
+  // -------------------------------------------------------------------------
   // ruyi_new_page
   // -------------------------------------------------------------------------
   register({

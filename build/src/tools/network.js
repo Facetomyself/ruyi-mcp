@@ -122,24 +122,61 @@ export function registerNetworkTools(register, ctx) {
     register({
         tool: {
             name: 'ruyi_capture_wait',
-            description: '等待并获取抓包结果。在调用 ruyi_capture_start 后使用。',
+            description: '等待并获取抓包结果。在调用 ruyi_capture_start 后使用。' +
+                '默认返回完整 request/response body；内部按单包 RPC 排空，避免大批量补读拖垮 bridge。',
             inputSchema: {
                 type: 'object',
                 properties: {
                     pageIdx: { type: 'number', default: 0 },
                     timeout: { type: 'number', description: '等待超时（秒），默认 10', default: 10 },
                     count: { type: 'number', description: '期望捕获的请求数，默认 5', default: 5 },
+                    maxBodyChars: {
+                        type: 'number',
+                        description: '每个 request/response body 的显式字符上限；0 表示不截断，默认 0',
+                        minimum: 0,
+                        default: 0,
+                    },
                 },
                 required: [],
             },
         },
         handler: (async (args) => {
             const pageIdx = getPageIdx(args, ctx);
-            const result = await ctx.bridgeInstance.call('network.capture_wait', {
-                pageIdx,
-                timeout: args.timeout ?? 10,
-                count: args.count ?? 5,
-            });
+            const rawTimeout = Number(args.timeout ?? 10);
+            const rawCount = Number(args.count ?? 5);
+            const rawMaxBodyChars = Number(args.maxBodyChars ?? 0);
+            const timeout = Number.isFinite(rawTimeout) ? Math.max(0.05, rawTimeout) : 10;
+            const requestedCount = Number.isFinite(rawCount)
+                ? Math.min(10_000, Math.max(1, Math.floor(rawCount)))
+                : 5;
+            const maxBodyChars = Number.isFinite(rawMaxBodyChars)
+                ? Math.max(0, Math.floor(rawMaxBodyChars))
+                : 0;
+            const deadline = Date.now() + timeout * 1000;
+            const packets = [];
+            // ruyiPage can spend a full global BiDi timeout hydrating every packet
+            // when count is large. One packet per bridge RPC bounds the failure
+            // domain and leaves the Firefox process available for port reattach.
+            while (packets.length < requestedCount) {
+                const remainingSeconds = Math.max(0.05, (deadline - Date.now()) / 1000);
+                const result = await ctx.bridgeInstance.call('network.capture_wait', {
+                    pageIdx,
+                    timeout: remainingSeconds,
+                    count: 1,
+                    maxBodyChars,
+                });
+                const batch = result.packets || [];
+                if (batch.length === 0)
+                    break;
+                packets.push(...batch);
+                if (Date.now() >= deadline)
+                    break;
+            }
+            const result = {
+                packets,
+                bodyLimitChars: maxBodyChars,
+                completeBodies: maxBodyChars === 0,
+            };
             return {
                 content: [{ type: 'text', text: jsonResult(result) }],
             };

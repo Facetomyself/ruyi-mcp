@@ -1,5 +1,5 @@
 /**
- * Human behavior simulation tools: human_move, human_click, human_drag, human_input.
+ * Human behavior simulation tools: human_move, human_click, human_drag, human_scroll, human_input.
  * ruyi unique — no equivalent in js-reverse-mcp.
  */
 
@@ -153,6 +153,81 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
         holdMs: args.holdMs ?? 120,
         releaseMs: args.releaseMs ?? 80,
         button: args.button ?? 0,
+      }) as Record<string, unknown>;
+
+      return {
+        content: [{ type: 'text', text: jsonResult(result) }],
+      };
+    }) as ToolHandler,
+  });
+
+  // -------------------------------------------------------------------------
+  // ruyi_human_scroll
+  // -------------------------------------------------------------------------
+  register({
+    tool: {
+      name: 'ruyi_human_scroll',
+      description:
+        '使用 Firefox 原生 wheel action 做单方向、小步、随机间隔滚动。' +
+        '不会定位元素或自动回滚，适合阅读式下滑和翻页按钮渐进进入视口。',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          pageIdx: { type: 'number', default: 0 },
+          direction: {
+            type: 'string',
+            enum: ['down', 'up'],
+            default: 'down',
+          },
+          steps: {
+            type: 'number',
+            description: '滚轮步数，默认 4',
+            minimum: 1,
+            maximum: 100,
+            default: 4,
+          },
+          minStep: {
+            type: 'number',
+            description: '每步最小像素，默认 60',
+            minimum: 1,
+            maximum: 2000,
+            default: 60,
+          },
+          maxStep: {
+            type: 'number',
+            description: '每步最大像素，默认 140',
+            minimum: 1,
+            maximum: 2000,
+            default: 140,
+          },
+          minPauseMs: {
+            type: 'number',
+            description: '步间最短停顿毫秒，默认 120',
+            minimum: 0,
+            maximum: 10000,
+            default: 120,
+          },
+          maxPauseMs: {
+            type: 'number',
+            description: '步间最长停顿毫秒，默认 500',
+            minimum: 0,
+            maximum: 10000,
+            default: 500,
+          },
+        },
+        required: [],
+      },
+    },
+    handler: (async (args) => {
+      const pageIdx = getPageIdx(args, ctx);
+      const result = await ctx.bridgeInstance.call('human.scroll', {
+        pageIdx,
+        direction: args.direction ?? 'down',
+        steps: args.steps ?? 4,
+        minStep: args.minStep ?? 60,
+        maxStep: args.maxStep ?? 140,
+        minPauseMs: args.minPauseMs ?? 120,
+        maxPauseMs: args.maxPauseMs ?? 500,
       }) as Record<string, unknown>;
 
       return {

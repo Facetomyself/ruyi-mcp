@@ -14,6 +14,7 @@ import inspect
 import json
 import random
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -53,6 +54,10 @@ class FakeLaunchOptions:
         self.browser_path = None
         self.proxy = None
         self.trace_enabled = False
+        self.address = None
+        self.existing = False
+        self.close_on_exit_value = True
+        self.profile = None
         FakeLaunchOptions.instances.append(self)
 
     def set_browser_path(self, path):
@@ -65,6 +70,22 @@ class FakeLaunchOptions:
 
     def enable_trace(self, enabled=True):
         self.trace_enabled = bool(enabled)
+        return self
+
+    def set_address(self, address):
+        self.address = address
+        return self
+
+    def existing_only(self, enabled=True):
+        self.existing = bool(enabled)
+        return self
+
+    def close_on_exit(self, enabled=True):
+        self.close_on_exit_value = bool(enabled)
+        return self
+
+    def set_profile(self, profile):
+        self.profile = profile
         return self
 
 
@@ -81,6 +102,29 @@ class FakeLaunchPage:
 
     def quit(self):
         self.quit_calls += 1
+
+
+class FakeAttachBrowser:
+    _BROWSERS = {}
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self.detach_calls = 0
+        self.address = "127.0.0.1:26700"
+        self._initialized = True
+        self._BROWSERS[self.address] = self
+
+    def _detach_on_exit(self):
+        self.detach_calls += 1
+
+
+class FakeAttachPage(FakeLaunchPage):
+    _PAGES = {}
+
+    def __init__(self, options):
+        super().__init__(options)
+        self._firefox = FakeAttachBrowser()
+        self._PAGES[self._firefox.address] = self
 
 
 class FakeOrientationPage:
@@ -267,6 +311,10 @@ class FakeFramePage:
 class FakeHumanActions:
     def __init__(self):
         self.calls: list[tuple] = []
+        self._pointer_position_known = True
+        self._action_stages: list[dict] = []
+        self.curr_x = 0
+        self.curr_y = 0
 
     def move_to(self, target):
         self.calls.append(("move_to", target))
@@ -282,6 +330,24 @@ class FakeHumanActions:
 
     def human_move(self, target, style=None, algorithm=None):
         self.calls.append(("human_move", target, style, algorithm))
+        self.curr_x = 688
+        self.curr_y = 857
+        return self
+
+    def human_click(self, target, algorithm=None):
+        self.calls.append(("human_click", target, algorithm))
+        self._action_stages = [
+            {"source": "pointer", "actions": [{"type": "pointerMove", "x": 10, "y": 20}]},
+            {"source": "wait", "duration": 75},
+            {
+                "source": "pointer",
+                "actions": [
+                    {"type": "pointerDown", "button": 0},
+                    {"type": "pause", "duration": 50},
+                    {"type": "pointerUp", "button": 0},
+                ],
+            },
+        ]
         return self
 
     def release(self, on_ele=None, button=0):
@@ -298,8 +364,12 @@ class FakeHumanActions:
 
 
 class FakeHumanPage:
+    _context_id = "human-context"
+
     def __init__(self):
         self.actions = FakeHumanActions()
+        self.browser_driver = FakeWheelDriver()
+        self._driver = SimpleNamespace(_browser_driver=self.browser_driver)
         self.elements = {
             "css:#source": object(),
             "css:#target": object(),
@@ -307,6 +377,23 @@ class FakeHumanPage:
 
     def ele(self, selector):
         return self.elements.get(selector)
+
+
+class FakeWheelDriver:
+    def __init__(self):
+        self.calls: list[tuple[str, dict]] = []
+
+    def run(self, method, payload):
+        self.calls.append((method, payload))
+
+
+class FakeWheelPage:
+    _context_id = "wheel-context"
+
+    def __init__(self):
+        self.rect = SimpleNamespace(viewport_midpoint=(640.5, 477.25))
+        self.browser_driver = FakeWheelDriver()
+        self._driver = SimpleNamespace(_browser_driver=self.browser_driver)
 
 
 class FakeTracer:
@@ -377,6 +464,8 @@ class FakeTracePage:
 class RuyiBridgeContractTests(unittest.TestCase):
     def setUp(self):
         FakeLaunchOptions.instances.clear()
+        FakeAttachPage._PAGES.clear()
+        FakeAttachBrowser._BROWSERS.clear()
         self.settings = BRIDGE_MODULE.Settings
         self.original_trace_enabled = self.settings.trace_enabled
         self.settings.trace_enabled = False
@@ -403,6 +492,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "browser.quit",
             "browser.status",
             "fingerprint.set",
+            "human.scroll",
             "human.drag",
             "trace.start",
             "trace.stop",
@@ -423,6 +513,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
         with (
             patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
             patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+            patch.object(BRIDGE_MODULE, "DEFAULT_FIREFOX_PATH", None),
         ):
             for request_id, proxy_url in enumerate(proxy_urls, start=10):
                 with self.subTest(proxy_url=proxy_url):
@@ -439,6 +530,66 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     )
                     self.assertNotIn("error", response)
                     self.assertEqual(FakeLaunchOptions.instances[-1].proxy, proxy_url)
+
+    def test_bridge_attaches_existing_browser_without_owning_its_lifecycle(self):
+        with (
+            patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+            patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+        ):
+            bridge = BRIDGE_MODULE.RuyiBridge()
+            response = bridge.handle(
+                {
+                    "id": 12,
+                    "method": "browser.launch",
+                    "params": {
+                        "existingOnly": True,
+                        "address": "127.0.0.1",
+                        "port": 26700,
+                        "profilePath": "/contract/profile",
+                    },
+                }
+            )
+
+        self.assertNotIn("error", response)
+        options = FakeLaunchOptions.instances[-1]
+        self.assertEqual(options.address, "127.0.0.1:26700")
+        self.assertIsNone(options.browser_path)
+        self.assertTrue(options.existing)
+        self.assertFalse(options.close_on_exit_value)
+        self.assertEqual(options.profile, "/contract/profile")
+        self.assertTrue(response["result"]["attached"])
+        self.assertFalse(response["result"]["closeOnExit"])
+
+    def test_quit_detaches_attached_browser_without_browser_close(self):
+        with (
+            patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+            patch.object(BRIDGE_MODULE, "FirefoxPage", FakeAttachPage),
+        ):
+            bridge = BRIDGE_MODULE.RuyiBridge()
+            launch = bridge.handle(
+                {
+                    "id": 13,
+                    "method": "browser.launch",
+                    "params": {
+                        "browserPath": "/contract/fake-firefox",
+                        "existingOnly": True,
+                        "address": "127.0.0.1",
+                        "port": 26700,
+                    },
+                }
+            )
+            page = bridge.page
+            quit_response = bridge.handle(
+                {"id": 14, "method": "browser.quit", "params": {}}
+            )
+
+        self.assertNotIn("error", launch)
+        self.assertNotIn("error", quit_response)
+        self.assertEqual(page._firefox.detach_calls, 1)
+        self.assertEqual(page.quit_calls, 0)
+        self.assertFalse(page._firefox._initialized)
+        self.assertNotIn(page._firefox.address, FakeAttachPage._PAGES)
+        self.assertNotIn(page._firefox.address, FakeAttachBrowser._BROWSERS)
 
     def test_ruyipage_generates_http_and_socks_runtime_auth_files(self):
         cases = (
@@ -645,9 +796,52 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     "method": "POST",
                     "requestBody": '{"fixture":true}',
                     "responseBody": '{"ok":true}',
+                    "requestBodyTruncated": False,
+                    "responseBodyTruncated": False,
                 }
             ],
         )
+        self.assertTrue(response["result"]["completeBodies"])
+        self.assertEqual(response["result"]["bodyLimitChars"], 0)
+
+    def test_capture_wait_returns_complete_bodies_unless_limit_is_explicit(self):
+        long_body = "x" * 131072
+        packet = SimpleNamespace(
+            url="https://fixture.invalid/large",
+            status=200,
+            method="GET",
+            request_body=long_body,
+            response_body=long_body,
+        )
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeCapturePage(packet)
+        bridge.pages[0] = page
+
+        complete = bridge.handle(
+            {
+                "id": 220,
+                "method": "network.capture_wait",
+                "params": {"pageIdx": 0, "timeout": 1, "count": 1},
+            }
+        )
+        self.assertEqual(len(complete["result"]["packets"][0]["responseBody"]), len(long_body))
+        self.assertFalse(complete["result"]["packets"][0]["responseBodyTruncated"])
+
+        limited = bridge.handle(
+            {
+                "id": 221,
+                "method": "network.capture_wait",
+                "params": {
+                    "pageIdx": 0,
+                    "timeout": 1,
+                    "count": 1,
+                    "maxBodyChars": 4096,
+                },
+            }
+        )
+        self.assertEqual(len(limited["result"]["packets"][0]["responseBody"]), 4096)
+        self.assertTrue(limited["result"]["packets"][0]["responseBodyTruncated"])
+        self.assertFalse(limited["result"]["completeBodies"])
 
     def test_capture_wait_preserves_empty_and_multi_packet_results(self):
         cases = (
@@ -848,6 +1042,129 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertEqual(page.calls, [{"locator": "css:#second"}])
         self.assertEqual(response["result"]["selectedBy"], "selector")
         self.assertEqual(response["result"]["contextId"], "frame-selector-context")
+
+    def test_human_click_resets_remote_and_cached_pointer_before_perform(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeHumanPage()
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 211,
+                "method": "human.click",
+                "params": {
+                    "pageIdx": 0,
+                    "target": "#target",
+                    "algorithm": "windmouse",
+                },
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertTrue(response["result"]["clicked"])
+        self.assertTrue(response["result"]["pointerReset"])
+        self.assertTrue(response["result"]["atomicPointer"])
+        self.assertFalse(page.actions._pointer_position_known)
+        self.assertEqual(
+            page.actions.calls,
+            [
+                ("release_all",),
+                ("human_move", page.elements["css:#target"], None, "windmouse"),
+                ("perform",),
+            ],
+        )
+        self.assertEqual(len(page.browser_driver.calls), 1)
+        method, payload = page.browser_driver.calls[0]
+        self.assertEqual(method, "input.performActions")
+        self.assertEqual(payload["context"], "human-context")
+        click_actions = payload["actions"][0]["actions"]
+        self.assertEqual(click_actions[0]["type"], "pointerMove")
+        self.assertEqual((click_actions[0]["x"], click_actions[0]["y"]), (688, 857))
+        self.assertEqual(
+            [action["type"] for action in click_actions],
+            ["pointerMove", "pointerDown", "pause", "pointerUp"],
+        )
+
+    def test_human_scroll_emits_small_native_wheel_steps_in_one_direction(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeWheelPage()
+        bridge.pages[0] = page
+
+        with (
+            patch.object(BRIDGE_MODULE.random, "randint", side_effect=[70, 150, 90, 250, 110]),
+            patch.object(BRIDGE_MODULE.time, "sleep") as sleep,
+        ):
+            response = bridge.handle(
+                {
+                    "id": 212,
+                    "method": "human.scroll",
+                    "params": {
+                        "pageIdx": 0,
+                        "direction": "down",
+                        "steps": 3,
+                        "minStep": 60,
+                        "maxStep": 140,
+                        "minPauseMs": 120,
+                        "maxPauseMs": 500,
+                    },
+                }
+            )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(response["result"]["deltas"], [70, 90, 110])
+        self.assertEqual(response["result"]["pausesMs"], [150, 250])
+        self.assertEqual(response["result"]["totalDelta"], 270)
+        self.assertTrue(response["result"]["nativeWheel"])
+        sleep.assert_has_calls([unittest.mock.call(0.15), unittest.mock.call(0.25)])
+        self.assertEqual(len(page.browser_driver.calls), 3)
+        for index, (method, payload) in enumerate(page.browser_driver.calls):
+            self.assertEqual(method, "input.performActions")
+            self.assertEqual(payload["context"], "wheel-context")
+            source = payload["actions"][0]
+            self.assertEqual((source["type"], source["id"]), ("wheel", "wheel0"))
+            action = source["actions"][0]
+            self.assertEqual(action["type"], "scroll")
+            self.assertEqual((action["x"], action["y"]), (640, 477))
+            self.assertEqual(action["deltaX"], 0)
+            self.assertEqual(action["deltaY"], [70, 90, 110][index])
+
+    def test_human_scroll_supports_up_and_rejects_invalid_ranges(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeWheelPage()
+        bridge.pages[0] = page
+
+        with patch.object(BRIDGE_MODULE.random, "randint", return_value=80):
+            upward = bridge.handle(
+                {
+                    "id": 213,
+                    "method": "human.scroll",
+                    "params": {
+                        "pageIdx": 0,
+                        "direction": "up",
+                        "steps": 1,
+                        "minStep": 60,
+                        "maxStep": 140,
+                    },
+                }
+            )
+        self.assertEqual(upward["result"]["deltas"], [-80])
+
+        invalid_cases = (
+            {"direction": "sideways"},
+            {"steps": 0},
+            {"minStep": 141, "maxStep": 140},
+            {"minPauseMs": 501, "maxPauseMs": 500},
+        )
+        for offset, params in enumerate(invalid_cases):
+            with self.subTest(params=params):
+                response = bridge.handle(
+                    {
+                        "id": 214 + offset,
+                        "method": "human.scroll",
+                        "params": {"pageIdx": 0, **params},
+                    }
+                )
+                self.assertIn("error", response)
 
     def test_human_drag_builds_atomic_waited_chain(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
