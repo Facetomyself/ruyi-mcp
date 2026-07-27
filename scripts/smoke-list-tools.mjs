@@ -15,8 +15,8 @@ const client = new Client({ name: 'ruyi-mcp-smoke', version: '1.0.0' }, { capabi
 try {
   await client.connect(transport);
   const result = await client.listTools();
-  if (result.tools.length !== 57) {
-    throw new Error(`Expected 57 tools, received ${result.tools.length}`);
+  if (result.tools.length !== 59) {
+    throw new Error(`Expected 59 tools, received ${result.tools.length}`);
   }
   const humanDrag = result.tools.find((tool) => tool.name === 'ruyi_human_drag');
   if (!humanDrag) {

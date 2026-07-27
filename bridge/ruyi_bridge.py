@@ -17,6 +17,7 @@ import traceback
 import os
 import shutil
 import math
+import random
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -123,6 +124,7 @@ class RuyiBridge:
     def __init__(self):
         self.page: Optional[FirefoxPage] = None
         self.opts: Optional[FirefoxOptions] = None
+        self._attached_existing = False
         self.pages: dict[int, Any] = {}          # pageIdx → FirefoxPage/Tab
         self._next_page_idx: int = 0
         self._breakpoints: list[dict] = []        # soft breakpoint registry
@@ -180,6 +182,7 @@ class RuyiBridge:
             "human.move":            self._human_move,
             "human.click":           self._human_click,
             "human.drag":            self._human_drag,
+            "human.scroll":          self._human_scroll,
             "human.input":           self._human_input,
             # Session export
             "session.export":        self._export_session,
@@ -290,14 +293,37 @@ class RuyiBridge:
         if Settings is not None:
             Settings.trace_enabled = False
 
+        existing_only = bool(params.get("existingOnly"))
         opts = FirefoxOptions()
-        browser_path = params.get("browserPath") or DEFAULT_FIREFOX_PATH
-        if not browser_path:
-            raise RuntimeError(
-                "Firefox not found. Set RUYI_FIREFOX_PATH or install a RuyiPage browser "
-                "with: python -m ruyipage install"
-            )
-        opts.set_browser_path(browser_path)
+        if not existing_only:
+            browser_path = params.get("browserPath") or DEFAULT_FIREFOX_PATH
+            if not browser_path:
+                raise RuntimeError(
+                    "Firefox not found. Set RUYI_FIREFOX_PATH or install a RuyiPage browser "
+                    "with: python -m ruyipage install"
+                )
+            opts.set_browser_path(browser_path)
+
+        existing_address = str(params.get("address") or "127.0.0.1")
+        existing_port = params.get("port")
+        if existing_only:
+            if existing_port is None and ":" not in existing_address:
+                raise ValueError("port is required when existingOnly=true")
+            if existing_port is not None:
+                requested_port = int(existing_port)
+                address_tail = existing_address.rsplit(":", 1)[-1]
+                if address_tail.isdigit():
+                    if int(address_tail) != requested_port:
+                        raise ValueError("address port and port parameter do not match")
+                else:
+                    existing_address = f"{existing_address}:{requested_port}"
+            opts.set_address(existing_address)
+            opts.existing_only(True)
+            # An attached browser belongs to the caller, not to this bridge.
+            # Disconnecting or restarting MCP must never close that process.
+            opts.close_on_exit(False)
+        elif "closeOnExit" in params:
+            opts.close_on_exit(bool(params.get("closeOnExit")))
 
         if params.get("headless"):
             opts.headless(True)
@@ -334,6 +360,7 @@ class RuyiBridge:
 
         self.opts = opts
         self.page = FirefoxPage(opts)
+        self._attached_existing = existing_only
         if Settings is not None:
             Settings.trace_enabled = self._trace_enabled_at_launch
         self._trace_active = self._trace_enabled_at_launch
@@ -361,6 +388,10 @@ class RuyiBridge:
             "url": getattr(self.page, 'url', ''),
             "title": getattr(self.page, 'title', ''),
             "pageCount": len(self.pages),
+            "attached": existing_only,
+            "address": existing_address if existing_only else None,
+            "profilePath": params.get("profilePath"),
+            "closeOnExit": False if existing_only else bool(params.get("closeOnExit", True)),
         }
 
     def _quit(self, params: dict) -> dict:
@@ -371,7 +402,34 @@ class RuyiBridge:
         self._trace_active = False
         if self.page:
             try:
-                self.page.quit()
+                if self._attached_existing:
+                    browser = getattr(self.page, "_firefox", None)
+                    detach = getattr(browser, "_detach_on_exit", None)
+                    if not callable(detach):
+                        raise RuntimeError("ruyiPage attach session has no detach-only API")
+                    detach()
+                    address = getattr(browser, "address", None) or getattr(
+                        browser, "_address", None
+                    )
+                    if address:
+                        # ruyiPage caches explicit attach objects by address.
+                        # Evict both levels after detach so a later attach in
+                        # the same bridge process creates a fresh BiDi driver.
+                        page_cache = getattr(type(self.page), "_PAGES", None)
+                        if isinstance(page_cache, dict):
+                            page_cache.pop(address, None)
+                        browser_cache = getattr(type(browser), "_BROWSERS", None)
+                        if isinstance(browser_cache, dict):
+                            lock = getattr(type(browser), "_lock", None)
+                            if lock is None:
+                                browser_cache.pop(address, None)
+                            else:
+                                with lock:
+                                    browser_cache.pop(address, None)
+                        if hasattr(browser, "_initialized"):
+                            browser._initialized = False
+                else:
+                    self.page.quit()
             except Exception:
                 pass
         self.page = None
@@ -384,6 +442,7 @@ class RuyiBridge:
         self._preload_scripts = {}
         self._fingerprint_ctx = None
         self._frame_obj = {}
+        self._attached_existing = False
         return {}
 
     def _status(self, params: dict) -> dict:
@@ -680,6 +739,12 @@ class RuyiBridge:
         page = self._get_page(params.get("pageIdx", 0))
         timeout = params.get("timeout", 10)
         count = params.get("count", 5)
+        max_body_chars = params.get("maxBodyChars", 0)
+        if max_body_chars is None:
+            max_body_chars = 0
+        max_body_chars = int(max_body_chars)
+        if max_body_chars < 0:
+            raise ValueError("maxBodyChars must be >= 0; use 0 for complete bodies")
         capture_result = page.capture.wait(timeout=timeout, count=count)
         if isinstance(capture_result, list):
             packets = capture_result
@@ -690,16 +755,34 @@ class RuyiBridge:
         results = []
         for p in packets:
             try:
+                request_body = str(getattr(p, 'request_body', ''))
+                response_body = str(getattr(p, 'response_body', ''))
+                request_truncated = bool(max_body_chars and len(request_body) > max_body_chars)
+                response_truncated = bool(max_body_chars and len(response_body) > max_body_chars)
+                if request_truncated:
+                    request_body = request_body[:max_body_chars]
+                if response_truncated:
+                    response_body = response_body[:max_body_chars]
                 results.append({
                     "url": getattr(p, 'url', str(p)),
                     "status": getattr(p, 'status', None),
                     "method": getattr(p, 'method', None),
-                    "requestBody": str(getattr(p, 'request_body', ''))[:5000],
-                    "responseBody": str(getattr(p, 'response_body', ''))[:5000],
+                    "requestBody": request_body,
+                    "responseBody": response_body,
+                    "requestBodyTruncated": request_truncated,
+                    "responseBodyTruncated": response_truncated,
                 })
             except Exception:
-                results.append({"raw": str(p)[:5000]})
-        return {"packets": results}
+                raw = str(p)
+                raw_truncated = bool(max_body_chars and len(raw) > max_body_chars)
+                if raw_truncated:
+                    raw = raw[:max_body_chars]
+                results.append({"raw": raw, "rawTruncated": raw_truncated})
+        return {
+            "packets": results,
+            "bodyLimitChars": max_body_chars,
+            "completeBodies": max_body_chars == 0,
+        }
 
     # ------------------------------------------------------------------
     # Cookies
@@ -1088,8 +1171,121 @@ class RuyiBridge:
         if el is None or (NoneElement and isinstance(el, NoneElement)):
             return {"found": False, "error": f"Element not found: {selector}"}
 
-        page.actions.human_click(el, algorithm=algorithm).perform()
-        return {"clicked": True, "target": selector, "algorithm": algorithm}
+        actions = page.actions
+        # Firefox may keep a stale BiDi pointer source after many document
+        # navigations. performActions can still return success while the page
+        # receives no pointerdown/click events. Reset both the remote source
+        # and ruyiPage's cached coordinates before building the next click.
+        actions.release_all()
+        if hasattr(actions, "_pointer_position_known"):
+            actions._pointer_position_known = False
+        # Keep the long human trajectory separate, then send a short atomic
+        # click pulse that includes its own final pointerMove. Firefox does not
+        # reliably preserve pointer coordinates across performActions calls,
+        # and very long action arrays may never dispatch a trailing down/up.
+        actions.human_move(el, algorithm=algorithm).perform()
+        click_x = int(actions.curr_x)
+        click_y = int(actions.curr_y)
+        click_source_id = f"mouse-click-{random.randint(100000, 999999)}"
+        driver = page._driver._browser_driver
+        driver.run(
+            "input.performActions",
+            {
+                "context": page._context_id,
+                "actions": [
+                    {
+                        "type": "pointer",
+                        "id": click_source_id,
+                        "parameters": {"pointerType": "mouse"},
+                        "actions": [
+                            {
+                                "type": "pointerMove",
+                                "x": click_x,
+                                "y": click_y,
+                                "duration": random.randint(20, 60),
+                            },
+                            {"type": "pointerDown", "button": 0},
+                            {"type": "pause", "duration": random.randint(40, 90)},
+                            {"type": "pointerUp", "button": 0},
+                        ],
+                    }
+                ],
+            },
+        )
+        return {
+            "clicked": True,
+            "target": selector,
+            "algorithm": algorithm,
+            "pointerReset": True,
+            "atomicPointer": True,
+            "clickPoint": {"x": click_x, "y": click_y},
+            "freshPointerSource": True,
+        }
+
+    def _human_scroll(self, params: dict) -> dict:
+        """Perform small, one-direction native wheel steps with random pauses."""
+        page = self._get_page(params.get("pageIdx", 0))
+        direction = str(params.get("direction", "down")).strip().lower()
+        steps = int(params.get("steps", 4))
+        min_step = int(params.get("minStep", 60))
+        max_step = int(params.get("maxStep", 140))
+        min_pause_ms = int(params.get("minPauseMs", 120))
+        max_pause_ms = int(params.get("maxPauseMs", 500))
+
+        if direction not in {"down", "up"}:
+            raise ValueError("direction must be down or up")
+        if not 1 <= steps <= 100:
+            raise ValueError("steps must be between 1 and 100")
+        if not 1 <= min_step <= max_step <= 2000:
+            raise ValueError("minStep/maxStep must satisfy 1 <= minStep <= maxStep <= 2000")
+        if not 0 <= min_pause_ms <= max_pause_ms <= 10000:
+            raise ValueError(
+                "minPauseMs/maxPauseMs must satisfy 0 <= minPauseMs <= maxPauseMs <= 10000"
+            )
+
+        viewport_x, viewport_y = page.rect.viewport_midpoint
+        sign = 1 if direction == "down" else -1
+        deltas = []
+        pauses = []
+        driver = page._driver._browser_driver
+        for index in range(steps):
+            delta = sign * random.randint(min_step, max_step)
+            driver.run(
+                "input.performActions",
+                {
+                    "context": page._context_id,
+                    "actions": [
+                        {
+                            "type": "wheel",
+                            "id": "wheel0",
+                            "actions": [
+                                {
+                                    "type": "scroll",
+                                    "x": int(viewport_x),
+                                    "y": int(viewport_y),
+                                    "deltaX": 0,
+                                    "deltaY": delta,
+                                }
+                            ],
+                        }
+                    ],
+                },
+            )
+            deltas.append(delta)
+            if index + 1 < steps:
+                pause_ms = random.randint(min_pause_ms, max_pause_ms)
+                pauses.append(pause_ms)
+                time.sleep(pause_ms / 1000.0)
+
+        return {
+            "scrolled": True,
+            "direction": direction,
+            "steps": steps,
+            "deltas": deltas,
+            "pausesMs": pauses,
+            "totalDelta": sum(deltas),
+            "nativeWheel": True,
+        }
 
     def _human_drag(self, params: dict) -> dict:
         """Perform one atomic, human-like pointer drag."""
@@ -1167,7 +1363,14 @@ class RuyiBridge:
 
         if "cookies" in include:
             try:
-                session["cookies"] = _serialize(page.get_cookies())
+                # Keep export_session compatible with get_cookies.  CookieInfo
+                # is a Python object and the generic serializer degrades it to
+                # "<...CookieInfo object at ...>", which makes HTTP replay
+                # impossible and may leak a meaningless process address.
+                cookie_result = self._get_cookies({"pageIdx": params.get("pageIdx", 0)})
+                session["cookies"] = cookie_result.get("cookies", [])
+                if cookie_result.get("error"):
+                    session["cookiesError"] = cookie_result["error"]
             except Exception as e:
                 session["cookiesError"] = str(e)
 

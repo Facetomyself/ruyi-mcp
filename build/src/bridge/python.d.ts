@@ -18,7 +18,7 @@ export declare class PythonBridge {
     private resetReadyPromise;
     private rejectAllPending;
     private closeReadline;
-    private killProcessTree;
+    private killBridgeProcess;
     start(): Promise<void>;
     stop(): Promise<void>;
     private waitForExit;

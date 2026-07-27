@@ -10,7 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createServer } from './server.js';
 import { PythonBridge } from './bridge/python.js';
 async function main() {
-    console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.5...');
+    console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.6...');
     console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
     console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
     console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
@@ -37,6 +37,9 @@ async function main() {
     try {
         const server = await createServer(bridge);
         const transport = new StdioServerTransport();
+        server.onclose = () => {
+            void shutdown('MCP transport closed', 0);
+        };
         console.error('[ruyi-mcp] Connecting to MCP transport...');
         await server.connect(transport);
         console.error('[ruyi-mcp] Ready. Waiting for MCP requests...');

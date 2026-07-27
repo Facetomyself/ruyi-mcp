@@ -107,6 +107,9 @@ def run_gate(firefox_path: Path, cycles: int, cleanup_timeout: float, headless: 
             assert len(packets) == 2, packets
             assert [packet["status"] for packet in packets] == [302, 200], packets
             assert "ruyi capture lifecycle" in (packets[1]["responseBody"] or "")
+            assert len(packets[1]["responseBody"].encode("utf-8")) == len(HTML_BODY)
+            assert packets[1]["responseBodyTruncated"] is False
+            assert capture_result["completeBodies"] is True
 
             stop_result = bridge._capture_stop(
                 {
