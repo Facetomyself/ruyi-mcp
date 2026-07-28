@@ -1,5 +1,10 @@
 # Upstream adoption audit — 2026-07-27
 
+> Follow-up: the dependency advisory recorded below was resolved by the
+> [`2026-07-28` MCP SDK security update](dependency-security-2026-07-28.md)
+> and released as `ruyi-mcp 0.1.7`. Browser and Ruyi Trace conclusions in this
+> dated audit remain unchanged.
+
 ## Scope and evidence path
 
 This audit follows the browser-facing dependencies used around `ruyi-mcp`:

@@ -32,6 +32,7 @@
 
 | ruyi-mcp | ruyiPage | Node.js | Python | 验证环境 |
 |----------|----------|---------|--------|----------|
+| `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 安全基线 + 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
 | `v0.1.5` | `1.2.54` | `>=20` | `>=3.10` | 21 Bridge contracts + 20 轮 capture runtime gate + 57 tools stdio smoke |
 | `v0.1.4` | `1.2.54` | `>=20` | `>=3.10` | Bridge contract + TypeScript build + 57 tools stdio smoke |
@@ -40,7 +41,7 @@
 
 仓库对 `ruyiPage` 使用精确版本锁定。升级兼容版本前会重新执行 Bridge contract、TypeScript build 和 59 tools stdio smoke test。
 
-最新浏览器上游 release、commit、issue、PR 与 Trace 取舍见 [`docs/upstream-audit-2026-07-27.md`](docs/upstream-audit-2026-07-27.md)；`1.2.50...1.2.54` 的源码与 wheel 基线对比仍保留在 [`2026-07-18` 审计](docs/upstream-audit-2026-07-18.md)。
+最新浏览器上游 release、commit、issue、PR 与 Trace 取舍见 [`docs/upstream-audit-2026-07-27.md`](docs/upstream-audit-2026-07-27.md)；MCP SDK 安全更新见 [`docs/dependency-security-2026-07-28.md`](docs/dependency-security-2026-07-28.md)；`1.2.50...1.2.54` 的源码与 wheel 基线对比仍保留在 [`2026-07-18` 审计](docs/upstream-audit-2026-07-18.md)。
 
 ## 安装
 
@@ -121,7 +122,7 @@ Firefox 必须以 `--remote-debugging-port=<port>` 启动。MCP 重启后调用�
 
 ```bash
 npm run check
-npm audit --audit-level=high
+npm audit --omit=dev
 ```
 
 `npm run check` 会执行 TypeScript typecheck、Python 语法检查、27 项 Bridge contract、构建和 59 tools stdio smoke test；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 不截断。
