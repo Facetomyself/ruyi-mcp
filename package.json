@@ -1,6 +1,6 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Community MCP server for ruyiPage browser automation, network inspection, fingerprint analysis, and WebDriver BiDi trace workflows",
   "private": true,
   "license": "MIT",
@@ -20,7 +20,7 @@
   },
   "keywords": ["mcp", "mcp-server", "ruyipage", "browser-automation", "firefox", "webdriver-bidi", "network-inspection", "fingerprinting", "trace"],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.21.1"
+    "@modelcontextprotocol/sdk": "^1.30.0"
   },
   "devDependencies": {
     "@types/node": "^24.3.3",

@@ -32,6 +32,7 @@ This project is independently maintained by the community. It is not an official
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
+| `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 security baseline + 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
 | `v0.1.5` | `1.2.54` | `>=20` | `>=3.10` | 21 Bridge contracts + 20-cycle capture runtime gate + 57-tool stdio smoke |
 | `v0.1.4` | `1.2.54` | `>=20` | `>=3.10` | Bridge contract + TypeScript build + 57-tool stdio smoke |
@@ -40,7 +41,7 @@ This project is independently maintained by the community. It is not an official
 
 The repository pins an exact ruyiPage version. Before changing that compatibility target, the Bridge contract, TypeScript build, and 59-tool stdio smoke test are run again.
 
-See [`docs/upstream-audit-2026-07-27.md`](docs/upstream-audit-2026-07-27.md) for the latest browser release, commit, issue, PR, and Trace adoption decisions. The `1.2.50...1.2.54` source/wheel baseline remains in the [`2026-07-18` audit](docs/upstream-audit-2026-07-18.md).
+See [`docs/upstream-audit-2026-07-27.md`](docs/upstream-audit-2026-07-27.md) for the latest browser release, commit, issue, PR, and Trace adoption decisions, and [`docs/dependency-security-2026-07-28.md`](docs/dependency-security-2026-07-28.md) for the MCP SDK security update. The `1.2.50...1.2.54` source/wheel baseline remains in the [`2026-07-18` audit](docs/upstream-audit-2026-07-18.md).
 
 ## Installation
 
@@ -121,7 +122,7 @@ The tool connects to the existing BiDi endpoint without creating a process or na
 
 ```bash
 npm run check
-npm audit --audit-level=high
+npm audit --omit=dev
 ```
 
 `npm run check` runs TypeScript type checking, Python syntax checks, 27 Bridge contracts, the build, and a 59-tool stdio smoke test. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is not truncated.
