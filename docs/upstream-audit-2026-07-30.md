@@ -178,7 +178,7 @@ The latest ruyiPage [Actions run 30510171796](https://github.com/LoseNine/ruyipa
 
 ## Implemented adaptation and final gates
 
-The adaptation was implemented on `chore/ruyipage-1.2.56-adaptation` without changing the parent gitlink or MCP runtime configuration.
+The adaptation was implemented and published on `chore/ruyipage-1.2.56-adaptation`. MCP configuration and the default runtime remain unchanged; the parent gitlink is updated separately and only after the referenced subrepo commit is available on the remote branch.
 
 | Gate | Result | Evidence |
 |------|--------|----------|
@@ -231,7 +231,7 @@ The 1.2.56 package installer still selects release `151-ruyi` and the old undate
 
 ## Shortest safe implementation plan
 
-Status: Phases 0 through 4 and the package-side portion of Phase 5 are complete on the adaptation branch. Commit/push, merge, and the separate parent gitlink update have not been performed.
+Status: Phases 0 through 4 and the package-side portion of Phase 5 are complete. The adaptation implementation was committed as `c1d391e` and pushed to `origin/chore/ruyipage-1.2.56-adaptation`; merge/release and the separate parent gitlink update remain independent follow-up operations.
 
 ### Phase 0 — preserve rollback evidence
 
@@ -284,7 +284,7 @@ Only after all mandatory gates pass:
 
 1. release `ruyi-mcp 0.1.8` with `ruyiPage==1.2.56`;
 2. update bilingual README compatibility text, runtime docs, audit links, and tracked build;
-3. merge the subrepo change, then update the parent gitlink in a separate, reviewable parent commit;
+3. publish the subrepo commit first, then update the parent gitlink to that remotely reachable commit in a separate, reviewable parent commit; merge/release remains a repository-maintainer decision;
 4. keep `151-proxy` as default unless a candidate browser separately proves every required capability.
 
 Rollback is the exact previous dependency pin and gitlink. Because the default runtime is not changed during the package adaptation, browser rollback remains immediate.
@@ -294,5 +294,5 @@ Rollback is the exact previous dependency pin and gitlink. Because the default r
 - Firefox 155 remains blocked for the current capture bridge because system-context evaluation requires `-remote-allow-system-access`; adding that launch capability needs a separate security/compatibility decision and regression gate.
 - The two public Firefox 151 candidates passed non-proxy gates, but credentialed HTTP/SOCKS5, fingerprint, and DOMTrace equivalence with the preserved `151-proxy` runtime remain unproved.
 - Project CI still covers only Ubuntu, Node.js 20, and Python 3.13; Windows and minimum/current runtime version matrices remain follow-up hardening rather than evidence supplied by upstream CI.
-- Git transport to `github.com:443` failed, but GitHub CLI/API remained available and verified remote refs and evidence surfaces.
-- The adaptation branch, exact dependency pin, local project venv, tool schema, and tracked build now target 1.2.56/0.1.8. No MCP config, default runtime path, parent gitlink, commit, merge, or push was performed.
+- Initial Git transport to `github.com:443` timed out, while GitHub CLI/API continued to verify remote refs and evidence surfaces. A later retry published the dedicated adaptation branch successfully.
+- The published adaptation branch, exact dependency pin, local project venv, tool schema, and tracked build now target 1.2.56/0.1.8. No MCP config or default runtime path changed. Parent gitlink maintenance follows the subrepo-first publication order; merge and release have not been performed.
