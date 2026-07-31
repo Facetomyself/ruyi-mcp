@@ -315,7 +315,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
       name: 'ruyi_select_frame',
       description:
         '选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；' +
-        '也可传 selector，由 ruyiPage 1.2.54 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。' +
+        '也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。' +
         '选择后的 frame 可在后续 evaluate_script 中通过 frameContextId 参数操作。',
       inputSchema: {
         type: 'object',

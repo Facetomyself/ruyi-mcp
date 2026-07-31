@@ -8,42 +8,76 @@
  */
 
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createServer } from './server.js';
+import { cleanupServer, createServer } from './server.js';
 import { PythonBridge } from './bridge/python.js';
 
 async function main(): Promise<void> {
-  console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.7...');
+  console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.8...');
   console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
   console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
   console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
   console.error('[ruyi-mcp] Trace: ruyiPage WebDriver BiDi JSON Trace');
 
   const bridge = new PythonBridge();
-  let shuttingDown = false;
+  let server: Awaited<ReturnType<typeof createServer>> | null = null;
+  let shutdownPromise: Promise<void> | null = null;
 
-  async function shutdown(signal: string, code = 0): Promise<void> {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.error(`[ruyi-mcp] ${signal} received`);
-    await bridge.stop().catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[ruyi-mcp] Bridge stop failed: ${message}`);
-    });
-    process.exit(code);
+  function shutdown(reason: string, code = 0, transportClosed = false): Promise<void> {
+    if (code !== 0 || process.exitCode === undefined) {
+      process.exitCode = code;
+    }
+
+    if (!shutdownPromise) {
+      // Use a microtask so shutdownPromise is assigned before server.close()
+      // can synchronously invoke server.onclose and re-enter this function.
+      shutdownPromise = Promise.resolve().then(async () => {
+        console.error(`[ruyi-mcp] ${reason} received`);
+        const activeServer = server;
+
+        if (activeServer && !transportClosed) {
+          await activeServer.close().catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[ruyi-mcp] Server close failed: ${message}`);
+          });
+        }
+
+        if (activeServer) {
+          await cleanupServer(activeServer);
+        } else {
+          await bridge.stop().catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[ruyi-mcp] Bridge stop failed: ${message}`);
+          });
+        }
+      });
+    }
+
+    return shutdownPromise;
   }
 
-  process.on('SIGINT', () => {
+  process.once('SIGINT', () => {
     void shutdown('SIGINT', 0);
   });
-  process.on('SIGTERM', () => {
+  process.once('SIGTERM', () => {
     void shutdown('SIGTERM', 0);
+  });
+  process.stdin.once('end', () => {
+    void shutdown('stdin EOF', 0);
+  });
+  process.stdin.once('close', () => {
+    void shutdown('stdin closed', 0);
+  });
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    const isPipeClose = err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED';
+    void shutdown(isPipeClose ? 'stdout EPIPE' : `stdout error: ${err.message}`, isPipeClose ? 0 : 1);
   });
 
   try {
-    const server = await createServer(bridge);
+    server = await createServer(bridge);
     const transport = new StdioServerTransport();
     server.onclose = () => {
-      void shutdown('MCP transport closed', 0);
+      void cleanupServer(server!);
+      void shutdown('MCP transport closed', 0, true);
     };
 
     console.error('[ruyi-mcp] Connecting to MCP transport...');
@@ -53,8 +87,7 @@ async function main(): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[ruyi-mcp] Fatal: ${message}`);
-    await bridge.stop().catch(() => {});
-    process.exit(1);
+    await shutdown('fatal error', 1);
   }
 }
 

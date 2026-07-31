@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import inspect
+import io
 import json
 import random
 import tempfile
@@ -18,16 +19,20 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import ruyipage
 from ruyipage import FirefoxOptions
+from ruyipage._base import browser as browser_module
+from ruyipage._base.browser import Firefox
+from ruyipage._bidi import network as bidi_network
 from ruyipage._fingerprint import builder as fingerprint_builder
 from ruyipage._pages.firefox_base import FirefoxBase
 from ruyipage._units.actions import Actions
+from ruyipage.errors import BrowserConnectError
 
 
-EXPECTED_RUYIPAGE_VERSION = "1.2.54"
+EXPECTED_RUYIPAGE_VERSION = "1.2.56"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "bridge" / "ruyi_bridge.py"
 REQUIREMENTS_PATH = REPO_ROOT / "requirements.txt"
@@ -128,11 +133,49 @@ class FakeAttachPage(FakeLaunchPage):
 
 
 class FakeOrientationPage:
-    def __init__(self):
-        self.calls: list[tuple[str, int]] = []
+    def __init__(self, *, apply_orientation=True):
+        self.calls: list[tuple[str]] = []
+        self.apply_orientation = apply_orientation
+        self.orientation_type = "landscape-primary"
 
-    def set_screen_orientation(self, *, orientation_type, angle=0):
-        self.calls.append((orientation_type, angle))
+    def set_screen_orientation(self, *, orientation_type):
+        self.calls.append((orientation_type,))
+        if self.apply_orientation:
+            self.orientation_type = orientation_type
+
+    def run_js(self, _expression):
+        return {"type": self.orientation_type, "angle": 0}
+
+
+class FakeFirefoxProcess:
+    def __init__(self, pid):
+        self.pid = pid
+        self.events: list[object] = []
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        self.events.append("kill")
+
+    def terminate(self):
+        self.events.append("terminate")
+
+    def wait(self, timeout=None):
+        self.events.append(("wait", timeout))
+
+
+def make_upstream_browser_for_quit(options, process):
+    browser = object.__new__(Firefox)
+    browser._quit_lock = threading.RLock()
+    browser._driver = None
+    browser._owns_session = False
+    browser._process = process
+    browser._options = options
+    browser._auto_profile = None
+    browser._address = options.address
+    browser._initialized = True
+    return browser
 
 
 class FakeFingerprintPage:
@@ -466,12 +509,16 @@ class RuyiBridgeContractTests(unittest.TestCase):
         FakeLaunchOptions.instances.clear()
         FakeAttachPage._PAGES.clear()
         FakeAttachBrowser._BROWSERS.clear()
+        Firefox._BROWSERS.clear()
+        Firefox._RESERVED_PORTS.clear()
         self.settings = BRIDGE_MODULE.Settings
         self.original_trace_enabled = self.settings.trace_enabled
         self.settings.trace_enabled = False
 
     def tearDown(self):
         self.settings.trace_enabled = self.original_trace_enabled
+        Firefox._BROWSERS.clear()
+        Firefox._RESERVED_PORTS.clear()
 
     def test_exact_ruyipage_version_is_installed_and_pinned(self):
         requirements = REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines()
@@ -591,6 +638,131 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertNotIn(page._firefox.address, FakeAttachPage._PAGES)
         self.assertNotIn(page._firefox.address, FakeAttachBrowser._BROWSERS)
 
+    def test_ruyipage_1256_failed_owned_startup_cleans_process_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "profile"
+            processes = [FakeFirefoxProcess(1001), FakeFirefoxProcess(1002)]
+            instances = []
+            taskkill_calls = []
+
+            def launch(browser):
+                profile.mkdir(exist_ok=True)
+                browser._auto_profile = str(profile)
+                browser._reserve_port(9222)
+                browser._process = processes.pop(0)
+                Firefox._BROWSERS["stale"] = browser
+                instances.append(browser)
+
+            with (
+                patch.object(browser_module.sys, "platform", "win32"),
+                patch.object(
+                    Firefox,
+                    "_ensure_launch_port_available",
+                    lambda browser: None,
+                ),
+                patch.object(Firefox, "_launch_browser", launch),
+                patch.object(Firefox, "_wait_for_connection", lambda browser: False),
+                patch.object(
+                    browser_module.subprocess,
+                    "run",
+                    side_effect=lambda command, **kwargs: taskkill_calls.append(command),
+                ),
+            ):
+                options = FirefoxOptions().set_address("127.0.0.1:9222")
+                with self.assertRaises(BrowserConnectError):
+                    Firefox(options)
+
+            self.assertEqual(
+                {tuple(command) for command in taskkill_calls},
+                {
+                    ("taskkill", "/F", "/T", "/PID", "1001"),
+                    ("taskkill", "/F", "/T", "/PID", "1002"),
+                },
+            )
+            self.assertIsNone(instances[-1]._process)
+            self.assertIsNone(instances[-1]._auto_profile)
+            self.assertFalse(profile.exists())
+            self.assertNotIn(9222, Firefox._RESERVED_PORTS)
+            self.assertFalse(Firefox._BROWSERS)
+
+    def test_ruyipage_1256_failed_existing_only_startup_preserves_process(self):
+        external_process = FakeFirefoxProcess(2001)
+        instances = []
+        taskkill_calls = []
+
+        def try_connect(browser):
+            browser._process = external_process
+            instances.append(browser)
+            return False
+
+        with (
+            patch.object(browser_module.sys, "platform", "win32"),
+            patch.object(Firefox, "_try_connect", try_connect),
+            patch.object(
+                browser_module.subprocess,
+                "run",
+                side_effect=lambda command, **kwargs: taskkill_calls.append(command),
+            ),
+        ):
+            options = (
+                FirefoxOptions()
+                .set_address("127.0.0.1:9223")
+                .existing_only(True)
+            )
+            with self.assertRaises(BrowserConnectError):
+                Firefox(options)
+
+        self.assertEqual(external_process.events, [])
+        self.assertEqual(taskkill_calls, [])
+        self.assertIsNone(instances[-1]._process)
+        self.assertFalse(Firefox._BROWSERS)
+
+    def test_ruyipage_1256_force_quit_terminates_owned_process_tree(self):
+        process = FakeFirefoxProcess(3001)
+        taskkill_calls = []
+        browser = make_upstream_browser_for_quit(FirefoxOptions(), process)
+
+        with (
+            patch.object(browser_module.sys, "platform", "win32"),
+            patch.object(
+                browser_module.subprocess,
+                "run",
+                side_effect=lambda command, **kwargs: taskkill_calls.append(command),
+            ),
+        ):
+            browser.quit(force=True)
+
+        self.assertEqual(
+            taskkill_calls,
+            [["taskkill", "/F", "/T", "/PID", "3001"]],
+        )
+        self.assertEqual(process.events, [("wait", 5)])
+        self.assertIsNone(browser._process)
+
+    def test_ruyipage_1256_existing_only_quit_detaches_external_process(self):
+        process = FakeFirefoxProcess(4001)
+        options = FirefoxOptions().existing_only(True)
+        browser = make_upstream_browser_for_quit(options, process)
+        driver_events = []
+        browser._driver = SimpleNamespace(
+            mark_closing=lambda: driver_events.append("mark_closing"),
+            stop=lambda: driver_events.append("stop"),
+        )
+
+        with (
+            patch.object(browser_module.sys, "platform", "win32"),
+            patch.object(browser, "_teardown_proxy_auth") as teardown_proxy_auth,
+            patch.object(browser_module.subprocess, "run") as subprocess_run,
+        ):
+            browser.quit(force=True)
+
+        self.assertEqual(driver_events, ["mark_closing", "stop"])
+        teardown_proxy_auth.assert_called_once_with()
+        subprocess_run.assert_not_called()
+        self.assertEqual(process.events, [])
+        self.assertIsNone(browser._process)
+        self.assertIsNone(browser._driver)
+
     def test_ruyipage_generates_http_and_socks_runtime_auth_files(self):
         cases = (
             (
@@ -628,7 +800,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 self.assertNotIn("user%", user_js)
                 self.assertNotIn("pa%24%24", user_js)
 
-    def test_ruyipage_1254_window_fingerprint_and_action_contracts(self):
+    def test_ruyipage_1256_window_fingerprint_and_action_contracts(self):
         smart_signature = inspect.signature(fingerprint_builder.apply_smart_fingerprint)
         self.assertFalse(smart_signature.parameters["set_window_size_on_opts"].default)
         emulation_signature = inspect.signature(
@@ -701,7 +873,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
             page.calls,
             [
                 ("set_window_size", 1280, 720, None),
-                ("set_screen_size", 1366, 768, 1.25),
+                ("set_screen_size", 1366, 768, None),
             ],
         )
         self.assertEqual(response["result"]["size"]["mode"], "windowSize")
@@ -717,8 +889,14 @@ class RuyiBridgeContractTests(unittest.TestCase):
             page.actual_screen,
         )
         self.assertFalse(response["result"]["screenSize"]["devicePixelRatioApplied"])
-        self.assertIn("ignored", response["result"]["warnings"][0])
-        self.assertIn("not applied", response["result"]["warnings"][1])
+        self.assertIn(
+            "windowSize.devicePixelRatio is ignored",
+            response["result"]["warnings"][0],
+        )
+        self.assertIn(
+            "screenSize.devicePixelRatio is ignored",
+            response["result"]["warnings"][1],
+        )
 
         viewport_bridge = BRIDGE_MODULE.RuyiBridge()
         viewport_page = FakeFingerprintPage()
@@ -764,6 +942,41 @@ class RuyiBridgeContractTests(unittest.TestCase):
             }
         )
         self.assertIn("error", invalid)
+
+    def test_ruyipage_1256_data_collector_uses_current_bidi_payload(self):
+        class RecordingDriver:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, method, params=None, **kwargs):
+                self.calls.append((method, params, kwargs))
+                return {"collector": "fixture-collector"}
+
+        driver = RecordingDriver()
+        result = bidi_network.add_data_collector(
+            driver,
+            events=["network.responseCompleted"],
+            contexts="context-1",
+            max_encoded_data_size=131072,
+            data_types=["response"],
+            collector_type="blob",
+        )
+
+        self.assertEqual(result, {"collector": "fixture-collector"})
+        self.assertEqual(len(driver.calls), 1)
+        method, payload, kwargs = driver.calls[0]
+        self.assertEqual(method, "network.addDataCollector")
+        self.assertEqual(kwargs, {})
+        self.assertEqual(
+            payload,
+            {
+                "dataTypes": ["response"],
+                "maxEncodedDataSize": 131072,
+                "collectorType": "blob",
+                "contexts": ["context-1"],
+            },
+        )
+        self.assertNotIn("events", payload)
 
     def test_capture_wait_normalizes_count_one_packet_to_list(self):
         packet = SimpleNamespace(
@@ -1025,7 +1238,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertEqual(bridge.pages, {0: page})
         self.assertEqual(bridge._next_page_idx, 1)
 
-    def test_frame_selector_uses_ruyipage_1254_content_window_mapping(self):
+    def test_frame_selector_uses_ruyipage_1256_content_window_mapping(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
         page = FakeFramePage()
         bridge.pages[0] = page
@@ -1203,7 +1416,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
             ],
         )
 
-    def test_orientation_handler_uses_orientation_type_keyword(self):
+    def test_orientation_handler_ignores_unsupported_angle(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
         page = FakeOrientationPage()
         bridge.pages[0] = page
@@ -1223,7 +1436,58 @@ class RuyiBridgeContractTests(unittest.TestCase):
         )
 
         self.assertNotIn("error", response)
-        self.assertEqual(page.calls, [("landscape-primary", 90)])
+        self.assertEqual(page.calls, [("landscape-primary",)])
+        self.assertEqual(
+            response["result"]["screenOrientation"],
+            {
+                "requested": {"type": "landscape-primary", "angle": 90},
+                "forwarded": {"type": "landscape-primary"},
+                "typeForwarded": True,
+                "verified": True,
+                "actual": {"type": "landscape-primary", "angle": 0},
+                "applied": {"type": "landscape-primary"},
+                "typeApplied": True,
+                "angleApplied": False,
+            },
+        )
+        self.assertIn(
+            "screenOrientation.angle is ignored",
+            response["result"]["warnings"][0],
+        )
+
+    def test_orientation_handler_does_not_claim_unsupported_type(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeOrientationPage(apply_orientation=False)
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 21,
+                "method": "fingerprint.set",
+                "params": {
+                    "pageIdx": 0,
+                    "screenOrientation": {"type": "portrait-primary"},
+                },
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(page.calls, [("portrait-primary",)])
+        self.assertEqual(
+            response["result"]["screenOrientation"],
+            {
+                "requested": {"type": "portrait-primary"},
+                "forwarded": {"type": "portrait-primary"},
+                "typeForwarded": True,
+                "verified": True,
+                "typeApplied": False,
+                "actual": {"type": "landscape-primary", "angle": 0},
+            },
+        )
+        self.assertIn(
+            "screenOrientation.type was forwarded but not applied",
+            response["result"]["warnings"][0],
+        )
 
     def test_runtime_trace_start_clears_old_buffer_and_stop_preserves_dump(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
@@ -1407,6 +1671,45 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertFalse(options.trace_enabled)
         self.assertEqual(page.quit_calls, 1)
         self.assertEqual(page.quit_trace_states, [(False, False)])
+
+    def test_bridge_run_stdin_eof_uses_common_cleanup_path(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        bridge._quit = Mock(return_value={})
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            patch.object(BRIDGE_MODULE.sys, "stdin", io.StringIO("")),
+            patch.object(BRIDGE_MODULE.sys, "stdout", stdout),
+            patch.object(BRIDGE_MODULE.sys, "stderr", stderr),
+        ):
+            bridge.run()
+
+        bridge._quit.assert_called_once_with({})
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("[ruyi_bridge] Ready", stderr.getvalue())
+        self.assertIn("[ruyi_bridge] Shutdown complete", stderr.getvalue())
+
+    def test_bridge_run_explicit_shutdown_uses_common_cleanup_once(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        bridge._quit = Mock(return_value={})
+        stdin = io.StringIO(
+            json.dumps({"id": 99, "method": "__shutdown__", "params": {}}) + "\n"
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            patch.object(BRIDGE_MODULE.sys, "stdin", stdin),
+            patch.object(BRIDGE_MODULE.sys, "stdout", stdout),
+            patch.object(BRIDGE_MODULE.sys, "stderr", stderr),
+        ):
+            bridge.run()
+
+        bridge._quit.assert_called_once_with({})
+        response = json.loads(stdout.getvalue())
+        self.assertEqual(response, {"id": 99, "result": {"shutdown": True}})
+        self.assertIn("[ruyi_bridge] Shutdown complete", stderr.getvalue())
 
 
 if __name__ == "__main__":

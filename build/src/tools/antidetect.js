@@ -47,7 +47,7 @@ export function registerAntiDetectTools(register, ctx) {
                     windowSize: {
                         type: 'object',
                         description: '仅设置 Firefox outer window；inner/viewport 由 Firefox 原生计算，与 viewport 互斥。' +
-                            'devicePixelRatio 仅为旧客户端兼容保留且会被忽略；DPR 优先使用 viewport，screenSize DPR 取决于 runtime。',
+                            'devicePixelRatio 仅为旧客户端兼容保留且不会应用；DPR 请使用 viewport.devicePixelRatio。',
                         properties: {
                             width: { type: 'number', default: 1280 },
                             height: { type: 'number', default: 720 },
@@ -57,13 +57,14 @@ export function registerAntiDetectTools(register, ctx) {
                     },
                     screenSize: {
                         type: 'object',
-                        description: '独立覆盖 screen.width/screen.height/screen.avail* 与可选 DPR；不调整 outer window 或 viewport。',
+                        description: '独立覆盖 screen.width/screen.height/screen.avail*；不调整 outer window 或 viewport。' +
+                            'devicePixelRatio 仅为旧客户端兼容保留且不会经 screen 操作应用。',
                         properties: {
                             width: { type: 'number', default: 1920 },
                             height: { type: 'number', default: 1080 },
                             devicePixelRatio: {
                                 type: 'number',
-                                description: '可选 DPR，必须大于 0；是否生效由 Firefox runtime 决定，结果会区分 requested/actual/devicePixelRatioApplied',
+                                description: '已弃用：不会经 screenSize 应用；请使用 viewport.devicePixelRatio',
                             },
                         },
                         required: ['width', 'height'],
@@ -72,7 +73,11 @@ export function registerAntiDetectTools(register, ctx) {
                         type: 'object',
                         properties: {
                             type: { type: 'string', enum: ['portrait-primary', 'landscape-primary'] },
-                            angle: { type: 'number', default: 0 },
+                            angle: {
+                                type: 'number',
+                                default: 0,
+                                description: '已弃用：ruyiPage 1.2.56 不发送 angle；Bridge 会忽略并返回明确 warning',
+                            },
                         },
                     },
                     bypassCsp: { type: 'boolean', description: '绕过 CSP 限制' },

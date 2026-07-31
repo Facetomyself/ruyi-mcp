@@ -508,7 +508,7 @@ class RuyiBridge:
 
         fingerprint_emulation = None
         if tab is not None:
-            # ruyiPage 1.2.54 scopes screen to userContext, while geo/locale/
+            # ruyiPage 1.2.56 scopes screen to userContext, while geo/locale/
             # timezone/headers remain browsing-context scoped. Reapply the
             # complete context before the first target navigation for both
             # normal and container tabs.
@@ -884,8 +884,8 @@ class RuyiBridge:
                 if dpr <= 0:
                     raise ValueError("windowSize devicePixelRatio must be positive")
                 warnings.append(
-                    "windowSize.devicePixelRatio is ignored by ruyiPage 1.2.54; "
-                    "use viewport.devicePixelRatio for DPR; screenSize DPR is runtime-dependent"
+                    "windowSize.devicePixelRatio is ignored by ruyiPage 1.2.56; "
+                    "use viewport.devicePixelRatio for DPR"
                 )
             page.set_window_size(width, height)
             applied_size = {
@@ -907,7 +907,7 @@ class RuyiBridge:
             page.emulation.set_screen_size(
                 width,
                 height,
-                device_pixel_ratio=dpr,
+                device_pixel_ratio=None,
             )
             applied_screen_size = {
                 "requested": {
@@ -917,6 +917,17 @@ class RuyiBridge:
                 },
                 "verified": False,
             }
+            if dpr is not None:
+                # ruyiPage 1.2.56 implements a screen DPR by issuing a second
+                # browsingContext.setViewport call. That changes the viewport
+                # dimensions as a side effect and violates this Bridge's
+                # explicit screen/viewport separation, so the compatibility
+                # field is accepted but intentionally not forwarded.
+                applied_screen_size["devicePixelRatioApplied"] = False
+                warnings.append(
+                    "screenSize.devicePixelRatio is ignored by the ruyiPage 1.2.56 "
+                    "screen operation; use viewport.devicePixelRatio for DPR"
+                )
             try:
                 actual_screen_size = page.run_js(
                     """
@@ -941,15 +952,6 @@ class RuyiBridge:
                     warnings.append(
                         "screenSize dimensions were not applied by the active Firefox runtime"
                     )
-                requested_dpr = applied_screen_size["requested"].get("devicePixelRatio")
-                actual_dpr = actual_screen_size.get("devicePixelRatio")
-                if requested_dpr is not None and actual_dpr is not None:
-                    dpr_applied = abs(float(requested_dpr) - float(actual_dpr)) < 1e-9
-                    applied_screen_size["devicePixelRatioApplied"] = dpr_applied
-                    if not dpr_applied:
-                        warnings.append(
-                            "screenSize.devicePixelRatio was not applied by the active Firefox runtime"
-                        )
             else:
                 warnings.append(
                     "screenSize was requested but the active page metrics could not be verified"
@@ -958,18 +960,64 @@ class RuyiBridge:
             page.set_bypass_csp(True)
 
         # Apply screen orientation
+        applied_orientation = None
         if params.get("screenOrientation"):
             ori = params["screenOrientation"]
+            orientation_type = ori.get("type", "portrait-primary")
             page.set_screen_orientation(
-                orientation_type=ori.get("type", "portrait-primary"),
-                angle=ori.get("angle", 0),
+                orientation_type=orientation_type,
             )
+            requested_orientation = {"type": orientation_type}
+            if "angle" in ori:
+                requested_orientation["angle"] = ori["angle"]
+                warnings.append(
+                    "screenOrientation.angle is ignored by ruyiPage 1.2.56; "
+                    "only screenOrientation.type is forwarded"
+                )
+            applied_orientation = {
+                "requested": requested_orientation,
+                "forwarded": {"type": orientation_type},
+                "typeForwarded": True,
+                "verified": False,
+                "typeApplied": False,
+            }
+            if "angle" in ori:
+                applied_orientation["angleApplied"] = False
+            try:
+                actual_orientation = page.run_js(
+                    """
+                    return {
+                      type: screen.orientation.type,
+                      angle: screen.orientation.angle
+                    };
+                    """
+                )
+            except Exception:
+                actual_orientation = None
+            if isinstance(actual_orientation, dict):
+                actual_orientation = _serialize(actual_orientation)
+                applied_orientation["verified"] = True
+                applied_orientation["actual"] = actual_orientation
+                type_applied = actual_orientation.get("type") == orientation_type
+                applied_orientation["typeApplied"] = type_applied
+                if type_applied:
+                    applied_orientation["applied"] = {"type": orientation_type}
+                else:
+                    warnings.append(
+                        "screenOrientation.type was forwarded but not applied by the active Firefox runtime"
+                    )
+            else:
+                warnings.append(
+                    "screenOrientation.type was forwarded but the active page orientation could not be verified"
+                )
 
         result = {"fingerprintApplied": True}
         if applied_size:
             result["size"] = applied_size
         if applied_screen_size:
             result["screenSize"] = applied_screen_size
+        if applied_orientation:
+            result["screenOrientation"] = applied_orientation
         if warnings:
             result["warnings"] = warnings
         return result
@@ -1818,36 +1866,39 @@ class RuyiBridge:
         sys.stderr.write("[ruyi_bridge] Ready\n")
         sys.stderr.flush()
 
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
+        try:
+            for line in sys.stdin:
+                line = line.strip()
+                if not line:
+                    continue
 
-            try:
-                request = json.loads(line)
-            except json.JSONDecodeError as e:
-                sys.stderr.write(f"[ruyi_bridge] Invalid JSON: {e}\n")
-                sys.stderr.flush()
-                continue
+                try:
+                    request = json.loads(line)
+                except json.JSONDecodeError as e:
+                    sys.stderr.write(f"[ruyi_bridge] Invalid JSON: {e}\n")
+                    sys.stderr.flush()
+                    continue
 
-            # Special: shutdown signal
-            if request.get("method") == "__shutdown__":
+                # Special: shutdown signal. Cleanup stays in the common
+                # finally path so explicit shutdown, stdin EOF, and read/write
+                # failures all preserve the same browser ownership contract.
+                if request.get("method") == "__shutdown__":
+                    if request.get("id") is not None:
+                        response = self._ok(request.get("id"), {"shutdown": True})
+                        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+                        sys.stdout.flush()
+                    break
+
+                response = self.handle(request)
+
+                # Don't write response for notifications
                 if request.get("id") is not None:
-                    response = self._ok(request.get("id"), {"shutdown": True})
                     sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
                     sys.stdout.flush()
-                self._quit({})
-                break
-
-            response = self.handle(request)
-
-            # Don't write response for notifications
-            if request.get("id") is not None:
-                sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-                sys.stdout.flush()
-
-        sys.stderr.write("[ruyi_bridge] Shutdown complete\n")
-        sys.stderr.flush()
+        finally:
+            self._quit({})
+            sys.stderr.write("[ruyi_bridge] Shutdown complete\n")
+            sys.stderr.flush()
 
 
 # ---------------------------------------------------------------------------

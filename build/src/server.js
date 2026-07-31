@@ -19,15 +19,28 @@ import { registerUtilTools } from './tools/util.js';
 import { registerCookieTools } from './tools/cookie.js';
 import { registerInterceptTools } from './tools/intercept.js';
 import { registerWebSocketTools } from './tools/websocket.js';
-const toolHandlers = new Map();
-function register(entry) {
-    toolHandlers.set(entry.tool.name, entry);
+const serverCleanups = new WeakMap();
+/**
+ * Dispose the resources owned by one server instance.
+ *
+ * The returned promise is stable, so transport close, stdin EOF, and signal
+ * handlers can race without quitting the browser or bridge more than once.
+ */
+export function cleanupServer(server) {
+    return serverCleanups.get(server)?.() ?? Promise.resolve();
 }
 // ---------------------------------------------------------------------------
 // Server factory
 // ---------------------------------------------------------------------------
 export async function createServer(bridge) {
     const ctx = new RuyiContext(bridge);
+    const toolHandlers = new Map();
+    const register = (entry) => {
+        if (toolHandlers.has(entry.tool.name)) {
+            throw new Error(`Duplicate tool registration: ${entry.tool.name}`);
+        }
+        toolHandlers.set(entry.tool.name, entry);
+    };
     // Register tools from all modules
     registerPageTools(register, ctx);
     registerScriptTools(register, ctx);
@@ -47,7 +60,7 @@ export async function createServer(bridge) {
     const tools = Array.from(toolHandlers.values()).map((h) => h.tool);
     const server = new Server({
         name: 'ruyi-mcp',
-        version: '0.1.7',
+        version: '0.1.8',
     }, {
         capabilities: {
             tools: {},
@@ -80,11 +93,24 @@ export async function createServer(bridge) {
             };
         }
     });
-    // Handle shutdown gracefully
-    server.onclose = async () => {
-        console.error('[ruyi-mcp] Server closing, cleaning up...');
-        await ctx.quit().catch(() => { });
-        await bridge.stop().catch(() => { });
+    let cleanupPromise = null;
+    const cleanup = () => {
+        if (!cleanupPromise) {
+            // Defer execution by one microtask so cleanupPromise is assigned before
+            // another close path can re-enter this function.
+            cleanupPromise = Promise.resolve().then(async () => {
+                console.error('[ruyi-mcp] Server closing, cleaning up...');
+                if (bridge.isRunning()) {
+                    await ctx.quit().catch(() => { });
+                }
+                await bridge.stop().catch(() => { });
+            });
+        }
+        return cleanupPromise;
+    };
+    serverCleanups.set(server, cleanup);
+    server.onclose = () => {
+        void cleanup();
     };
     return server;
 }

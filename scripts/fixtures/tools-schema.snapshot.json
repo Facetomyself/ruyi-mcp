@@ -1,0 +1,1560 @@
+{
+  "snapshotVersion": 1,
+  "tools": [
+    {
+      "description": "通过 Firefox WebDriver BiDi 端口接管已启动的浏览器，不新建进程、不导航页面，MCP 退出或 bridge 超时时保留外部浏览器。",
+      "inputSchema": {
+        "properties": {
+          "address": {
+            "default": "127.0.0.1",
+            "description": "监听地址，默认 127.0.0.1",
+            "type": "string"
+          },
+          "port": {
+            "description": "Firefox --remote-debugging-port",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "number"
+          },
+          "profilePath": {
+            "description": "现有 Firefox profile 绝对路径（可选）",
+            "type": "string"
+          },
+          "traceEnabled": {
+            "default": false,
+            "description": "接管后启用 BiDi trace，默认 false",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "port"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_attach_browser"
+    },
+    {
+      "description": "在 XHR/Fetch 请求 URL 匹配时触发断点（注入 debugger）。等价于 ruyi_set_breakpoint_on_text with XHR wrapper.",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "url": {
+            "description": "URL 匹配片段（子串匹配）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_break_on_xhr"
+    },
+    {
+      "description": "关闭由 MCP 启动的浏览器并清理状态；端口接管的外部浏览器只断开连接，不关闭进程。",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_browser_quit"
+    },
+    {
+      "description": "获取浏览器当前状态：是否存活、当前 URL、页面数量、断点数、preload 脚本数。",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_browser_status"
+    },
+    {
+      "description": "开始被动抓包。按 URL 模式匹配请求，后续用 ruyi_capture_wait 获取。",
+      "inputSchema": {
+        "properties": {
+          "method": {
+            "description": "仅匹配 HTTP 方法（GET/POST/...）",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "pattern": {
+            "default": "",
+            "description": "URL 匹配模式（子串匹配）",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_capture_start"
+    },
+    {
+      "description": "停止被动抓包。会先清空尚未消费的队列/历史，避免 ruyiPage stop 隐式补读全部 body；需要结果时应先调用 ruyi_capture_wait。",
+      "inputSchema": {
+        "properties": {
+          "cleanupTimeout": {
+            "default": 5,
+            "description": "每个 BiDi 清理命令的超时秒数，默认 5，范围 0.1–30",
+            "maximum": 30,
+            "minimum": 0.1,
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_capture_stop"
+    },
+    {
+      "description": "等待并获取抓包结果。在调用 ruyi_capture_start 后使用。默认返回完整 request/response body；内部按单包 RPC 排空，避免大批量补读拖垮 bridge。",
+      "inputSchema": {
+        "properties": {
+          "count": {
+            "default": 5,
+            "description": "期望捕获的请求数，默认 5",
+            "type": "number"
+          },
+          "maxBodyChars": {
+            "default": 0,
+            "description": "每个 request/response body 的显式字符上限；0 表示不截断，默认 0",
+            "minimum": 0,
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "timeout": {
+            "default": 10,
+            "description": "等待超时（秒），默认 10",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_capture_wait"
+    },
+    {
+      "description": "清除当前页面的浏览器状态：Cookie、localStorage、sessionStorage。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_clear_site_data"
+    },
+    {
+      "description": "关闭指定标签页。不能关闭主标签页（pageIdx=0）。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 1,
+            "description": "要关闭的标签页索引",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pageIdx"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_close_page"
+    },
+    {
+      "description": "删除 cookies。不传 name 则清除所有 cookies。",
+      "inputSchema": {
+        "properties": {
+          "name": {
+            "description": "要删除的 cookie 名称。不传则清除全部。",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_delete_cookies"
+    },
+    {
+      "description": "点击 DOM 元素。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "selector": {
+            "description": "目标元素选择器",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_dom_click"
+    },
+    {
+      "description": "读取 DOM 元素的文本内容、HTML、表单值和指定属性。",
+      "inputSchema": {
+        "properties": {
+          "attribute": {
+            "description": "要读取的属性名（如 href, src, data-*）",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "selector": {
+            "description": "元素选择器",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_dom_get_info"
+    },
+    {
+      "description": "向 DOM 元素输入文本或上传文件。支持普通文本输入和文件路径上传。",
+      "inputSchema": {
+        "properties": {
+          "clear": {
+            "default": true,
+            "description": "输入前清空已有内容，默认 true",
+            "type": "boolean"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "selector": {
+            "description": "目标元素选择器",
+            "type": "string"
+          },
+          "text": {
+            "description": "要输入的文本内容",
+            "type": "string"
+          }
+        },
+        "required": [
+          "selector",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_dom_input"
+    },
+    {
+      "description": "在页面中定位 DOM 元素。支持 CSS 选择器、XPath、标签名、文本内容等多种定位方式。格式: \"#id\" / \"css:.class\" / \"xpath://div\" / \"tag:input\" / \"text:登录\"",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "selector": {
+            "description": "元素选择器。支持：#id, css:.class, xpath://div, tag:input, text:登录",
+            "type": "string"
+          },
+          "timeout": {
+            "default": 10,
+            "description": "等待超时（秒），默认 10",
+            "type": "number"
+          }
+        },
+        "required": [
+          "selector"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_dom_select"
+    },
+    {
+      "description": "模拟浏览器地理位置（经纬度）。",
+      "inputSchema": {
+        "properties": {
+          "accuracy": {
+            "default": 100,
+            "description": "精度（米），默认 100",
+            "type": "number"
+          },
+          "latitude": {
+            "description": "纬度",
+            "type": "number"
+          },
+          "longitude": {
+            "description": "经度",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "latitude",
+          "longitude"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_emulate_geolocation"
+    },
+    {
+      "description": "模拟浏览器语言/区域。",
+      "inputSchema": {
+        "properties": {
+          "locale": {
+            "description": "语言区域代码，如 \"en-US\", \"zh-CN\"",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "locale"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_emulate_locale"
+    },
+    {
+      "description": "模拟浏览器时区。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "timezoneId": {
+            "description": "IANA 时区，如 \"Asia/Tokyo\"",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezoneId"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_emulate_timezone"
+    },
+    {
+      "description": "模拟浏览器 UserAgent 字符串。覆盖 navigator.userAgent。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "userAgent": {
+            "description": "自定义 UserAgent 字符串",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userAgent"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_emulate_useragent"
+    },
+    {
+      "description": "在浏览器页面中执行 JavaScript 函数并返回结果。可用于运行时采样、Hook 注入、读取页面状态。函数必须返回 JSON-safe 值。支持接收本地文件作为参数。",
+      "inputSchema": {
+        "properties": {
+          "function": {
+            "description": "要执行的 JavaScript 函数声明。例: \"() => { return document.title }\" 或 \"async () => { return await fetch('example.com') }\"",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引，默认当前活跃页",
+            "type": "number"
+          },
+          "sandbox": {
+            "description": "BiDi sandbox 名称（隔离执行上下文）",
+            "type": "string"
+          },
+          "timeout": {
+            "default": 10,
+            "description": "超时（秒），默认 10",
+            "type": "number"
+          }
+        },
+        "required": [
+          "function"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_evaluate_script"
+    },
+    {
+      "description": "导出当前浏览器会话状态（Cookie、localStorage、sessionStorage、UserAgent、URL）。可保存到 JSON 文件供 js-reverse-mcp、ruyitrace 或其他工具复用。这是跨工具 session 桥接的核心工具。",
+      "inputSchema": {
+        "properties": {
+          "include": {
+            "default": [
+              "cookies",
+              "localStorage",
+              "sessionStorage"
+            ],
+            "description": "要导出的内容类型",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "outputFile": {
+            "description": "保存到的 JSON 文件路径（绝对路径）。不提供则直接返回内容。",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_export_session"
+    },
+    {
+      "description": "获取当前页面的所有 cookies。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_get_cookies"
+    },
+    {
+      "description": "注入 fetch/XHR Proxy 以捕获后续 JS 请求的调用栈。注入后通过 ruyi_list_network_requests 可看到带 initiator 的请求。⚠ 只能捕获注入后发起的 JS 请求；调用栈为 Error().stack 字符串格式。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_get_request_initiator"
+    },
+    {
+      "description": "获取指定 URL 脚本的源码片段。支持行号范围或字符偏移。",
+      "inputSchema": {
+        "properties": {
+          "endLine": {
+            "description": "结束行号（1-based）",
+            "type": "number"
+          },
+          "length": {
+            "default": 1000,
+            "description": "返回字符数（配合 offset 使用），默认 1000",
+            "type": "number"
+          },
+          "offset": {
+            "description": "字符偏移（0-based，用于单行压缩文件）",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "startLine": {
+            "description": "起始行号（1-based）",
+            "type": "number"
+          },
+          "url": {
+            "description": "脚本 URL（精确匹配优先，然后子串匹配）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_get_script_source"
+    },
+    {
+      "description": "获取已注入 Proxy 后收集的 WebSocket 消息。返回每连接的 url、sent、received 消息列表及时间戳。设置 clear=true 可在读取后清空缓冲区。",
+      "inputSchema": {
+        "properties": {
+          "clear": {
+            "default": false,
+            "description": "读取后清空缓冲区，默认 false",
+            "type": "boolean"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_get_websocket_messages"
+    },
+    {
+      "description": "自动处理 Cloudflare Turnstile 验证（5s 盾）。通过 BiDi 查找 CF iframe 并在内部触发点击，绕过 closed shadow root 限制。",
+      "inputSchema": {
+        "properties": {
+          "checkInterval": {
+            "default": 2,
+            "description": "检测间隔（秒），默认 2",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "timeout": {
+            "default": 30,
+            "description": "最大等待时间（秒），默认 30",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_handle_cloudflare"
+    },
+    {
+      "description": "模拟人类鼠标点击。使用 windmouse/bezier 算法生成自然轨迹。",
+      "inputSchema": {
+        "properties": {
+          "algorithm": {
+            "default": "windmouse",
+            "enum": [
+              "bezier",
+              "windmouse"
+            ],
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "target": {
+            "description": "目标元素选择器",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_human_click"
+    },
+    {
+      "description": "执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。ruyiPage 1.2.56 会把按下到释放合并为单次 BiDi input.performActions，适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。",
+      "inputSchema": {
+        "properties": {
+          "algorithm": {
+            "default": "bezier",
+            "enum": [
+              "bezier",
+              "windmouse"
+            ],
+            "type": "string"
+          },
+          "button": {
+            "default": 0,
+            "description": "鼠标按钮：0 左键、1 中键、2 右键",
+            "maximum": 2,
+            "minimum": 0,
+            "type": "number"
+          },
+          "holdMs": {
+            "default": 120,
+            "description": "按下后等待毫秒数，默认 120",
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "releaseMs": {
+            "default": 80,
+            "description": "到达目标后、释放前等待毫秒数，默认 80",
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "number"
+          },
+          "source": {
+            "description": "起点元素选择器；与 sourcePoint 二选一",
+            "type": "string"
+          },
+          "sourcePoint": {
+            "description": "起点 viewport 坐标；与 source 二选一",
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "style": {
+            "default": "arc",
+            "enum": [
+              "arc",
+              "line",
+              "line_then_arc",
+              "line_overshoot_arc_back",
+              "linear"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "description": "终点元素选择器；与 targetPoint 二选一",
+            "type": "string"
+          },
+          "targetPoint": {
+            "description": "终点 viewport 坐标；与 target 二选一",
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "y"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_human_drag"
+    },
+    {
+      "description": "模拟人类逐字输入文本（带延迟）。避免被检测为自动化输入。",
+      "inputSchema": {
+        "properties": {
+          "delayMs": {
+            "default": 50,
+            "description": "每个字符间延迟（毫秒），默认 50",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "target": {
+            "description": "目标输入框选择器",
+            "type": "string"
+          },
+          "text": {
+            "description": "要输入的文本",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_human_input"
+    },
+    {
+      "description": "模拟人类鼠标移动到目标元素。支持 bezier 曲线和 windmouse 算法。需要反检测场景下的鼠标操作，这是 js-reverse-mcp 不具备的能力。",
+      "inputSchema": {
+        "properties": {
+          "algorithm": {
+            "default": "bezier",
+            "description": "移动算法",
+            "enum": [
+              "bezier",
+              "windmouse"
+            ],
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "style": {
+            "default": "arc",
+            "description": "移动风格",
+            "enum": [
+              "arc",
+              "line",
+              "line_then_arc",
+              "line_overshoot_arc_back",
+              "linear"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "description": "目标元素选择器",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_human_move"
+    },
+    {
+      "description": "使用 Firefox 原生 wheel action 做单方向、小步、随机间隔滚动。不会定位元素或自动回滚，适合阅读式下滑和翻页按钮渐进进入视口。",
+      "inputSchema": {
+        "properties": {
+          "direction": {
+            "default": "down",
+            "enum": [
+              "down",
+              "up"
+            ],
+            "type": "string"
+          },
+          "maxPauseMs": {
+            "default": 500,
+            "description": "步间最长停顿毫秒，默认 500",
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "number"
+          },
+          "maxStep": {
+            "default": 140,
+            "description": "每步最大像素，默认 140",
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "number"
+          },
+          "minPauseMs": {
+            "default": 120,
+            "description": "步间最短停顿毫秒，默认 120",
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "number"
+          },
+          "minStep": {
+            "default": 60,
+            "description": "每步最小像素，默认 60",
+            "maximum": 2000,
+            "minimum": 1,
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "steps": {
+            "default": 4,
+            "description": "滚轮步数，默认 4",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_human_scroll"
+    },
+    {
+      "description": "开始拦截 HTTP 请求（beforeRequestSent 阶段）。支持 URL 模式过滤。拦截的请求用 ruyi_intercept_wait 消费。可修改/拦截/模拟请求（未来版本）。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "urlPatterns": {
+            "description": "URL 过滤模式。格式: [{\"type\":\"string\",\"pattern\":\"/api/\"}] 或 [{\"type\":\"pattern\",\"protocol\":\"https\",\"pathname\":\"/api/*\"}]",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_intercept_requests"
+    },
+    {
+      "description": "开始拦截 HTTP 响应（responseStarted 阶段）。支持 URL 模式过滤。拦截的响应用 ruyi_intercept_wait 消费。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "urlPatterns": {
+            "description": "URL 过滤模式。同 ruyi_intercept_requests 格式。",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_intercept_responses"
+    },
+    {
+      "description": "停止所有网络拦截。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_intercept_stop"
+    },
+    {
+      "description": "等待并消费一个拦截到的请求/响应。队列模式：每次调用返回一个。超时返回 timedOut=true。返回 url、method、headers、body、responseStatus 等。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "timeout": {
+            "default": 10,
+            "description": "等待超时（秒），默认 10",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_intercept_wait"
+    },
+    {
+      "description": "列出当前所有活跃的软断点。",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_list_breakpoints"
+    },
+    {
+      "description": "读取浏览器控制台日志消息。支持按类型筛选。",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "description": "最大返回条数，默认 50",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          },
+          "types": {
+            "description": "筛选消息类型：log, debug, info, error, warn",
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_list_console_messages"
+    },
+    {
+      "description": "列出当前页面中的所有 iframe/frame（包括嵌套子 frame）。返回每个 frame 的 contextId、url、isCrossOrigin 信息。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_list_frames"
+    },
+    {
+      "description": "列出最近的网络请求。基于 performance API 获取资源加载信息。需要更详细信息时，使用 ruyi_capture_start 主动抓包。",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "description": "最大结果数，默认 50",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "urlFilter": {
+            "description": "URL 筛选字符串",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_list_network_requests"
+    },
+    {
+      "description": "列出所有打开的标签页。",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_list_pages"
+    },
+    {
+      "description": "列出所有已注入的 preload 脚本。每个脚本有 scriptId 和内容摘要。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_list_preload_scripts"
+    },
+    {
+      "description": "列出页面中加载的所有 JavaScript 脚本 URL。支持 URL 筛选。",
+      "inputSchema": {
+        "properties": {
+          "filter": {
+            "description": "URL 筛选字符串（不区分大小写）",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_list_scripts"
+    },
+    {
+      "description": "导航已有标签页到新 URL，或执行刷新/前进/后退。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引，默认当前活跃页",
+            "type": "number"
+          },
+          "timeout": {
+            "default": 30,
+            "description": "超时（秒），默认 30",
+            "type": "number"
+          },
+          "type": {
+            "default": "url",
+            "description": "导航类型",
+            "enum": [
+              "url",
+              "back",
+              "forward",
+              "reload"
+            ],
+            "type": "string"
+          },
+          "url": {
+            "description": "目标 URL（type=url 时必填）",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_navigate_page"
+    },
+    {
+      "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。首次调用自动启动 Firefox 浏览器。",
+      "inputSchema": {
+        "properties": {
+          "container": {
+            "default": false,
+            "description": "浏览器已启动时是否创建 container tab，默认 false",
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "description": "智能指纹配置（smart_fingerprint）",
+            "properties": {
+              "proxyHost": {
+                "type": "string"
+              },
+              "proxyPort": {
+                "type": "number"
+              },
+              "proxyPwd": {
+                "type": "string"
+              },
+              "proxyUser": {
+                "type": "string"
+              },
+              "requireCountry": {
+                "description": "要求代理出口国家，如 US",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "headless": {
+            "default": false,
+            "description": "无头模式，默认 false",
+            "type": "boolean"
+          },
+          "privateMode": {
+            "default": false,
+            "description": "隐私模式，默认 false",
+            "type": "boolean"
+          },
+          "proxy": {
+            "description": "代理地址，如 http://127.0.0.1:7890 或 socks5://host:port",
+            "type": "string"
+          },
+          "timeout": {
+            "default": 30,
+            "description": "导航超时（秒），默认 30",
+            "type": "number"
+          },
+          "traceEnabled": {
+            "default": false,
+            "description": "启用 BiDi trace 记录",
+            "type": "boolean"
+          },
+          "url": {
+            "description": "目标 URL（必填）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_new_page"
+    },
+    {
+      "description": "移除指定软断点。",
+      "inputSchema": {
+        "properties": {
+          "breakpointId": {
+            "description": "断点 ID（来自 ruyi_list_breakpoints）",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "breakpointId"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_remove_breakpoint"
+    },
+    {
+      "description": "保存脚本完整源码到本地文件。JSON 结果用 .json 扩展名，其他用 .js。",
+      "inputSchema": {
+        "properties": {
+          "filePath": {
+            "description": "本地保存路径（绝对路径）",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "url": {
+            "description": "脚本 URL",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "filePath"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_save_script_source"
+    },
+    {
+      "description": "在页面已加载的 JS 源码中搜索字符串或正则表达式。",
+      "inputSchema": {
+        "properties": {
+          "caseSensitive": {
+            "default": false,
+            "type": "boolean"
+          },
+          "isRegex": {
+            "default": false,
+            "type": "boolean"
+          },
+          "maxResults": {
+            "default": 30,
+            "description": "最大结果数，默认 30",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "query": {
+            "description": "搜索字符串或正则表达式",
+            "type": "string"
+          },
+          "urlFilter": {
+            "description": "仅搜索 URL 含此字符串的脚本",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_search_in_sources"
+    },
+    {
+      "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。选择后的 frame 可在后续 evaluate_script 中通过 frameContextId 参数操作。",
+      "inputSchema": {
+        "oneOf": [
+          {
+            "required": [
+              "contextId"
+            ]
+          },
+          {
+            "required": [
+              "selector"
+            ]
+          }
+        ],
+        "properties": {
+          "contextId": {
+            "description": "frame 的 browsing context ID",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          },
+          "selector": {
+            "description": "iframe/frame 元素选择器；与 contextId 二选一",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_select_frame"
+    },
+    {
+      "description": "切换活跃标签页。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "description": "标签页索引",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pageIdx"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_select_page"
+    },
+    {
+      "description": "设置软断点（通过 preload script 注入 debugger 或 Proxy 包装）。支持 XHR/Fetch URL 断点和函数名匹配。⚠ 当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。",
+      "inputSchema": {
+        "properties": {
+          "condition": {
+            "description": "断点条件（暂不支持，保留参数兼容性）",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "text": {
+            "description": "要匹配的代码文本、URL 片段或函数名。",
+            "type": "string"
+          },
+          "urlFilter": {
+            "description": "仅在 URL 匹配的脚本中注入",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_set_breakpoint_on_text"
+    },
+    {
+      "description": "控制浏览器缓存行为。可选：default（默认）、bypass（跳过缓存）、force_cache（强制缓存）。",
+      "inputSchema": {
+        "properties": {
+          "mode": {
+            "default": "default",
+            "description": "缓存模式",
+            "enum": [
+              "default",
+              "bypass",
+              "force_cache"
+            ],
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_set_cache_behavior"
+    },
+    {
+      "description": "设置 cookies。传入 cookie 对象数组，每个对象需包含 name 和 value。可选字段：domain, path, secure, httpOnly, sameSite, expiry。",
+      "inputSchema": {
+        "properties": {
+          "cookies": {
+            "description": "Cookie 对象数组 [{name, value, domain?, path?, ...}]",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cookies"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_set_cookies"
+    },
+    {
+      "description": "为所有后续请求附加额外的 HTTP Headers。用于注入认证 token、自定义 UA 等。",
+      "inputSchema": {
+        "properties": {
+          "headers": {
+            "description": "Key-value 键值对，如 {\"X-Token\": \"abc123\", \"X-Device-Id\": \"device1\"}",
+            "type": "object"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "headers"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_set_extra_headers"
+    },
+    {
+      "description": "对当前页面应用指纹伪装。可独立设置地理位置、时区、语言、UserAgent、viewport、outer window、screen 与 CSP 绕过。ruyipage 支持 22 维硬件指纹随机化（需在 ruyi_new_page 时通过 fingerprint 参数配置）。",
+      "inputSchema": {
+        "properties": {
+          "bypassCsp": {
+            "description": "绕过 CSP 限制",
+            "type": "boolean"
+          },
+          "geolocation": {
+            "description": "地理位置模拟",
+            "properties": {
+              "accuracy": {
+                "default": 100,
+                "type": "number"
+              },
+              "latitude": {
+                "type": "number"
+              },
+              "longitude": {
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "locale": {
+            "description": "语言区域，如 \"en-US\"",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          },
+          "screenOrientation": {
+            "properties": {
+              "angle": {
+                "default": 0,
+                "description": "已弃用：ruyiPage 1.2.56 不发送 angle；Bridge 会忽略并返回明确 warning",
+                "type": "number"
+              },
+              "type": {
+                "enum": [
+                  "portrait-primary",
+                  "landscape-primary"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "screenSize": {
+            "description": "独立覆盖 screen.width/screen.height/screen.avail*；不调整 outer window 或 viewport。devicePixelRatio 仅为旧客户端兼容保留且不会经 screen 操作应用。",
+            "properties": {
+              "devicePixelRatio": {
+                "description": "已弃用：不会经 screenSize 应用；请使用 viewport.devicePixelRatio",
+                "type": "number"
+              },
+              "height": {
+                "default": 1080,
+                "type": "number"
+              },
+              "width": {
+                "default": 1920,
+                "type": "number"
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
+          "timezone": {
+            "description": "IANA 时区，如 \"America/New_York\"",
+            "type": "string"
+          },
+          "userAgent": {
+            "description": "自定义 UserAgent 字符串",
+            "type": "string"
+          },
+          "viewport": {
+            "description": "仅设置 viewport；与 windowSize 互斥",
+            "properties": {
+              "devicePixelRatio": {
+                "description": "可选 DPR，必须大于 0",
+                "type": "number"
+              },
+              "height": {
+                "default": 1080,
+                "type": "number"
+              },
+              "width": {
+                "default": 1920,
+                "type": "number"
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ],
+            "type": "object"
+          },
+          "windowSize": {
+            "description": "仅设置 Firefox outer window；inner/viewport 由 Firefox 原生计算，与 viewport 互斥。devicePixelRatio 仅为旧客户端兼容保留且不会应用；DPR 请使用 viewport.devicePixelRatio。",
+            "properties": {
+              "devicePixelRatio": {
+                "description": "已弃用：不会应用；请使用 viewport.devicePixelRatio",
+                "type": "number"
+              },
+              "height": {
+                "default": 720,
+                "type": "number"
+              },
+              "width": {
+                "default": 1280,
+                "type": "number"
+              }
+            },
+            "required": [
+              "width",
+              "height"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_set_fingerprint"
+    },
+    {
+      "description": "⚠ 代理必须在 ruyi_new_page 时通过 proxy 参数设置。浏览器启动后无法切换代理。此工具仅返回说明和当前代理状态。如需切换代理，请先 ruyi_browser_quit，再用新代理调用 ruyi_new_page。",
+      "inputSchema": {
+        "properties": {
+          "proxyUrl": {
+            "description": "代理 URL（仅供参考，不会实际切换）",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_set_proxy"
+    },
+    {
+      "description": "对当前页面截图。可保存到文件或返回 base64 编码（PNG）。",
+      "inputSchema": {
+        "properties": {
+          "filePath": {
+            "description": "保存路径（PNG）。不提供则返回 base64。",
+            "type": "string"
+          },
+          "fullPage": {
+            "default": false,
+            "description": "是否截取整页（默认仅视口）",
+            "type": "boolean"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_take_screenshot"
+    },
+    {
+      "description": "获取当前的追踪结果（不停止追踪）。返回最近的 BiDi 事件条目。",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 50,
+            "description": "最大返回条数，默认 50",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_trace_get_results"
+    },
+    {
+      "description": "从当前时刻开始记录结构化 BiDi trace；首次在运行中的浏览器上启动时，会清空旧缓冲区并建立新的 trace 段。浏览器启动时已开启或重复调用时会保留现有缓冲区。浏览器启动后调用也会真实启用记录，但不包含此前的启动事件。如需覆盖启动阶段，请在 ruyi_new_page 时设置 traceEnabled:true。该工具记录 BiDi 协议级事件，不等同于 Firefox 内核 DOMTrace。",
+      "inputSchema": {
+        "properties": {
+          "outputFile": {
+            "description": "停止追踪后保存到的 JSON 文件路径",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_trace_start"
+    },
+    {
+      "description": "停止 BiDi 追踪并返回结果摘要和数据。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_trace_stop"
+    },
+    {
+      "description": "注入 WebSocket Proxy 以捕获后续 WebSocket 连接的消息。注入后，新创建的 WebSocket 连接的 send/receive 消息会记录到 window.__ruyi_ws_messages。⚠ 只能捕获注入后创建的 WebSocket 连接。binary 帧以 \"[binary]\" 标记。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_websocket_inject"
+    }
+  ]
+}

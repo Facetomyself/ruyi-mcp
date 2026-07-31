@@ -1,6 +1,6 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Community MCP server for ruyiPage browser automation, network inspection, fingerprint analysis, and WebDriver BiDi trace workflows",
   "private": true,
   "license": "MIT",
@@ -9,12 +9,15 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1254.py scripts/runtime_capture_lifecycle.py",
+    "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1256.py scripts/runtime_capture_lifecycle.py scripts/runtime_attach_lifecycle.py",
     "check:contract": "python scripts/contract_bridge.py",
-    "check:runtime": "python scripts/runtime_ruyipage_1254.py",
+    "check:runtime": "python scripts/runtime_ruyipage_1256.py",
     "check:capture-runtime": "python scripts/runtime_capture_lifecycle.py",
+    "check:attach-runtime": "python scripts/runtime_attach_lifecycle.py",
     "smoke": "node scripts/smoke-list-tools.mjs",
-    "check": "npm run typecheck && npm run check:python && npm run check:contract && npm run build && npm run smoke",
+    "snapshot:tools": "npm run build && node scripts/smoke-list-tools.mjs --update-snapshot",
+    "check:lifecycle": "node --test scripts/server-contract.test.mjs scripts/bridge-lifecycle.test.mjs scripts/stdio-lifecycle.test.mjs",
+    "check": "npm run typecheck && npm run check:python && npm run check:contract && npm run build && npm run smoke && npm run check:lifecycle",
     "start": "node build/src/index.js",
     "dev": "tsc && node build/src/index.js"
   },

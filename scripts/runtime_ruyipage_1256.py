@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in offline Firefox 151 runtime gate for the ruyiPage 1.2.54 contract."""
+"""Opt-in offline Firefox 151 runtime gate for the ruyiPage 1.2.56 contract."""
 
 from __future__ import annotations
 
@@ -45,10 +45,9 @@ def page_metrics(page):
 class RuntimeFingerprintContext:
     """Small deterministic context used to verify pre-navigation replay."""
 
-    def __init__(self, width=1500, height=950, dpr=1.0):
+    def __init__(self, width=1500, height=950):
         self.width = width
         self.height = height
-        self.dpr = dpr
         self.calls = 0
 
     def apply_emulation(self, page, *, set_screen_size=True):
@@ -57,7 +56,6 @@ class RuntimeFingerprintContext:
             page.emulation.set_screen_size(
                 self.width,
                 self.height,
-                device_pixel_ratio=self.dpr,
             )
         return {
             "screen": bool(set_screen_size),
@@ -70,7 +68,7 @@ class RuntimeFingerprintContext:
 
 def run_gate(firefox_path: Path, headless: bool) -> dict:
     bridge_module = load_bridge_module()
-    with tempfile.TemporaryDirectory(prefix="ruyi_mcp_1254_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="ruyi_mcp_1256_") as tmp:
         profile = Path(tmp) / "profile"
         options = (
             FirefoxOptions()
@@ -126,9 +124,32 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
             assert explicit_screen["inner"] == natural["inner"], explicit_screen
             assert screen_result["screenSize"]["actual"]["width"] == 1440
             assert screen_result["screenSize"]["actual"]["height"] == 900
-            assert screen_result["screenSize"]["devicePixelRatioApplied"] == (
-                explicit_screen["dpr"] == 1.25
+            assert screen_result["screenSize"]["devicePixelRatioApplied"] is False
+            assert any(
+                "screenSize.devicePixelRatio is ignored" in warning
+                for warning in screen_result["warnings"]
+            ), screen_result
+
+            orientation_result = bridge._set_fingerprint(
+                {
+                    "pageIdx": 0,
+                    "screenOrientation": {
+                        "type": "portrait-primary",
+                        "angle": 90,
+                    },
+                }
             )
+            orientation_contract = orientation_result["screenOrientation"]
+            assert orientation_contract["typeForwarded"] is True
+            assert orientation_contract["verified"] is True
+            assert orientation_contract["typeApplied"] is True
+            assert orientation_contract["angleApplied"] is False
+            assert orientation_contract["actual"]["type"] == "portrait-primary"
+            assert orientation_contract["actual"]["angle"] != 90
+            assert any(
+                "screenOrientation.angle is ignored" in warning
+                for warning in orientation_result["warnings"]
+            ), orientation_result
 
             fingerprint = RuntimeFingerprintContext()
             bridge._fingerprint_ctx = fingerprint
@@ -182,8 +203,12 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
             """
             page.get("data:text/html;charset=utf-8," + quote(frame_html))
             page.wait(0.2)
-            frame = page.get_frame(locator="css:#second")
-            assert frame is not None
+            frame_result = bridge._frame_select(
+                {"pageIdx": 0, "selector": "#second"}
+            )
+            assert frame_result["found"] is True, frame_result
+            assert frame_result["selectedBy"] == "selector", frame_result
+            frame = bridge._frame_obj[frame_result["contextId"]]
             frame_value = frame.ele("css:#value").text
             assert frame_value == "B", frame_value
 
@@ -220,13 +245,17 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
             </script></body></html>
             """
             page.get("data:text/html;charset=utf-8," + quote(drag_html))
-            source = page.ele("css:#handle")
-            target = page.ele("css:#target")
-            page.actions.move_to(source).hold().wait(0.12).human_move(
-                target,
-                style="line",
-                algorithm="bezier",
-            ).wait(0.08).release().perform()
+            drag_result = bridge._human_drag(
+                {
+                    "pageIdx": 0,
+                    "source": "#handle",
+                    "target": "#target",
+                    "style": "line",
+                    "algorithm": "bezier",
+                    "holdMs": 120,
+                    "releaseMs": 80,
+                }
+            )
             page.wait(0.2)
             drag_state = page.run_js("return window.__ruyiDragState")
             down_index = next(
@@ -245,6 +274,67 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
             assert all(event["buttons"] == 1 for event in pressed_moves), drag_state
             assert drag_state["left"] >= 280, drag_state
             assert drag_state["captures"] == ["got", "lost"], drag_state
+            assert drag_result["dragged"] is True, drag_result
+
+            interaction_html = """
+            <!doctype html><html><head><style>
+              body { margin: 0; min-height: 3200px; }
+              #click-target { position: absolute; left: 120px; top: 120px; width: 180px; height: 60px; }
+            </style></head><body><button id="click-target">click me</button>
+            <script>
+              window.__ruyiClickCount = 0;
+              window.__ruyiWheelEvents = [];
+              document.querySelector('#click-target').addEventListener('click', () => {
+                window.__ruyiClickCount += 1;
+              });
+              window.addEventListener('wheel', event => {
+                window.__ruyiWheelEvents.push({
+                  deltaY: event.deltaY,
+                  trusted: event.isTrusted,
+                  target: event.target && event.target.tagName,
+                  defaultPrevented: event.defaultPrevented
+                });
+              }, {passive: true});
+            </script></body></html>
+            """
+            interaction_page_idx = normal_result["pageIdx"]
+            interaction_page = normal_tab
+            interaction_page.get(
+                "data:text/html;charset=utf-8," + quote(interaction_html)
+            )
+            click_result = bridge._human_click(
+                {
+                    "pageIdx": interaction_page_idx,
+                    "target": "#click-target",
+                    "algorithm": "bezier",
+                }
+            )
+            interaction_page.wait(0.2)
+            click_count = interaction_page.run_js("return window.__ruyiClickCount")
+            assert click_count == 1, {"clickCount": click_count, "result": click_result}
+            assert click_result["pointerReset"] is True, click_result
+            assert click_result["atomicPointer"] is True, click_result
+
+            scroll_result = bridge._human_scroll(
+                {
+                    "pageIdx": interaction_page_idx,
+                    "direction": "down",
+                    "steps": 3,
+                    "minStep": 90,
+                    "maxStep": 90,
+                    "minPauseMs": 100,
+                    "maxPauseMs": 100,
+                }
+            )
+            interaction_page.wait(0.2)
+            scroll_state = interaction_page.run_js(
+                "return {scrollY: window.scrollY, events: window.__ruyiWheelEvents, "
+                "scrollHeight: document.documentElement.scrollHeight, innerHeight: window.innerHeight}"
+            )
+            scroll_y = scroll_state["scrollY"]
+            assert scroll_y > 0, {"state": scroll_state, "result": scroll_result}
+            assert scroll_result["deltas"] == [90, 90, 90], scroll_result
+            assert scroll_result["nativeWheel"] is True, scroll_result
 
             container_result = bridge._new_tab(
                 {"url": first_navigation_url, "container": True}
@@ -267,6 +357,7 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
                 "windowResult": window_result,
                 "explicitScreen": explicit_screen,
                 "screenResult": screen_result,
+                "orientationResult": orientation_result,
                 "normalTabScreen": normal_screen,
                 "normalFirstNavigation": normal_first_navigation,
                 "explicitViewport": explicit_viewport,
@@ -274,7 +365,13 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
                 "containerTabScreen": container_screen,
                 "containerFirstNavigation": container_first_navigation,
                 "frameValue": frame_value,
+                "frameResult": frame_result,
+                "dragResult": drag_result,
                 "pressedPointerMoves": len(pressed_moves),
+                "clickResult": click_result,
+                "clickCount": click_count,
+                "scrollResult": scroll_result,
+                "scrollState": scroll_state,
             }
         finally:
             if page is not None:
