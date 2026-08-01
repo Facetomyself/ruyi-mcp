@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import hashlib
 import inspect
 import io
 import json
@@ -21,6 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
 import ruyipage
 from ruyipage import FirefoxOptions
 from ruyipage._base import browser as browser_module
@@ -36,6 +39,10 @@ EXPECTED_RUYIPAGE_VERSION = "1.2.56"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "bridge" / "ruyi_bridge.py"
 REQUIREMENTS_PATH = REPO_ROOT / "requirements.txt"
+HANDOFF_SCHEMA_PATH = REPO_ROOT / "contracts" / "browser-session-handoff.v1.schema.json"
+POINTER_SCHEMA_PATH = REPO_ROOT / "contracts" / "evidence-pointer.v1.schema.json"
+HANDOFF_FIXTURE_PATH = REPO_ROOT / "contracts" / "fixtures" / "browser-session-handoff.valid.json"
+HANDOFF_SCHEMA_SHA256 = "6bb05c886be34da5ad83fed5e70eb7921a5840c11458e0b9bb590b2ffc072367"
 
 
 def load_bridge_module():
@@ -50,6 +57,25 @@ def load_bridge_module():
 BRIDGE_MODULE = load_bridge_module()
 
 
+def load_json(path: Path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+HANDOFF_SCHEMA = load_json(HANDOFF_SCHEMA_PATH)
+POINTER_SCHEMA = load_json(POINTER_SCHEMA_PATH)
+CONTRACT_REGISTRY = Registry().with_resources(
+    [
+        (HANDOFF_SCHEMA["$id"], Resource.from_contents(HANDOFF_SCHEMA)),
+        (POINTER_SCHEMA["$id"], Resource.from_contents(POINTER_SCHEMA)),
+    ]
+)
+HANDOFF_VALIDATOR = Draft202012Validator(
+    HANDOFF_SCHEMA,
+    registry=CONTRACT_REGISTRY,
+    format_checker=FormatChecker(),
+)
+
+
 class FakeLaunchOptions:
     """Small launch-options fake that records values passed by the bridge."""
 
@@ -58,7 +84,6 @@ class FakeLaunchOptions:
     def __init__(self):
         self.browser_path = None
         self.proxy = None
-        self.trace_enabled = False
         self.address = None
         self.existing = False
         self.close_on_exit_value = True
@@ -72,10 +97,6 @@ class FakeLaunchOptions:
 
     def set_proxy(self, proxy):
         self.proxy = proxy
-        return self
-
-    def enable_trace(self, enabled=True):
-        self.trace_enabled = bool(enabled)
         return self
 
     def set_address(self, address):
@@ -650,69 +671,38 @@ class FakeWheelPage:
         self._driver = SimpleNamespace(_browser_driver=self.browser_driver)
 
 
-class FakeTracer:
-    def __init__(self, settings, entries=None):
-        self.settings = settings
-        self.entries = list(entries or [])
-        self.clear_calls = 0
-        self.dump_calls = 0
-        self.dump_trace_enabled: list[bool] = []
-
-    def clear(self):
-        self.clear_calls += 1
-        self.entries.clear()
-
-    def latest(self, limit=50):
-        return self.entries[-limit:]
-
-    def summary(self):
-        return {"entryCount": len(self.entries)}
-
-    def dump_json(self):
-        self.dump_calls += 1
-        self.dump_trace_enabled.append(bool(self.settings.trace_enabled))
-        serializable = [entry.to_dict() if hasattr(entry, "to_dict") else entry for entry in self.entries]
-        return json.dumps(serializable, ensure_ascii=False)
+class FakeSessionCookie:
+    def __init__(self):
+        self.name = "session"
+        self.value = "cookie-secret-value"
+        self.domain = "fixture.invalid"
+        self.path = "/"
+        self.secure = True
+        self.http_only = True
+        self.same_site = "Lax"
+        self.expiry = 2_000_000_000
 
 
-class FakeTraceEntry:
-    def __init__(self, event):
-        self.event = event
+class FakeSessionPage:
+    url = "https://fixture.invalid/app?token=navigation-secret"
+    title = "Fixture"
+    _context_id = "context-session-export"
+    _user_context_id = "user-context-session-export"
 
-    def to_dict(self):
-        return {"event": self.event}
+    def __init__(self):
+        self._firefox = SimpleNamespace(address="127.0.0.1:26700")
 
+    def get_cookies(self):
+        return [FakeSessionCookie()]
 
-class FakeTraceOptions:
-    def __init__(self, enabled=False):
-        self.trace_enabled = bool(enabled)
-        self.enable_trace_calls: list[bool] = []
-
-    def enable_trace(self, enabled=True):
-        self.trace_enabled = bool(enabled)
-        self.enable_trace_calls.append(self.trace_enabled)
-        return self
-
-
-class FakeTracePage:
-    def __init__(self, tracer, settings=None, options=None):
-        self._tracer = tracer
-        self.settings = settings
-        self.options = options
-        self.trace_accesses = 0
-        self.quit_calls = 0
-        self.quit_trace_states: list[tuple[bool | None, bool | None]] = []
-
-    @property
-    def trace(self):
-        self.trace_accesses += 1
-        return self._tracer
-
-    def quit(self):
-        self.quit_calls += 1
-        settings_state = None if self.settings is None else bool(self.settings.trace_enabled)
-        options_state = None if self.options is None else bool(self.options.trace_enabled)
-        self.quit_trace_states.append((settings_state, options_state))
+    def run_js(self, script):
+        if "__RUYI_HANDOFF_STORAGE__" not in script:
+            raise AssertionError("unexpected session export script")
+        return {
+            "origin": "https://fixture.invalid",
+            "localStorage": {"access_token": "local-storage-secret"},
+            "sessionStorage": {"nonce": "session-storage-secret"},
+        }
 
 
 class RuyiBridgeContractTests(unittest.TestCase):
@@ -723,11 +713,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
         Firefox._BROWSERS.clear()
         Firefox._RESERVED_PORTS.clear()
         self.settings = BRIDGE_MODULE.Settings
-        self.original_trace_enabled = self.settings.trace_enabled
-        self.settings.trace_enabled = False
 
     def tearDown(self):
-        self.settings.trace_enabled = self.original_trace_enabled
         Firefox._BROWSERS.clear()
         Firefox._RESERVED_PORTS.clear()
 
@@ -752,15 +739,126 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "fingerprint.set",
             "human.scroll",
             "human.drag",
-            "trace.start",
-            "trace.stop",
-            "trace.results",
+            "session.export",
         }
         self.assertTrue(expected_handlers.issubset(bridge._handlers))
+        self.assertTrue(
+            {"trace.start", "trace.stop", "trace.results"}.isdisjoint(bridge._handlers)
+        )
         self.assertEqual(
             bridge.handle({"id": 1, "method": "browser.status", "params": {}}),
             {"id": 1, "result": {"alive": False}},
         )
+
+    def test_bundled_handoff_contract_matches_canonical_snapshot(self):
+        schema_digest = hashlib.sha256(HANDOFF_SCHEMA_PATH.read_bytes()).hexdigest()
+        self.assertEqual(schema_digest, HANDOFF_SCHEMA_SHA256)
+        HANDOFF_VALIDATOR.validate(load_json(HANDOFF_FIXTURE_PATH))
+
+    def test_export_session_writes_raw_state_only_to_evidence_pointers(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeSessionPage()
+        bridge.page = page
+        bridge.pages[0] = page
+        bridge._headless = True
+        bridge._proxy_url = "http://proxy-user:proxy-secret@proxy.invalid:8080"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temporary_root = Path(tmp)
+            workspace_root = temporary_root / "project"
+            workspace_root.mkdir()
+            profile_path = workspace_root / "profiles" / "source"
+            profile_path.mkdir(parents=True)
+            bridge._profile_path = profile_path.resolve()
+
+            browser_root = temporary_root / "firefox"
+            browser_root.mkdir()
+            browser_binary = browser_root / (
+                "firefox.exe" if BRIDGE_MODULE.os.name == "nt" else "firefox"
+            )
+            browser_binary.write_bytes(b"synthetic-firefox-binary")
+            (browser_root / "application.ini").write_text(
+                "[App]\nVersion=151.0a1\nBuildID=20260718144531\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            bridge._browser_path = browser_binary.resolve()
+
+            response = bridge.handle(
+                {
+                    "id": 2,
+                    "method": "session.export",
+                    "params": {
+                        "pageIdx": 0,
+                        "caseId": "synthetic-web-case",
+                        "handoffId": "handoff_contract_001",
+                        "workspaceRoot": str(workspace_root),
+                        "include": ["cookies", "storage"],
+                    },
+                }
+            )
+
+            self.assertNotIn("error", response)
+            handoff = response["result"]
+            HANDOFF_VALIDATOR.validate(handoff)
+            serialized_handoff = json.dumps(handoff, ensure_ascii=False)
+            for secret in (
+                "cookie-secret-value",
+                "local-storage-secret",
+                "session-storage-secret",
+                "navigation-secret",
+                "proxy-user",
+                "proxy-secret",
+            ):
+                self.assertNotIn(secret, serialized_handoff)
+
+            self.assertEqual(handoff["schema"], "browser-session-handoff.v1")
+            self.assertEqual(handoff["source"]["publicBaseSha"], BRIDGE_MODULE.PUBLIC_BASE_SHA)
+            self.assertRegex(handoff["source"]["localHeadSha"], r"^[a-f0-9]{7,40}$")
+            self.assertEqual(handoff["page"]["url"], "https://fixture.invalid/app")
+            self.assertEqual(
+                handoff["proxy"],
+                {
+                    "mode": "http",
+                    "endpoint": "proxy.invalid:8080",
+                    "credentials": "omitted",
+                },
+            )
+            self.assertEqual(
+                handoff["browser"]["binarySha256"],
+                hashlib.sha256(b"synthetic-firefox-binary").hexdigest(),
+            )
+
+            state_payloads = {}
+            for state_kind, pointer in handoff["stateFiles"].items():
+                state_path = workspace_root / Path(pointer["path"])
+                raw = state_path.read_bytes()
+                self.assertEqual(len(raw), pointer["bytes"])
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), pointer["sha256"])
+                state_payloads[state_kind] = json.loads(raw.decode("utf-8"))
+
+            self.assertEqual(
+                state_payloads["cookies"]["cookies"][0]["value"],
+                "cookie-secret-value",
+            )
+            self.assertEqual(
+                state_payloads["storage"]["localStorage"][0]["items"]["access_token"],
+                "local-storage-secret",
+            )
+            self.assertEqual(
+                state_payloads["storage"]["sessionStorage"][0]["items"]["nonce"],
+                "session-storage-secret",
+            )
+
+            handoff_path = (
+                workspace_root
+                / "evidence"
+                / "web"
+                / "handoff"
+                / "handoff_contract_001"
+                / "browser-session-handoff.json"
+            )
+            self.assertEqual(load_json(handoff_path), handoff)
 
     def test_safe_url_removes_credentials_query_values_and_opaque_payloads(self):
         self.assertEqual(
@@ -2155,189 +2253,6 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "screenOrientation.type was forwarded but not applied",
             response["result"]["warnings"][0],
         )
-
-    def test_runtime_trace_start_clears_old_buffer_and_stop_preserves_dump(self):
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        tracer = FakeTracer(self.settings, entries=[{"event": "stale"}])
-        options = FakeTraceOptions()
-        page = FakeTracePage(tracer)
-        bridge.pages[0] = page
-        bridge.opts = options
-        bridge._trace_enabled_at_launch = False
-
-        with tempfile.TemporaryDirectory() as tmp:
-            output_file = Path(tmp) / "trace.json"
-            start = bridge.handle(
-                {
-                    "id": 30,
-                    "method": "trace.start",
-                    "params": {"pageIdx": 0, "outputFile": str(output_file)},
-                }
-            )
-            self.assertNotIn("error", start)
-            self.assertEqual(
-                {key: start["result"][key] for key in ("tracing", "fullTrace", "partialTrace")},
-                {"tracing": True, "fullTrace": False, "partialTrace": True},
-            )
-            self.assertFalse(start["result"]["alreadyTracing"])
-            self.assertTrue(self.settings.trace_enabled)
-            self.assertTrue(options.trace_enabled)
-            self.assertGreaterEqual(page.trace_accesses, 1)
-            self.assertEqual(tracer.clear_calls, 1)
-            self.assertEqual(tracer.entries, [])
-
-            runtime_entry = FakeTraceEntry("runtime")
-            tracer.entries.append(runtime_entry)
-            repeated_start = bridge.handle(
-                {
-                    "id": 31,
-                    "method": "trace.start",
-                    "params": {"pageIdx": 0, "outputFile": str(output_file)},
-                }
-            )
-            self.assertNotIn("error", repeated_start)
-            self.assertTrue(repeated_start["result"]["alreadyTracing"])
-            self.assertEqual(tracer.clear_calls, 1)
-            self.assertEqual(tracer.entries, [runtime_entry])
-
-            active_results = bridge.handle(
-                {
-                    "id": 32,
-                    "method": "trace.results",
-                    "params": {"pageIdx": 0, "limit": 10},
-                }
-            )
-            self.assertEqual(active_results["result"]["tracing"], True)
-            self.assertEqual(active_results["result"]["entries"], [{"event": "runtime"}])
-
-            stop = bridge.handle(
-                {"id": 33, "method": "trace.stop", "params": {"pageIdx": 0}}
-            )
-            self.assertNotIn("error", stop)
-            self.assertFalse(stop["result"]["tracing"])
-            self.assertFalse(self.settings.trace_enabled)
-            self.assertFalse(options.trace_enabled)
-            self.assertEqual(tracer.dump_trace_enabled, [True])
-            self.assertEqual(tracer.clear_calls, 1)
-            self.assertEqual(tracer.entries, [runtime_entry])
-            self.assertEqual(
-                json.loads(output_file.read_text(encoding="utf-8")),
-                [{"event": "runtime"}],
-            )
-
-            stopped_results = bridge.handle(
-                {
-                    "id": 34,
-                    "method": "trace.results",
-                    "params": {"pageIdx": 0, "limit": 10},
-                }
-            )
-            self.assertEqual(stopped_results["result"]["tracing"], False)
-            self.assertEqual(stopped_results["result"]["entries"], [{"event": "runtime"}])
-
-            restarted = bridge.handle(
-                {"id": 35, "method": "trace.start", "params": {"pageIdx": 0}}
-            )
-            self.assertNotIn("error", restarted)
-            self.assertFalse(restarted["result"]["alreadyTracing"])
-            self.assertTrue(self.settings.trace_enabled)
-            self.assertTrue(options.trace_enabled)
-            self.assertEqual(tracer.clear_calls, 2)
-            self.assertEqual(tracer.entries, [])
-
-    def test_launch_trace_start_keeps_initial_navigation_evidence(self):
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        tracer = FakeTracer(self.settings, entries=[{"event": "initial-navigation"}])
-        options = FakeTraceOptions(enabled=True)
-        page = FakeTracePage(tracer)
-        bridge.pages[0] = page
-        bridge.opts = options
-        bridge._trace_enabled_at_launch = True
-        self.settings.trace_enabled = True
-
-        start = bridge.handle(
-            {"id": 40, "method": "trace.start", "params": {"pageIdx": 0}}
-        )
-
-        self.assertNotIn("error", start)
-        self.assertEqual(
-            {key: start["result"][key] for key in ("tracing", "fullTrace", "partialTrace")},
-            {"tracing": True, "fullTrace": True, "partialTrace": False},
-        )
-        self.assertTrue(start["result"]["alreadyTracing"])
-        self.assertTrue(self.settings.trace_enabled)
-        self.assertTrue(options.trace_enabled)
-        self.assertEqual(tracer.clear_calls, 0)
-        self.assertEqual(tracer.entries, [{"event": "initial-navigation"}])
-
-    def test_trace_start_failure_restores_settings_and_options(self):
-        class BrokenTracePage:
-            @property
-            def trace(self):
-                raise RuntimeError("trace unavailable")
-
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        options = FakeTraceOptions(enabled=False)
-        bridge.pages[0] = BrokenTracePage()
-        bridge.opts = options
-        self.settings.trace_enabled = True
-
-        response = bridge.handle(
-            {"id": 45, "method": "trace.start", "params": {"pageIdx": 0}}
-        )
-
-        self.assertIn("error", response)
-        self.assertTrue(self.settings.trace_enabled)
-        self.assertFalse(options.trace_enabled)
-        self.assertEqual(options.enable_trace_calls, [True, False])
-        self.assertFalse(bridge._trace_active)
-
-    def test_trace_option_enable_failure_restores_settings(self):
-        class BrokenTraceOptions(FakeTraceOptions):
-            def enable_trace(self, enabled=True):
-                enabled = bool(enabled)
-                self.enable_trace_calls.append(enabled)
-                if enabled:
-                    raise RuntimeError("trace option unavailable")
-                self.trace_enabled = False
-                return self
-
-        tracer = FakeTracer(self.settings)
-        page = FakeTracePage(tracer)
-        options = BrokenTraceOptions(enabled=False)
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        bridge.pages[0] = page
-        bridge.opts = options
-        self.settings.trace_enabled = False
-
-        response = bridge.handle(
-            {"id": 46, "method": "trace.start", "params": {"pageIdx": 0}}
-        )
-
-        self.assertIn("error", response)
-        self.assertFalse(self.settings.trace_enabled)
-        self.assertFalse(options.trace_enabled)
-        self.assertEqual(options.enable_trace_calls, [True, False])
-        self.assertEqual(page.trace_accesses, 0)
-        self.assertFalse(bridge._trace_active)
-
-    def test_browser_quit_disables_global_trace_recording(self):
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        tracer = FakeTracer(self.settings)
-        options = FakeTraceOptions(enabled=True)
-        page = FakeTracePage(tracer, settings=self.settings, options=options)
-        bridge.page = page
-        bridge.pages[0] = page
-        bridge.opts = options
-        self.settings.trace_enabled = True
-
-        response = bridge.handle({"id": 50, "method": "browser.quit", "params": {}})
-
-        self.assertNotIn("error", response)
-        self.assertFalse(self.settings.trace_enabled)
-        self.assertFalse(options.trace_enabled)
-        self.assertEqual(page.quit_calls, 1)
-        self.assertEqual(page.quit_trace_states, [(False, False)])
 
     def test_bridge_run_stdin_eof_uses_common_cleanup_path(self):
         bridge = BRIDGE_MODULE.RuyiBridge()

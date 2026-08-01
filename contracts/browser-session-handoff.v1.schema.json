@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Facetomyself/reverse_ENV/contracts/web-reverse/browser-session-handoff.v1.schema.json",
+  "title": "Browser session handoff v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "caseId",
+    "handoffId",
+    "exportedAt",
+    "source",
+    "browser",
+    "connection",
+    "page",
+    "stateFiles",
+    "proxy",
+    "redaction"
+  ],
+  "properties": {
+    "schema": {"const": "browser-session-handoff.v1"},
+    "caseId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,79}$"},
+    "handoffId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,95}$"},
+    "exportedAt": {"type": "string", "format": "date-time"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "publicBaseSha", "localHeadSha"],
+      "properties": {
+        "service": {"const": "ruyi-mcp-reverse-env"},
+        "publicBaseSha": {"type": "string", "pattern": "^[a-f0-9]{7,40}$"},
+        "localHeadSha": {"type": "string", "pattern": "^[a-f0-9]{7,40}$"}
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "buildId", "binarySha256"],
+      "properties": {
+        "name": {"const": "Firefox"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 80},
+        "buildId": {"type": "string", "minLength": 1, "maxLength": 80},
+        "binarySha256": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"}
+      }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "address", "port", "ownership"],
+      "properties": {
+        "mode": {"enum": ["attach", "launch", "profile-clone"]},
+        "address": {"type": "string", "enum": ["127.0.0.1", "localhost", "::1"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "ownership": {"enum": ["external", "control-plane", "handoff-consumer"]},
+        "profilePath": {"type": "string", "pattern": "^[A-Za-z]:\\\\"}
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "contextId"],
+      "properties": {
+        "url": {"type": "string", "format": "uri", "maxLength": 4096},
+        "contextId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "userContextId": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "stateFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "cookies": {"$ref": "evidence-pointer.v1.schema.json"},
+        "storage": {"$ref": "evidence-pointer.v1.schema.json"},
+        "headers": {"$ref": "evidence-pointer.v1.schema.json"}
+      }
+    },
+    "proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "credentials"],
+      "properties": {
+        "mode": {"enum": ["direct", "http", "https", "socks5", "system"]},
+        "endpoint": {"type": "string", "maxLength": 512},
+        "credentials": {"enum": ["none", "omitted", "external-ref"]}
+      }
+    },
+    "fingerprintProfile": {"type": "string", "maxLength": 256},
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["bidi-attach", "profile-clone", "cookie-import", "storage-import", "proxy", "interactive", "headless"]}
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "inlineSecrets"],
+      "properties": {
+        "status": {"enum": ["allowlist-summary", "manual-reviewed"]},
+        "inlineSecrets": {"const": false}
+      }
+    }
+  }
+}

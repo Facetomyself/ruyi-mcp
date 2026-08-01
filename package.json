@@ -1,7 +1,7 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.1.8",
-  "description": "Community MCP server for ruyiPage browser automation, network inspection, fingerprint analysis, and WebDriver BiDi trace workflows",
+  "version": "0.2.0-reverse-env.1",
+  "description": "Private reverse_ENV control-plane adapter for ruyiPage browser automation and evidence handoff",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -21,7 +21,17 @@
     "start": "node build/src/index.js",
     "dev": "tsc && node build/src/index.js"
   },
-  "keywords": ["mcp", "mcp-server", "ruyipage", "browser-automation", "firefox", "webdriver-bidi", "network-inspection", "fingerprinting", "trace"],
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "ruyipage",
+    "browser-automation",
+    "firefox",
+    "webdriver-bidi",
+    "network-inspection",
+    "fingerprinting",
+    "session-handoff"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0"
   },
@@ -34,10 +44,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Facetomyself/ruyi-mcp.git"
+    "url": "git+https://github.com/Facetomyself/ruyi-mcp-reverse-env.git"
   },
   "bugs": {
-    "url": "https://github.com/Facetomyself/ruyi-mcp/issues"
+    "url": "https://github.com/Facetomyself/ruyi-mcp-reverse-env/issues"
   },
-  "homepage": "https://github.com/Facetomyself/ruyi-mcp#readme"
+  "homepage": "https://github.com/Facetomyself/ruyi-mcp-reverse-env#readme"
 }

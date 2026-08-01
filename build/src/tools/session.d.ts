@@ -1,5 +1,5 @@
 /**
- * Session export tool: export_session.
+ * Canonical browser-session handoff for the reverse_ENV evidence plane.
  */
 import { RuyiContext } from '../ruyi-context.js';
 import { ToolRegistrar } from './types.js';

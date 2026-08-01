@@ -1,7 +1,7 @@
 /**
  * RuyiContext — manages browser session state across MCP tool calls.
  *
- * Tracks: active browser, open pages, breakpoints, trace state, network intercepts.
+ * Tracks: active browser, open pages, breakpoints, and network capture state.
  */
 
 import { PythonBridge } from './bridge/python.js';
@@ -26,7 +26,6 @@ export interface SessionState {
   alive: boolean;
   browserLaunched: boolean;
   fingerprintApplied: boolean;
-  traceEnabled: boolean;
   pages: PageInfo[];
   activePageIdx: number;
   breakpoints: BreakpointInfo[];
@@ -41,7 +40,6 @@ function createInitialState(): SessionState {
     alive: false,
     browserLaunched: false,
     fingerprintApplied: false,
-    traceEnabled: false,
     pages: [],
     activePageIdx: 0,
     breakpoints: [],
@@ -78,9 +76,6 @@ export class RuyiContext {
 
     if (params.fingerprint) {
       this.state.fingerprintApplied = true;
-    }
-    if (params.traceEnabled) {
-      this.state.traceEnabled = true;
     }
     if (params.proxy) {
       this.state.proxy = params.proxy as string;
@@ -155,7 +150,7 @@ export class RuyiContext {
   }
 
   // ------------------------------------------------------------------
-  // Capture / Trace
+  // Capture
   // ------------------------------------------------------------------
 
   setCaptureActive(active: boolean, pattern?: string): void {
@@ -163,10 +158,6 @@ export class RuyiContext {
     if (pattern !== undefined) {
       this.state.capturePattern = pattern;
     }
-  }
-
-  setTraceEnabled(enabled: boolean): void {
-    this.state.traceEnabled = enabled;
   }
 
   // ------------------------------------------------------------------

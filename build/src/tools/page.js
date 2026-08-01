@@ -20,7 +20,6 @@ export function registerPageTools(register, ctx) {
                     address: { type: 'string', description: '监听地址，默认 127.0.0.1', default: '127.0.0.1' },
                     port: { type: 'number', description: 'Firefox --remote-debugging-port', minimum: 1, maximum: 65535 },
                     profilePath: { type: 'string', description: '现有 Firefox profile 绝对路径（可选；外部数据，Bridge 不会创建或删除）' },
-                    traceEnabled: { type: 'boolean', description: '接管后启用 BiDi trace，默认 false', default: false },
                 },
                 required: ['port'],
             },
@@ -38,7 +37,6 @@ export function registerPageTools(register, ctx) {
                 address: args.address ?? '127.0.0.1',
                 port: args.port,
                 profilePath: args.profilePath,
-                traceEnabled: args.traceEnabled ?? false,
                 closeOnExit: false,
             });
             return {
@@ -79,7 +77,6 @@ export function registerPageTools(register, ctx) {
                             requireCountry: { type: 'string', description: '要求代理出口国家，如 US' },
                         },
                     },
-                    traceEnabled: { type: 'boolean', description: '启用 BiDi trace 记录', default: false },
                 },
                 required: ['url'],
             },
@@ -109,7 +106,7 @@ export function registerPageTools(register, ctx) {
                     content: [{ type: 'text', text: jsonResult({ created: true, launched: true, ...result }) }],
                 };
             }
-            const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'profilePath', 'fingerprint', 'traceEnabled'];
+            const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'profilePath', 'fingerprint'];
             const conflictingArgs = launchOnlyArgs.filter((key) => args[key] !== undefined);
             if (conflictingArgs.length > 0) {
                 throw new Error(`Browser is already launched; ${conflictingArgs.join(', ')} only apply at launch time. ` +

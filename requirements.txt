@@ -1,1 +1,2 @@
 ruyiPage==1.2.56
+jsonschema==4.26.0

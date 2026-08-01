@@ -8,9 +8,13 @@ export interface ToolProperty {
     default?: unknown;
     minimum?: number;
     maximum?: number;
-    items?: {
-        type: string;
-    };
+    minLength?: number;
+    maxLength?: number;
+    pattern?: string;
+    minItems?: number;
+    maxItems?: number;
+    uniqueItems?: boolean;
+    items?: ToolProperty;
     properties?: Record<string, ToolProperty>;
     required?: string[];
 }

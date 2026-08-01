@@ -10,7 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { cleanupServer, createServer } from './server.js';
 import { PythonBridge } from './bridge/python.js';
 async function main() {
-    console.error('[ruyi-mcp] Starting ruyi-mcp v0.1.8...');
+    console.error('[ruyi-mcp] Starting ruyi-mcp v0.2.0-reverse-env.1...');
     console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
     console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
     console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
