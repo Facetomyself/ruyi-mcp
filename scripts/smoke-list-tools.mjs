@@ -50,12 +50,26 @@ const transport = new StdioClientTransport({
   cwd: root,
   stderr: 'pipe',
 });
-transport.stderr?.resume();
+let serverStderr = '';
+transport.stderr?.setEncoding('utf8');
+transport.stderr?.on('data', (chunk) => {
+  serverStderr += chunk;
+});
 const client = new Client({ name: 'ruyi-mcp-smoke', version: '1.0.0' }, { capabilities: {} });
 
 try {
   await client.connect(transport);
   const result = await client.listTools();
+  assert.match(
+    serverStderr,
+    /\[ruyi-mcp\] Evidence handoff: browser-session-handoff\.v1/,
+    'startup log must identify the canonical evidence handoff contract'
+  );
+  assert.doesNotMatch(
+    serverStderr,
+    /\[ruyi-mcp\] Trace:/,
+    'control-plane startup log must not claim Trace capability'
+  );
   const retiredTraceTools = new Set([
     'ruyi_trace_start',
     'ruyi_trace_stop',

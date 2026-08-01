@@ -14,6 +14,7 @@
 
 - 提供 56 个 MCP 工具，覆盖页面生命周期、脚本与运行时分析、网络抓取、Cookie、DOM、Frame、请求/响应拦截、WebSocket、浏览器指纹、人类行为模拟与 Session handoff。
 - 控制面不再伪装 Trace 能力：`ruyi_trace_*`、`traceEnabled` 和 Bridge Trace 状态均已删除；RuyiTrace 证据采集只由独立 Private `ruyitrace-mcp` 承担。
+- 启动日志只声明 `Evidence handoff: browser-session-handoff.v1`，不得把 ruyiPage 的 BiDi 观察能力表述为 Trace 证据面。
 - `ruyi_export_session` 输出 canonical `browser-session-handoff.v1`。Cookie 与 Storage 原值只写入项目 `evidence/web/handoff/<handoffId>/`，响应只包含 `evidence-pointer.v1`、脱敏代理端点和可验证的 browser/source 元数据。
 - `ruyi_human_drag` 提供原子的拟人拖拽动作链；`ruyi_human_scroll` 使用单方向原生 wheel 小步滚动；`ruyi_human_click` 每次点击前释放陈旧 source，并使用“拟人轨迹 + 带最终坐标的短 click pulse”派发可信 down/up/click。
 - `ruyi_set_fingerprint` 将 outer window、viewport 与 screen 分成显式参数，不再伪造 Firefox 原生窗口几何。
