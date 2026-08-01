@@ -19,7 +19,7 @@ export function registerPageTools(register, ctx) {
                 properties: {
                     address: { type: 'string', description: '监听地址，默认 127.0.0.1', default: '127.0.0.1' },
                     port: { type: 'number', description: 'Firefox --remote-debugging-port', minimum: 1, maximum: 65535 },
-                    profilePath: { type: 'string', description: '现有 Firefox profile 绝对路径（可选）' },
+                    profilePath: { type: 'string', description: '现有 Firefox profile 绝对路径（可选；外部数据，Bridge 不会创建或删除）' },
                     traceEnabled: { type: 'boolean', description: '接管后启用 BiDi trace，默认 false', default: false },
                 },
                 required: ['port'],
@@ -63,6 +63,10 @@ export function registerPageTools(register, ctx) {
                     proxy: { type: 'string', description: '代理地址，如 http://127.0.0.1:7890 或 socks5://host:port' },
                     headless: { type: 'boolean', description: '无头模式，默认 false', default: false },
                     privateMode: { type: 'boolean', description: '隐私模式，默认 false', default: false },
+                    profilePath: {
+                        type: 'string',
+                        description: '外部持久 Firefox profile 的绝对路径（可选）；默认在 RUYI_MCP_PROFILE_ROOT 创建并在正常退出时回收受控临时 profile',
+                    },
                     container: { type: 'boolean', description: '浏览器已启动时是否创建 container tab，默认 false', default: false },
                     fingerprint: {
                         type: 'object',
@@ -105,7 +109,7 @@ export function registerPageTools(register, ctx) {
                     content: [{ type: 'text', text: jsonResult({ created: true, launched: true, ...result }) }],
                 };
             }
-            const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'fingerprint', 'traceEnabled'];
+            const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'profilePath', 'fingerprint', 'traceEnabled'];
             const conflictingArgs = launchOnlyArgs.filter((key) => args[key] !== undefined);
             if (conflictingArgs.length > 0) {
                 throw new Error(`Browser is already launched; ${conflictingArgs.join(', ')} only apply at launch time. ` +
@@ -282,7 +286,7 @@ export function registerPageTools(register, ctx) {
             name: 'ruyi_select_frame',
             description: '选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；' +
                 '也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。' +
-                '选择后的 frame 可在后续 evaluate_script 中通过 frameContextId 参数操作。',
+                '返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。',
             inputSchema: {
                 type: 'object',
                 properties: {

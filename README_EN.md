@@ -15,10 +15,12 @@ This project is independently maintained by the community. It is not an official
 - 59 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, session export, and trace workflows.
 - `ruyi_human_drag` provides an atomic human-like drag chain. `ruyi_human_scroll` emits small native wheel steps in one direction. `ruyi_human_click` releases stale sources, runs a human trajectory, and finishes with a short click pulse that carries its own final coordinates.
 - `ruyi_set_fingerprint` exposes outer-window, viewport, and screen sizing as separate operations instead of spoofing Firefox's native window geometry.
-- `ruyi_select_frame.selector` uses ruyiPage 1.2.56's `iframe.contentWindow` mapping to distinguish `srcdoc` and same-URL frames precisely.
-- `ruyi_capture_wait` normalizes ruyiPage's single `CapturePacket`, `None`, or multi-packet list into an MCP-side `packets` array. Bodies are complete by default; truncation is opt-in through `maxBodyChars > 0`, and batches are drained through one-packet bridge RPCs.
+- `ruyi_select_frame.selector` uses ruyiPage 1.2.56's `iframe.contentWindow` mapping to distinguish `srcdoc` and same-URL frames precisely. The returned `contextId` must be passed explicitly as `frameContextId` to later evaluate, DOM, or human tools; stale and cross-tab IDs fail instead of silently falling back to the top-level page.
+- `ruyi_capture_wait` normalizes ruyiPage's single `CapturePacket`, `None`, or multi-packet list into an MCP-side `packets` array. `metadata` is the default and does not request a body DataCollector; `schema` or `body` must be enabled explicitly at `capture_start`; `schema` returns only body field names, length, and hash, while `body` can only append to an explicit `outputFile` JSONL and never travels in the MCP response.
 - `ruyi_attach_browser` attaches to an existing Firefox BiDi port without navigation. Attached sessions and bridge timeout recovery no longer terminate Firefox as part of a process tree.
-- `ruyi_capture_stop` clears MCP-unconsumed queue/history first, then releases the BiDi subscription and DataCollector within `cleanupTimeout` instead of implicitly hydrating every body during stop.
+- When a new browser has no `profilePath`, the Bridge creates a session-owned disposable profile under `RUYI_MCP_PROFILE_ROOT` and removes it on normal `ruyi_browser_quit` / stdio shutdown. Smart-fingerprint `fpfile` data uses that same directory instead of creating `userdir_*` under the host working directory.
+- `ruyi_capture_stop` uses bounded `discard` cleanup by default. `mode=metadata` returns a bounded, redacted summary before cleanup and reports `observed` / `returned` / `discarded` / `bodyUnavailable`.
+- `ruyi_intercept_wait` returns redacted metadata by default and continues the intercepted request after sampling; `schema` / `body` follow the same JSONL body boundary.
 - A Node.js MCP server backed by a persistent Python JSON-RPC bridge to ruyiPage.
 - One idempotent cleanup chain owns the Server/Bridge lifecycle. Races between stdin EOF, transport close, stdout/child-stdin `EPIPE`, and signals neither duplicate cleanup nor strand pending calls.
 - Tracked TypeScript build output, allowing MCP hosts to start directly from `build/src/index.js` after dependencies are installed.
@@ -33,7 +35,7 @@ This project is independently maintained by the community. It is not an official
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
-| `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 35 Bridge contracts + complete 59-tool schema snapshot + lifecycle gates + `151-proxy`/two Firefox 151 runtime matrix |
+| `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + complete 59-tool schema snapshot + lifecycle gates + same-origin/cross-origin Firefox frame runtime gate |
 | `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 security baseline + 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
 | `v0.1.5` | `1.2.54` | `>=20` | `>=3.10` | 21 Bridge contracts + 20-cycle capture runtime gate + 57-tool stdio smoke |
@@ -60,6 +62,7 @@ npm run check
 
 - `RUYI_MCP_PYTHON`: Python executable used by the Node bridge. The default is `python` on Windows and `python3` on other platforms.
 - `RUYI_FIREFOX_PATH`: Firefox executable path used for new launches. If unset, the bridge checks the reverse_ENV portable location, the Windows ruyiPage browser cache, and `PATH` in that order. `ruyi_attach_browser` only attaches to an existing BiDi endpoint and does not require a local browser path.
+- `RUYI_MCP_PROFILE_ROOT`: absolute parent directory for disposable Firefox profiles owned by the Bridge. It defaults to `<ruyi-mcp>/browser-profiles`; residual profiles after an abnormal exit are confined there and the directory is Git-ignored.
 
 ## Firefox Runtime Selection
 
@@ -89,7 +92,8 @@ $env:RUYI_FIREFOX_PATH='D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox
       "args": ["/absolute/path/to/ruyi-mcp/build/src/index.js"],
       "env": {
         "RUYI_MCP_PYTHON": "/absolute/path/to/python",
-        "RUYI_FIREFOX_PATH": "/absolute/path/to/firefox"
+        "RUYI_FIREFOX_PATH": "/absolute/path/to/firefox",
+        "RUYI_MCP_PROFILE_ROOT": "/absolute/path/to/ruyi-mcp/browser-profiles"
       }
     }
   }
@@ -121,6 +125,13 @@ Start Firefox with `--remote-debugging-port=<port>`, then call `ruyi_attach_brow
 
 The tool connects to the existing BiDi endpoint without creating a process or navigating the active tab, and forces `closeOnExit=false`. Firefox supports only one active BiDi session, so the previous bridge must disconnect first without terminating the Firefox process tree.
 
+## Firefox Profile Boundary
+
+- `profilePath` must be absolute and denotes a persistent caller-owned profile. The Bridge neither clears it before launch nor deletes it on exit.
+- A new launch without `profilePath` uses a Bridge-owned disposable profile. The same path is passed to ruyiPage and `smart_fingerprint(userdir=...)`, so ruyiPage cannot create `userdir_<timestamp>_<random>` in the MCP host's current working directory.
+- To preserve login state, put an explicit `profilePath` in an ignored project workspace. Never put profiles, cookies, fpfiles, or capture data in the repository root or commit them to Git.
+- `ruyi_attach_browser` only attaches to an existing Firefox process; it does not create a profile when `profilePath` is omitted.
+
 ## Validation
 
 ```bash
@@ -128,13 +139,14 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` runs TypeScript type checking, Python syntax checks, 35 Bridge contracts, the build, a 59-tool canonical-schema stdio smoke test, and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is not truncated.
+`npm run check` runs TypeScript type checking, Python syntax checks, 48 Bridge contracts, the build, a 59-tool canonical-schema stdio smoke test, and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is written only to a temporary JSONL file, never returned through MCP.
 
 For links with discontinuous internal hit regions, select a stable visible descendant instead of the outer anchor's geometric center. MCP stdio closure enters `bridge.stop()`; custom SDK clients should still call `ruyi_browser_quit` before closing stdio so an attached browser completes detach-only cleanup.
 
 ## Data and Credential Boundaries
 
 - Do not commit credentials, cookies, proxy secrets, browser profiles, captured traffic, or runtime artifacts.
+- Put a `resultMode=body` `outputFile` in an ignored project workspace. Its content can contain authentication material and must not be pasted into MCP conversations or committed to Git.
 - Provide Python and Firefox paths through environment variables or runtime discovery. Do not commit developer-specific absolute paths.
 
 ## License

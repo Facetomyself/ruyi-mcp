@@ -19,8 +19,11 @@ import shutil
 import math
 import random
 import time
+import tempfile
+import hashlib
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import parse_qsl, urlsplit
 
 # Force UTF-8 JSON-RPC stdio on Windows. Qidian and other Chinese sites may
 # return non-ASCII / non-BMP text; relying on the console code page makes Node
@@ -83,6 +86,155 @@ def _serialize(obj: Any, depth: int = 0) -> Any:
     return str(obj)[:1000]
 
 
+_RESULT_MODES = frozenset({"metadata", "schema", "body"})
+_CAPTURE_STOP_MODES = frozenset({"discard", "metadata"})
+_HEADER_ALLOWLIST = frozenset({
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "cache-control",
+    "etag",
+    "last-modified",
+})
+
+
+class FrameTargetError(ValueError):
+    """A requested frame is absent from the selected page's current tree."""
+
+
+def _normalize_result_mode(value: Any, *, default: str = "metadata") -> str:
+    mode = default if value is None else str(value).strip().lower()
+    if mode not in _RESULT_MODES:
+        raise ValueError(
+            "resultMode must be one of metadata, schema, or body"
+        )
+    return mode
+
+
+def _normalize_capture_stop_mode(value: Any) -> str:
+    mode = "discard" if value is None else str(value).strip().lower()
+    if mode not in _CAPTURE_STOP_MODES:
+        raise ValueError("mode must be one of discard or metadata")
+    return mode
+
+
+def _sha256_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        raw = value
+    elif isinstance(value, str):
+        raw = value.encode("utf-8", errors="replace")
+    else:
+        raw = str(value).encode("utf-8", errors="replace")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _safe_url(value: Any) -> dict:
+    """Return route metadata without query values or user-info credentials."""
+    raw = str(value or "")
+    try:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.lower()
+        if parsed.hostname and scheme in {"http", "https", "ws", "wss"}:
+            host = parsed.hostname
+            try:
+                if parsed.port is not None:
+                    host = f"{host}:{parsed.port}"
+            except ValueError:
+                pass
+            prefix = f"{parsed.scheme}://{host}" if parsed.scheme else host
+            safe = f"{prefix}{parsed.path or '/'}"
+        elif scheme == "about":
+            safe = f"about:{parsed.path.split('?', 1)[0]}"
+        elif scheme:
+            # data:, blob:, file:, and custom URLs can carry arbitrary page
+            # source, filesystem paths, or opaque capability values in path.
+            safe = f"{scheme}:"
+        else:
+            safe = parsed.path or raw.split("?", 1)[0]
+        query_keys = sorted({key for key, _ in parse_qsl(parsed.query, keep_blank_values=True)})
+    except Exception:
+        safe = raw.split("?", 1)[0]
+        query_keys = []
+    return {
+        "url": safe[:2048],
+        "queryKeys": query_keys[:50],
+    }
+
+
+def _safe_headers(headers: Any) -> dict[str, str]:
+    """Expose only an explicit metadata allowlist of HTTP headers."""
+    if isinstance(headers, dict):
+        items = headers.items()
+    elif isinstance(headers, (list, tuple)):
+        items = []
+        for item in headers:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            value = item.get("value", "")
+            if isinstance(value, dict):
+                value = value.get("value", "")
+            items.append((name, value))
+    else:
+        return {}
+
+    result: dict[str, str] = {}
+    for raw_name, raw_value in items:
+        name = str(raw_name or "").lower()
+        if name in _HEADER_ALLOWLIST:
+            if isinstance(raw_value, dict):
+                raw_value = raw_value.get("value", "")
+            result[name] = str(raw_value)[:512]
+    return result
+
+
+def _body_schema(value: Any, content_type: str | None = None) -> dict:
+    """Describe a body without returning body values to the MCP client."""
+    if value is None:
+        return {"state": "unavailable", "reason": "unknown"}
+
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+        raw = value
+    else:
+        text = value if isinstance(value, str) else str(value)
+        raw = text.encode("utf-8", errors="replace")
+
+    result: dict[str, Any] = {
+        "state": "available",
+        "length": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    normalized_content_type = str(content_type or "").lower()
+    stripped = text.lstrip()
+    if "json" in normalized_content_type or stripped.startswith(("{", "[")):
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, dict):
+                result["format"] = "json-object"
+                result["topLevelKeys"] = sorted(str(key) for key in decoded.keys())[:100]
+            elif isinstance(decoded, list):
+                result["format"] = "json-array"
+                result["itemCount"] = len(decoded)
+            else:
+                result["format"] = "json-scalar"
+            return result
+        except (TypeError, ValueError):
+            result["format"] = "json-invalid"
+            return result
+
+    if "application/x-www-form-urlencoded" in normalized_content_type:
+        result["format"] = "form"
+        try:
+            result["topLevelKeys"] = sorted({key for key, _ in parse_qsl(text, keep_blank_values=True)})[:100]
+        except Exception:
+            result["format"] = "form-invalid"
+        return result
+
+    result["format"] = "text" if isinstance(value, str) else "binary-or-unknown"
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Default paths
 # ---------------------------------------------------------------------------
@@ -113,6 +265,34 @@ def _discover_firefox_path() -> str:
 
 
 DEFAULT_FIREFOX_PATH = _discover_firefox_path()
+DEFAULT_PROFILE_ROOT = Path(__file__).resolve().parents[1] / "browser-profiles"
+
+
+def _managed_profile_root() -> Path:
+    """Return the absolute parent directory for bridge-owned Firefox profiles."""
+    configured = os.environ.get("RUYI_MCP_PROFILE_ROOT", "").strip()
+    root = Path(configured).expanduser() if configured else DEFAULT_PROFILE_ROOT
+    if not root.is_absolute():
+        raise ValueError("RUYI_MCP_PROFILE_ROOT must be an absolute path")
+    return root.resolve()
+
+
+def _explicit_profile_path(value: Any) -> Optional[Path]:
+    """Canonicalize a caller-owned profile path without creating it."""
+    if value is None or not str(value).strip():
+        return None
+    profile = Path(str(value).strip()).expanduser()
+    if not profile.is_absolute():
+        raise ValueError("profilePath must be an absolute path")
+    return profile.resolve()
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +313,11 @@ class RuyiBridge:
         self._trace_active: bool = False
         self._preload_scripts: dict[str, str] = {}  # scriptId → script text
         self._fingerprint_ctx: Any = None
+        self._capture_stats: dict[int, dict[str, Any]] = {}
+        self._intercept_modes: dict[int, str] = {}
+        self._profile_path: Optional[Path] = None
+        self._managed_profile: Optional[Path] = None
+        self._managed_profile_root: Optional[Path] = None
 
         self._handlers = {
             # Browser lifecycle
@@ -207,19 +392,141 @@ class RuyiBridge:
             "ws.collect":            self._ws_collect,
         }
 
-        # Frame storage (contextId → FirefoxFrame)
-        self._frame_obj: dict[str, Any] = {}
-
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _get_page(self, page_idx: Any = 0) -> Any:
+    def _prepare_profile(
+        self, params: dict, existing_only: bool
+    ) -> tuple[Optional[Path], str]:
+        """Choose a caller-owned or bridge-owned profile for one launch."""
+        profile = _explicit_profile_path(params.get("profilePath"))
+        if profile is not None:
+            self._profile_path = profile
+            return profile, "external"
+
+        # Attach-only never starts Firefox and must not create data on disk.
+        if existing_only:
+            self._profile_path = None
+            return None, "attached"
+
+        root = _managed_profile_root()
+        root.mkdir(parents=True, exist_ok=True)
+        profile = Path(tempfile.mkdtemp(prefix="session-", dir=str(root))).resolve()
+        if profile.parent != root or not _path_is_within(profile, root):
+            raise RuntimeError("managed Firefox profile escaped RUYI_MCP_PROFILE_ROOT")
+
+        self._profile_path = profile
+        self._managed_profile = profile
+        self._managed_profile_root = root
+        return profile, "managed"
+
+    def _cleanup_managed_profile(self) -> Optional[dict]:
+        """Delete only the profile directory allocated by this bridge instance."""
+        profile = self._managed_profile
+        root = self._managed_profile_root
+        self._managed_profile = None
+        self._managed_profile_root = None
+        if profile is None:
+            return None
+
+        result: dict[str, Any] = {"attempted": True, "removed": False}
+        if (
+            root is None
+            or profile == root
+            or profile.parent != root
+            or not _path_is_within(profile, root)
+        ):
+            result["error"] = "managed profile path validation failed"
+            return result
+
+        last_error = ""
+        for attempt in range(5):
+            try:
+                if not profile.exists():
+                    result["removed"] = True
+                    return result
+                shutil.rmtree(profile)
+                result["removed"] = not profile.exists()
+                if result["removed"]:
+                    return result
+            except OSError as exc:
+                last_error = str(exc)
+                if attempt < 4:
+                    time.sleep(0.15)
+
+        if last_error:
+            result["error"] = last_error[:300]
+        return result
+
+    @staticmethod
+    def _normalize_page_idx(page_idx: Any = 0) -> int:
         idx = page_idx if page_idx is not None else 0
-        if isinstance(idx, str):
-            idx = int(idx)
+        if isinstance(idx, bool):
+            raise ValueError("pageIdx must be an integer")
+        try:
+            return int(idx)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("pageIdx must be an integer") from exc
+
+    def _get_page(self, page_idx: Any = 0) -> Any:
+        idx = self._normalize_page_idx(page_idx)
         if idx not in self.pages:
             raise ValueError(f"Invalid pageIdx: {idx}. Available: {list(self.pages.keys())}")
         return self.pages[idx]
+
+    @staticmethod
+    def _attribute(obj: Any, name: str, default: Any = None) -> Any:
+        try:
+            return getattr(obj, name, default)
+        except Exception:
+            return default
+
+    def _target_metadata(self, target: Any, page_idx: int, kind: str) -> dict:
+        context_id = self._attribute(target, "_context_id", None)
+        url = self._attribute(target, "url", "")
+        is_cross_origin = False
+        if kind == "frame":
+            is_cross_origin = self._attribute(target, "is_cross_origin", None)
+
+        result = {
+            "kind": kind,
+            "pageIdx": page_idx,
+            "contextId": str(context_id) if context_id else None,
+            "isCrossOrigin": is_cross_origin,
+        }
+        result.update(_safe_url(url))
+        return result
+
+    def _frames_for_page(self, page: Any, context_id: str | None = None) -> list[Any]:
+        try:
+            frames = list(page.get_all_frames() or [])
+        except Exception as exc:
+            requested = context_id or "<unknown>"
+            raise FrameTargetError(
+                f"frame_context_not_found: {requested}"
+            ) from exc
+
+        if context_id is None:
+            return frames
+        return [
+            frame for frame in frames
+            if str(self._attribute(frame, "_context_id", "")) == context_id
+        ]
+
+    def _resolve_target(self, params: dict) -> tuple[Any, dict]:
+        """Resolve an explicit frame target without silently falling back."""
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
+        frame_context_id = params.get("frameContextId")
+        if frame_context_id is None or not str(frame_context_id).strip():
+            return page, self._target_metadata(page, page_idx, "page")
+
+        requested = str(frame_context_id).strip()
+        matches = self._frames_for_page(page, requested)
+        if not matches:
+            raise FrameTargetError(f"frame_context_not_found: {requested}")
+        frame = matches[0]
+        return frame, self._target_metadata(frame, page_idx, "frame")
 
     def _norm_selector(self, selector: str) -> str:
         """Normalize selector for ruyipage's page.ele().
@@ -332,34 +639,47 @@ class RuyiBridge:
         if params.get("proxy"):
             opts.set_proxy(params["proxy"])
 
-        # Profile
-        if params.get("profilePath"):
-            opts.set_profile(params["profilePath"])
+        profile_path, profile_mode = self._prepare_profile(params, existing_only)
+        try:
+            if profile_path is not None:
+                opts.set_profile(str(profile_path))
 
-        # Fingerprint — smart_fingerprint needs proxy info
-        fp = params.get("fingerprint")
-        if fp:
-            fp_kwargs = {}
-            if fp.get("proxyHost"):
-                fp_kwargs["proxy_host"] = fp["proxyHost"]
-            if fp.get("proxyPort"):
-                fp_kwargs["proxy_port"] = int(fp["proxyPort"])
-            if fp.get("proxyUser"):
-                fp_kwargs["proxy_user"] = fp["proxyUser"]
-            if fp.get("proxyPwd"):
-                fp_kwargs["proxy_pwd"] = fp["proxyPwd"]
-            if fp.get("requireCountry"):
-                fp_kwargs["require_country"] = fp["requireCountry"]
-            if fp.get("manualGeo"):
-                fp_kwargs["manual_geo"] = fp["manualGeo"]
-            self._fingerprint_ctx = opts.smart_fingerprint(**fp_kwargs)
+            # Fingerprint — smart_fingerprint needs proxy info
+            fp = params.get("fingerprint")
+            if fp:
+                fp_kwargs = {}
+                if fp.get("proxyHost"):
+                    fp_kwargs["proxy_host"] = fp["proxyHost"]
+                if fp.get("proxyPort"):
+                    fp_kwargs["proxy_port"] = int(fp["proxyPort"])
+                if fp.get("proxyUser"):
+                    fp_kwargs["proxy_user"] = fp["proxyUser"]
+                if fp.get("proxyPwd"):
+                    fp_kwargs["proxy_pwd"] = fp["proxyPwd"]
+                if fp.get("requireCountry"):
+                    fp_kwargs["require_country"] = fp["requireCountry"]
+                if fp.get("manualGeo"):
+                    fp_kwargs["manual_geo"] = fp["manualGeo"]
+                # ruyiPage otherwise creates userdir_<timestamp>_<random> below
+                # os.getcwd(). Keep fingerprint files and profile data under the
+                # same controlled directory selected above.
+                if profile_path is not None:
+                    fp_kwargs["userdir"] = str(profile_path)
+                self._fingerprint_ctx = opts.smart_fingerprint(**fp_kwargs)
 
-        # Trace
-        if self._trace_enabled_at_launch:
-            opts.enable_trace(True)
+            # Trace
+            if self._trace_enabled_at_launch:
+                opts.enable_trace(True)
 
-        self.opts = opts
-        self.page = FirefoxPage(opts)
+            self.opts = opts
+            self.page = FirefoxPage(opts)
+        except Exception:
+            self.opts = None
+            self.page = None
+            self._fingerprint_ctx = None
+            self._cleanup_managed_profile()
+            self._profile_path = None
+            raise
         self._attached_existing = existing_only
         if Settings is not None:
             Settings.trace_enabled = self._trace_enabled_at_launch
@@ -373,6 +693,8 @@ class RuyiBridge:
         self._next_page_idx = 0
         self.pages[self._next_page_idx] = self.page
         self._next_page_idx += 1
+        self._capture_stats = {}
+        self._intercept_modes = {}
 
         # Also index other open tabs
         try:
@@ -390,7 +712,8 @@ class RuyiBridge:
             "pageCount": len(self.pages),
             "attached": existing_only,
             "address": existing_address if existing_only else None,
-            "profilePath": params.get("profilePath"),
+            "profilePath": str(profile_path) if profile_path is not None else None,
+            "profileMode": profile_mode,
             "closeOnExit": False if existing_only else bool(params.get("closeOnExit", True)),
         }
 
@@ -441,9 +764,12 @@ class RuyiBridge:
         self._trace_output = None
         self._preload_scripts = {}
         self._fingerprint_ctx = None
-        self._frame_obj = {}
+        self._capture_stats = {}
+        self._intercept_modes = {}
         self._attached_existing = False
-        return {}
+        cleanup = self._cleanup_managed_profile()
+        self._profile_path = None
+        return {"profileCleanup": cleanup} if cleanup is not None else {}
 
     def _status(self, params: dict) -> dict:
         if not self.page:
@@ -457,6 +783,15 @@ class RuyiBridge:
                 "breakpointCount": len(self._breakpoints),
                 "preloadScriptCount": len(self._preload_scripts),
                 "tracing": self._trace_active,
+                "profileMode": (
+                    "managed"
+                    if self._managed_profile is not None
+                    else "external"
+                    if self._profile_path is not None
+                    else "attached"
+                    if self._attached_existing
+                    else None
+                ),
             }
         except Exception:
             return {"alive": False}
@@ -547,6 +882,8 @@ class RuyiBridge:
             raise ValueError(f"Invalid pageIdx: {idx}")
 
         page = self.pages.pop(idx)
+        self._capture_stats.pop(self._normalize_page_idx(idx), None)
+        self._intercept_modes.pop(self._normalize_page_idx(idx), None)
         try:
             page.close()
         except Exception:
@@ -624,7 +961,7 @@ class RuyiBridge:
     # Script execution
     # ------------------------------------------------------------------
     def _evaluate(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx"))
+        target, target_metadata = self._resolve_target(params)
         script = params["script"]
         timeout = params.get("timeout", 10)
         sandbox = params.get("sandbox", None)
@@ -635,11 +972,16 @@ class RuyiBridge:
             # functions correctly, but IIFE + expression mode works for both
             # sync and async. Node.js side always passes function declarations.
             script_iife = f"({script})()"
-            result = page.run_js(script_iife, timeout=timeout, sandbox=sandbox)
+            result = target.run_js(script_iife, timeout=timeout, sandbox=sandbox)
             serialized = _serialize(result)
-            return {"result": serialized}
+            return {"result": serialized, "target": target_metadata}
         except Exception as e:
-            return {"result": None, "error": str(e), "stack": traceback.format_exc()}
+            return {
+                "result": None,
+                "error": str(e),
+                "stack": traceback.format_exc(),
+                "target": target_metadata,
+            }
 
     def _add_preload(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))
@@ -689,22 +1031,183 @@ class RuyiBridge:
         except Exception as e:
             return {"requests": [], "error": str(e)}
 
+    def _capture_stats_for(self, page_idx: int) -> dict[str, Any]:
+        return self._capture_stats.setdefault(
+            page_idx,
+            {
+                "resultMode": "metadata",
+                "observed": 0,
+                "returned": 0,
+                "discarded": 0,
+                "bodyUnavailable": 0,
+                "returnedPacketIds": set(),
+            },
+        )
+
+    def _packet_metadata(self, packet: Any) -> dict:
+        request = self._attribute(packet, "request", None)
+        response = self._attribute(packet, "response", None)
+        request_headers = self._attribute(packet, "request_headers", None)
+        response_headers = self._attribute(packet, "response_headers", None)
+        if request_headers is None and isinstance(request, dict):
+            request_headers = request.get("headers", {})
+        if response_headers is None and isinstance(response, dict):
+            response_headers = response.get("headers", {})
+
+        request_id = self._attribute(packet, "request_id", "")
+        url = _safe_url(self._attribute(packet, "url", ""))
+        return {
+            "url": url["url"],
+            "queryKeys": url["queryKeys"],
+            "method": str(self._attribute(packet, "method", "") or ""),
+            "status": self._attribute(packet, "status", None),
+            "eventType": str(self._attribute(packet, "event_type", "") or ""),
+            "timestamp": self._attribute(packet, "timestamp", None),
+            "requestIdHash": _sha256_text(request_id) if request_id else None,
+            "isFailed": bool(self._attribute(packet, "is_failed", False)),
+            "requestHeaders": _safe_headers(request_headers),
+            "responseHeaders": _safe_headers(response_headers),
+            "requestBody": {"state": "not_requested"},
+            "responseBody": {"state": "not_requested"},
+        }
+
+    @staticmethod
+    def _body_text(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value if isinstance(value, str) else str(value)
+
+    def _decode_packet_body_value(self, packet: Any, value: Any) -> Any:
+        if value is None:
+            return None
+        decoder = self._attribute(packet, "_decode_body_value", None)
+        if callable(decoder):
+            try:
+                return decoder(value)
+            except Exception:
+                return None
+        return value
+
+    def _read_capture_body(self, packet: Any, direction: str, timeout: float) -> str | None:
+        """Read a CapturePacket body without the library's GET replay fallback."""
+        source_name = "request" if direction == "request" else "response"
+        collector_name = (
+            "_request_collector" if direction == "request" else "_response_collector"
+        )
+        source = self._attribute(packet, source_name, None)
+        direct = source.get("body") if isinstance(source, dict) else None
+        decoded = self._decode_packet_body_value(packet, direct)
+        if decoded is not None:
+            return self._body_text(decoded)
+
+        collector = self._attribute(packet, collector_name, None)
+        reader = self._attribute(packet, "_body_from_collector", None)
+        if not callable(reader):
+            return None
+        try:
+            return self._body_text(reader(collector, direction, timeout=timeout))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _body_read_timeout(params: dict) -> float:
+        try:
+            timeout = float(params.get("bodyReadTimeout", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("bodyReadTimeout must be a finite number") from exc
+        if not math.isfinite(timeout) or not 0 <= timeout <= 10:
+            raise ValueError("bodyReadTimeout must be between 0 and 10 seconds")
+        return timeout
+
+    @staticmethod
+    def _body_output_file(params: dict) -> str:
+        output_file = params.get("outputFile")
+        if not isinstance(output_file, str) or not output_file.strip():
+            raise ValueError("outputFile is required when resultMode is body")
+        if not os.path.isabs(output_file):
+            raise ValueError("outputFile must be an absolute path")
+        return os.path.abspath(output_file)
+
+    @staticmethod
+    def _append_jsonl(output_file: str, records: list[dict]) -> None:
+        output_dir = os.path.dirname(output_file)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_file, "a", encoding="utf-8", newline="\n") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _body_for_file(value: str | None, max_body_chars: int) -> tuple[str | None, bool]:
+        if value is None:
+            return None, False
+        truncated = bool(max_body_chars and len(value) > max_body_chars)
+        return (value[:max_body_chars] if truncated else value), truncated
+
     def _capture_start(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
         pattern = params.get("pattern", "")
         method = params.get("method", None)
-        page.capture.start(pattern, method=method)
-        return {"capturing": True, "pattern": pattern}
+        result_mode = _normalize_result_mode(params.get("resultMode"))
+        collect_bodies = result_mode != "metadata"
+        capture = page.capture
+        cleared_previous_history = 0
+        if bool(getattr(capture, "active", False)):
+            # CaptureManager.start() calls stop() on an active session, and
+            # upstream stop() eagerly hydrates every saved body. Clear before
+            # that transition so restarting capture preserves this bridge's
+            # bounded, metadata-first contract.
+            cleared_previous_history = len(capture.steps)
+            capture.clear()
+        capture.start(pattern, method=method, collect_bodies=collect_bodies)
+        self._capture_stats[page_idx] = {
+            "resultMode": result_mode,
+            "observed": 0,
+            "returned": 0,
+            "discarded": 0,
+            "bodyUnavailable": 0,
+            "returnedPacketIds": set(),
+        }
+        return {
+            "capturing": True,
+            "pattern": pattern,
+            "resultMode": result_mode,
+            "collectBodies": collect_bodies,
+            "clearedPreviousPacketHistory": cleared_previous_history,
+        }
 
     def _capture_stop(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
         cleanup_timeout = float(params.get("cleanupTimeout", 5))
         if not math.isfinite(cleanup_timeout) or cleanup_timeout <= 0:
             raise ValueError("cleanupTimeout must be a positive finite number")
         cleanup_timeout = min(cleanup_timeout, 30.0)
+        stop_mode = _normalize_capture_stop_mode(params.get("mode"))
+        try:
+            metadata_limit = int(params.get("metadataLimit", 100))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("metadataLimit must be an integer") from exc
+        if not 0 <= metadata_limit <= 1000:
+            raise ValueError("metadataLimit must be between 0 and 1000")
 
         capture = page.capture
-        history_count = len(capture.steps)
+        history = list(capture.steps)
+        history_count = len(history)
+        stats = self._capture_stats_for(page_idx)
+        stats["observed"] = max(int(stats["observed"]), history_count)
+        returned_ids = stats["returnedPacketIds"]
+        pending_packets = [packet for packet in history if id(packet) not in returned_ids]
+        metadata_packets = []
+        if stop_mode == "metadata":
+            for packet in pending_packets[:metadata_limit]:
+                metadata_packets.append(self._packet_metadata(packet))
+                returned_ids.add(id(packet))
+            stats["returned"] += len(metadata_packets)
+        stats["discarded"] += max(0, len(pending_packets) - len(metadata_packets))
 
         # ruyiPage CaptureManager.stop() hydrates every packet body before it
         # releases the subscription and DataCollector. Each network.getData
@@ -731,12 +1234,32 @@ class RuyiBridge:
         return {
             "capturing": bool(getattr(capture, "active", False)),
             "clearedPacketHistory": history_count,
+            "mode": stop_mode,
+            "metadataPackets": metadata_packets,
+            "observed": stats["observed"],
+            "returned": stats["returned"],
+            "discarded": stats["discarded"],
+            "bodyUnavailable": stats["bodyUnavailable"],
             "cleanupTimeoutSeconds": applied_bidi_timeout,
             "elapsedMs": round((time.monotonic() - started) * 1000),
         }
 
     def _capture_wait(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
+        stats = self._capture_stats_for(page_idx)
+        result_mode = _normalize_result_mode(
+            params.get("resultMode"), default=str(stats["resultMode"])
+        )
+        if result_mode != "metadata" and stats["resultMode"] == "metadata":
+            raise ValueError(
+                "capture body collection was disabled at start; restart capture "
+                "with resultMode=schema or resultMode=body"
+            )
+        output_file = (
+            self._body_output_file(params) if result_mode == "body" else None
+        )
+        body_read_timeout = self._body_read_timeout(params)
         timeout = params.get("timeout", 10)
         count = params.get("count", 5)
         max_body_chars = params.get("maxBodyChars", 0)
@@ -753,36 +1276,65 @@ class RuyiBridge:
         else:
             packets = [capture_result]
         results = []
+        body_outputs = []
         for p in packets:
-            try:
-                request_body = str(getattr(p, 'request_body', ''))
-                response_body = str(getattr(p, 'response_body', ''))
-                request_truncated = bool(max_body_chars and len(request_body) > max_body_chars)
-                response_truncated = bool(max_body_chars and len(response_body) > max_body_chars)
-                if request_truncated:
-                    request_body = request_body[:max_body_chars]
-                if response_truncated:
-                    response_body = response_body[:max_body_chars]
-                results.append({
-                    "url": getattr(p, 'url', str(p)),
-                    "status": getattr(p, 'status', None),
-                    "method": getattr(p, 'method', None),
-                    "requestBody": request_body,
-                    "responseBody": response_body,
-                    "requestBodyTruncated": request_truncated,
-                    "responseBodyTruncated": response_truncated,
-                })
-            except Exception:
-                raw = str(p)
-                raw_truncated = bool(max_body_chars and len(raw) > max_body_chars)
-                if raw_truncated:
-                    raw = raw[:max_body_chars]
-                results.append({"raw": raw, "rawTruncated": raw_truncated})
-        return {
+            packet_metadata = self._packet_metadata(p)
+            if result_mode == "metadata":
+                results.append(packet_metadata)
+            else:
+                request_body = self._read_capture_body(
+                    p, "request", body_read_timeout
+                )
+                response_body = self._read_capture_body(
+                    p, "response", body_read_timeout
+                )
+                request_schema = _body_schema(
+                    request_body,
+                    packet_metadata["requestHeaders"].get("content-type"),
+                )
+                response_schema = _body_schema(
+                    response_body,
+                    packet_metadata["responseHeaders"].get("content-type"),
+                )
+                stats["bodyUnavailable"] += sum(
+                    item["state"] == "unavailable"
+                    for item in (request_schema, response_schema)
+                )
+                packet_metadata["requestBody"] = request_schema
+                packet_metadata["responseBody"] = response_schema
+                results.append(packet_metadata)
+                if result_mode == "body":
+                    request_value, request_truncated = self._body_for_file(
+                        request_body, max_body_chars
+                    )
+                    response_value, response_truncated = self._body_for_file(
+                        response_body, max_body_chars
+                    )
+                    body_outputs.append({
+                        **packet_metadata,
+                        "requestBody": request_value,
+                        "responseBody": response_value,
+                        "requestBodySchema": request_schema,
+                        "responseBodySchema": response_schema,
+                        "requestBodyTruncated": request_truncated,
+                        "responseBodyTruncated": response_truncated,
+                    })
+            stats["observed"] += 1
+            stats["returned"] += 1
+            stats["returnedPacketIds"].add(id(p))
+
+        if output_file is not None and body_outputs:
+            self._append_jsonl(output_file, body_outputs)
+
+        result = {
             "packets": results,
-            "bodyLimitChars": max_body_chars,
-            "completeBodies": max_body_chars == 0,
+            "resultMode": result_mode,
+            "bodyReadTimeout": body_read_timeout,
+            "bodyLimitChars": max_body_chars if result_mode == "body" else None,
+            "savedTo": output_file,
+            "appendedPackets": len(body_outputs),
         }
+        return result
 
     # ------------------------------------------------------------------
     # Cookies
@@ -1106,19 +1658,19 @@ class RuyiBridge:
     # DOM interaction
     # ------------------------------------------------------------------
     def _dom_select(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         selector = self._norm_selector(params["selector"])
         timeout = params.get("timeout", 10)
 
-        el = page.ele(selector, timeout=timeout)
+        el = target.ele(selector, timeout=timeout)
         if el is None or (NoneElement and isinstance(el, NoneElement)):
-            return {"found": False, "selector": selector}
+            return {"found": False, "selector": selector, "target": target_metadata}
 
         # Store element reference in a way we can retrieve later
         element_id = str(id(el))
         # Attach element ID to the JS context for later retrieval
         try:
-            page.run_js(f"window.__ruyi_element_{element_id} = true;")
+            target.run_js(f"window.__ruyi_element_{element_id} = true;")
         except Exception:
             pass
 
@@ -1126,10 +1678,11 @@ class RuyiBridge:
             "found": True,
             "elementId": element_id,
             "selector": selector,
+            "target": target_metadata,
         }
 
     def _dom_get_info(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         selector = params["selector"]
         attribute = params.get("attribute")
 
@@ -1159,67 +1712,92 @@ class RuyiBridge:
             f"}}"
         )
 
-        result = page.run_js(f"({script})()", timeout=10)
+        result = target.run_js(f"({script})()", timeout=10)
         if result is None:
-            return {"found": False}
+            return {"found": False, "target": target_metadata}
 
         if attribute:
-            return {"found": True, "attribute": str(result)[:10000]}
-        return {"found": True, **{k: str(v) for k, v in result.items()}}
+            return {
+                "found": True,
+                "attribute": str(result)[:10000],
+                "target": target_metadata,
+            }
+        return {
+            "found": True,
+            **{k: str(v) for k, v in result.items()},
+            "target": target_metadata,
+        }
 
     def _dom_input(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         selector = self._norm_selector(params["selector"])
         text = params.get("text", "")
         clear = params.get("clear", True)
 
-        el = page.ele(selector)
+        el = target.ele(selector)
         if el is None or (NoneElement and isinstance(el, NoneElement)):
-            return {"found": False, "error": f"Element not found: {selector}"}
+            return {
+                "found": False,
+                "error": f"Element not found: {selector}",
+                "target": target_metadata,
+            }
 
         el.input(text, clear=clear)
-        return {"found": True, "input": text[:500]}
+        return {"found": True, "input": text[:500], "target": target_metadata}
 
     def _dom_click(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         selector = self._norm_selector(params["selector"])
-        el = page.ele(selector)
+        el = target.ele(selector)
         if el is None or (NoneElement and isinstance(el, NoneElement)):
-            return {"found": False, "error": f"Element not found: {selector}"}
+            return {
+                "found": False,
+                "error": f"Element not found: {selector}",
+                "target": target_metadata,
+            }
         el.click_self()
-        return {"found": True, "clicked": True}
+        return {"found": True, "clicked": True, "target": target_metadata}
 
     # ------------------------------------------------------------------
     # Human simulation
     # ------------------------------------------------------------------
     def _human_move(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         selector = self._norm_selector(params["target"])
         algorithm = params.get("algorithm", "bezier")
         style = self._normalize_human_style(params.get("style", "arc"))
 
-        el = page.ele(selector)
+        el = target.ele(selector)
         if el is None or (NoneElement and isinstance(el, NoneElement)):
-            return {"found": False, "error": f"Element not found: {selector}"}
+            return {
+                "found": False,
+                "error": f"Element not found: {selector}",
+                "target": target_metadata,
+            }
 
-        page.actions.human_move(el, algorithm=algorithm, style=style).perform()
+        target.actions.human_move(el, algorithm=algorithm, style=style).perform()
         return {
             "moved": True,
-            "target": selector,
+            "selector": selector,
+            "target": target_metadata,
             "algorithm": algorithm,
             "style": style,
         }
 
     def _human_click(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         selector = self._norm_selector(params["target"])
         algorithm = params.get("algorithm", "windmouse")
 
-        el = page.ele(selector)
+        el = target.ele(selector)
         if el is None or (NoneElement and isinstance(el, NoneElement)):
-            return {"found": False, "error": f"Element not found: {selector}"}
+            return {
+                "found": False,
+                "error": f"Element not found: {selector}",
+                "target": target_metadata,
+            }
 
-        actions = page.actions
+        actions = target.actions
         # Firefox may keep a stale BiDi pointer source after many document
         # navigations. performActions can still return success while the page
         # receives no pointerdown/click events. Reset both the remote source
@@ -1235,11 +1813,11 @@ class RuyiBridge:
         click_x = int(actions.curr_x)
         click_y = int(actions.curr_y)
         click_source_id = f"mouse-click-{random.randint(100000, 999999)}"
-        driver = page._driver._browser_driver
+        driver = target._driver._browser_driver
         driver.run(
             "input.performActions",
             {
-                "context": page._context_id,
+                "context": target._context_id,
                 "actions": [
                     {
                         "type": "pointer",
@@ -1262,7 +1840,8 @@ class RuyiBridge:
         )
         return {
             "clicked": True,
-            "target": selector,
+            "selector": selector,
+            "target": target_metadata,
             "algorithm": algorithm,
             "pointerReset": True,
             "atomicPointer": True,
@@ -1272,7 +1851,7 @@ class RuyiBridge:
 
     def _human_scroll(self, params: dict) -> dict:
         """Perform small, one-direction native wheel steps with random pauses."""
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         direction = str(params.get("direction", "down")).strip().lower()
         steps = int(params.get("steps", 4))
         min_step = int(params.get("minStep", 60))
@@ -1291,17 +1870,17 @@ class RuyiBridge:
                 "minPauseMs/maxPauseMs must satisfy 0 <= minPauseMs <= maxPauseMs <= 10000"
             )
 
-        viewport_x, viewport_y = page.rect.viewport_midpoint
+        viewport_x, viewport_y = target.rect.viewport_midpoint
         sign = 1 if direction == "down" else -1
         deltas = []
         pauses = []
-        driver = page._driver._browser_driver
+        driver = target._driver._browser_driver
         for index in range(steps):
             delta = sign * random.randint(min_step, max_step)
             driver.run(
                 "input.performActions",
                 {
-                    "context": page._context_id,
+                    "context": target._context_id,
                     "actions": [
                         {
                             "type": "wheel",
@@ -1333,13 +1912,18 @@ class RuyiBridge:
             "pausesMs": pauses,
             "totalDelta": sum(deltas),
             "nativeWheel": True,
+            "target": target_metadata,
         }
 
     def _human_drag(self, params: dict) -> dict:
         """Perform one atomic, human-like pointer drag."""
-        page = self._get_page(params.get("pageIdx", 0))
-        source, source_desc = self._resolve_action_target(page, params.get("source"), "source")
-        target, target_desc = self._resolve_action_target(page, params.get("target"), "target")
+        action_target, target_metadata = self._resolve_target(params)
+        source, source_desc = self._resolve_action_target(
+            action_target, params.get("source"), "source"
+        )
+        destination, destination_desc = self._resolve_action_target(
+            action_target, params.get("target"), "target"
+        )
         algorithm = str(params.get("algorithm", "bezier")).strip().lower()
         if algorithm not in {"bezier", "windmouse"}:
             raise ValueError("algorithm must be bezier or windmouse")
@@ -1353,12 +1937,12 @@ class RuyiBridge:
         if button not in {0, 1, 2}:
             raise ValueError("button must be 0, 1, or 2")
 
-        actions = page.actions
+        actions = action_target.actions
         try:
             chain = actions.move_to(source).hold(button=button)
             if hold_ms:
                 chain.wait(hold_ms / 1000.0)
-            chain.human_move(target, algorithm=algorithm, style=style)
+            chain.human_move(destination, algorithm=algorithm, style=style)
             if release_ms:
                 chain.wait(release_ms / 1000.0)
             chain.release(button=button).perform()
@@ -1372,7 +1956,8 @@ class RuyiBridge:
         return {
             "dragged": True,
             "source": source_desc,
-            "target": target_desc,
+            "destination": destination_desc,
+            "target": target_metadata,
             "algorithm": algorithm,
             "style": style,
             "holdMs": hold_ms,
@@ -1381,14 +1966,18 @@ class RuyiBridge:
         }
 
     def _human_input(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        target, target_metadata = self._resolve_target(params)
         selector = self._norm_selector(params["target"])
         text = params.get("text", "")
         delay_ms = params.get("delayMs", 50)
 
-        el = page.ele(selector)
+        el = target.ele(selector)
         if el is None or (NoneElement and isinstance(el, NoneElement)):
-            return {"found": False, "error": f"Element not found: {selector}"}
+            return {
+                "found": False,
+                "error": f"Element not found: {selector}",
+                "target": target_metadata,
+            }
 
         # Type character by character with delay
         for char in text:
@@ -1397,7 +1986,7 @@ class RuyiBridge:
                 import time
                 time.sleep(delay_ms / 1000.0)
 
-        return {"input": True, "target": selector}
+        return {"input": True, "selector": selector, "target": target_metadata}
 
     # ------------------------------------------------------------------
     # Session export
@@ -1667,18 +2256,16 @@ class RuyiBridge:
     # Frame
     # ------------------------------------------------------------------
     def _frame_list(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
         try:
-            frames = page.get_all_frames()
+            frames = self._frames_for_page(page)
             result = []
             for f in (frames or []):
                 try:
-                    result.append({
-                        "contextId": getattr(f, "_context_id", ""),
-                        "url": getattr(f, "url", ""),
-                        "title": getattr(f, "title", ""),
-                        "isCrossOrigin": getattr(f, "is_cross_origin", None),
-                    })
+                    item = self._target_metadata(f, page_idx, "frame")
+                    item["title"] = str(self._attribute(f, "title", ""))[:512]
+                    result.append(item)
                 except Exception:
                     result.append({"error": str(f)[:200]})
             return {"frames": result}
@@ -1686,30 +2273,39 @@ class RuyiBridge:
             return {"frames": [], "error": str(e)}
 
     def _frame_select(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
         context_id = params.get("contextId", "")
         selector = params.get("selector", "")
         try:
             if bool(context_id) == bool(selector):
                 raise ValueError("Exactly one of contextId or selector is required")
             if context_id:
-                frame = page.get_frame(context_id=context_id)
+                matches = self._frames_for_page(page, str(context_id))
+                frame = matches[0] if matches else None
                 selected_by = "contextId"
             else:
                 normalized_selector = self._norm_selector(selector)
-                frame = page.get_frame(locator=normalized_selector)
+                candidate = page.get_frame(locator=normalized_selector)
+                candidate_context_id = str(
+                    self._attribute(candidate, "_context_id", "")
+                )
+                matches = self._frames_for_page(page, candidate_context_id)
+                frame = matches[0] if matches else None
                 selected_by = "selector"
             if frame is None:
                 return {"found": False, "selectedBy": selected_by}
-            cid = getattr(frame, "_context_id", "")
-            self._frame_obj[cid] = frame
+            target = self._target_metadata(frame, page_idx, "frame")
+            cid = target["contextId"]
             return {
                 "found": True,
                 "contextId": cid,
                 "selectedBy": selected_by,
-                "url": getattr(frame, "url", ""),
-                "title": getattr(frame, "title", ""),
-                "isCrossOrigin": getattr(frame, "is_cross_origin", None),
+                "url": target["url"],
+                "queryKeys": target["queryKeys"],
+                "title": str(self._attribute(frame, "title", ""))[:512],
+                "isCrossOrigin": target["isCrossOrigin"],
+                "target": target,
             }
         except Exception as e:
             return {"found": False, "error": str(e)}
@@ -1717,53 +2313,219 @@ class RuyiBridge:
     # ------------------------------------------------------------------
     # Intercept
     # ------------------------------------------------------------------
+    def _intercept_metadata(self, request: Any) -> dict:
+        raw_request = self._attribute(request, "_request", None)
+        raw_response = self._attribute(request, "_response_raw", None)
+        request_id = self._attribute(request, "request_id", "")
+        url = _safe_url(self._attribute(request, "url", ""))
+        request_headers = self._attribute(request, "headers", None)
+        response_headers = self._attribute(request, "response_headers", None)
+        if request_headers is None and isinstance(raw_request, dict):
+            request_headers = raw_request.get("headers", {})
+        if response_headers is None and isinstance(raw_response, dict):
+            response_headers = raw_response.get("headers", {})
+
+        return {
+            "url": url["url"],
+            "queryKeys": url["queryKeys"],
+            "method": str(self._attribute(request, "method", "") or ""),
+            "isResponsePhase": bool(
+                self._attribute(request, "is_response_phase", False)
+            ),
+            "responseStatus": self._attribute(request, "response_status", None),
+            "requestIdHash": _sha256_text(request_id) if request_id else None,
+            "requestHeaders": _safe_headers(request_headers),
+            "responseHeaders": _safe_headers(response_headers),
+            "requestBody": {"state": "not_requested"},
+            "responseBody": {"state": "not_requested"},
+        }
+
+    def _read_collector_body(
+        self, packet: Any, collector: Any, direction: str, timeout: float
+    ) -> str | None:
+        request_id = self._attribute(packet, "request_id", "")
+        if not collector or not request_id:
+            return None
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                data = collector.get(request_id, data_type=direction)
+                for name in ("base64", "bytes"):
+                    decoded = self._decode_packet_body_value(
+                        packet, self._attribute(data, name, None)
+                    )
+                    if decoded is not None:
+                        return self._body_text(decoded)
+                raw = self._attribute(data, "raw", None)
+                if isinstance(raw, dict):
+                    for key in ("data", "body", "value"):
+                        decoded = self._decode_packet_body_value(packet, raw.get(key))
+                        if decoded is not None:
+                            return self._body_text(decoded)
+            except Exception:
+                pass
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(0.05, remaining))
+
     def _intercept_start_req(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
         patterns = params.get("urlPatterns")
+        result_mode = _normalize_result_mode(params.get("resultMode"))
         try:
-            page.intercept.start_requests(None, url_patterns=patterns)
-            return {"intercepting": True, "phase": "request", "patterns": patterns}
+            page.intercept.start_requests(
+                None,
+                url_patterns=patterns,
+                collect_response=result_mode != "metadata",
+            )
+            self._intercept_modes[page_idx] = result_mode
+            return {
+                "intercepting": True,
+                "phase": "request",
+                "patterns": patterns,
+                "resultMode": result_mode,
+            }
         except Exception as e:
             return {"intercepting": False, "error": str(e)}
 
     def _intercept_start_resp(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
         patterns = params.get("urlPatterns")
+        result_mode = _normalize_result_mode(params.get("resultMode"))
         try:
-            page.intercept.start_responses(None, url_patterns=patterns)
-            return {"intercepting": True, "phase": "response", "patterns": patterns}
+            page.intercept.start_responses(
+                None,
+                url_patterns=patterns,
+                collect_response=result_mode != "metadata",
+            )
+            self._intercept_modes[page_idx] = result_mode
+            return {
+                "intercepting": True,
+                "phase": "response",
+                "patterns": patterns,
+                "resultMode": result_mode,
+            }
         except Exception as e:
             return {"intercepting": False, "error": str(e)}
 
+    def _continue_intercept(self, request: Any, is_response_phase: bool) -> str:
+        if self._attribute(request, "handled", False):
+            return "alreadyHandled"
+        method_name = "continue_response" if is_response_phase else "continue_request"
+        method = self._attribute(request, method_name, None)
+        if not callable(method):
+            raise RuntimeError(f"intercept request has no {method_name} method")
+        method()
+        return method_name
+
+    def _read_intercept_body(
+        self, request: Any, direction: str, timeout: float
+    ) -> str | None:
+        source_name = "_request" if direction == "request" else "_response_raw"
+        collector_name = "_collector" if direction == "request" else "_response_collector"
+        source = self._attribute(request, source_name, None)
+        direct = source.get("body") if isinstance(source, dict) else None
+        if direct is None and direction == "request":
+            params = self._attribute(request, "_params", None)
+            if isinstance(params, dict):
+                direct = params.get("body")
+        decoded = self._decode_packet_body_value(request, direct)
+        if decoded is not None:
+            return self._body_text(decoded)
+        return self._read_collector_body(
+            request,
+            self._attribute(request, collector_name, None),
+            direction,
+            timeout,
+        )
+
     def _intercept_wait(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
+        result_mode = _normalize_result_mode(
+            params.get("resultMode"),
+            default=self._intercept_modes.get(page_idx, "metadata"),
+        )
+        if (
+            result_mode != "metadata"
+            and self._intercept_modes.get(page_idx, "metadata") == "metadata"
+        ):
+            raise ValueError(
+                "intercept body collection was disabled at start; restart interception "
+                "with resultMode=schema or resultMode=body"
+            )
+        output_file = (
+            self._body_output_file(params) if result_mode == "body" else None
+        )
+        body_read_timeout = self._body_read_timeout(params)
+        max_body_chars = int(params.get("maxBodyChars", 0) or 0)
+        if max_body_chars < 0:
+            raise ValueError("maxBodyChars must be >= 0")
         timeout = params.get("timeout", 10)
         try:
             req = page.intercept.wait(timeout=timeout)
             if req is None:
-                return {"timedOut": True}
-            # Extract InterceptedRequest properties
-            result = {
-                "url": getattr(req, "url", ""),
-                "method": getattr(req, "method", ""),
-                "isResponsePhase": getattr(req, "is_response_phase", False),
-                "requestHeaders": _serialize(getattr(req, "headers", {})),
-                "requestBody": str(getattr(req, "body", ""))[:10000],
-            }
-            if result["isResponsePhase"]:
-                result["responseStatus"] = getattr(req, "response_status", None)
-                result["responseHeaders"] = _serialize(getattr(req, "response_headers", {}))
-                result["responseBody"] = str(getattr(req, "response_body", ""))[:50000]
+                return {"timedOut": True, "resultMode": result_mode}
+
+            result = self._intercept_metadata(req)
+            result["continued"] = self._continue_intercept(
+                req, result["isResponsePhase"]
+            )
+            if result_mode != "metadata":
+                request_body = self._read_intercept_body(
+                    req, "request", body_read_timeout
+                )
+                response_body = self._read_intercept_body(
+                    req, "response", body_read_timeout
+                )
+                request_schema = _body_schema(
+                    request_body,
+                    result["requestHeaders"].get("content-type"),
+                )
+                response_schema = _body_schema(
+                    response_body,
+                    result["responseHeaders"].get("content-type"),
+                )
+                result["requestBody"] = request_schema
+                result["responseBody"] = response_schema
+                if output_file is not None:
+                    request_value, request_truncated = self._body_for_file(
+                        request_body, max_body_chars
+                    )
+                    response_value, response_truncated = self._body_for_file(
+                        response_body, max_body_chars
+                    )
+                    self._append_jsonl(
+                        output_file,
+                        [{
+                            **result,
+                            "requestBody": request_value,
+                            "responseBody": response_value,
+                            "requestBodySchema": request_schema,
+                            "responseBodySchema": response_schema,
+                            "requestBodyTruncated": request_truncated,
+                            "responseBodyTruncated": response_truncated,
+                        }],
+                    )
+            result["resultMode"] = result_mode
+            result["savedTo"] = output_file
             return result
         except Exception as e:
             return {"timedOut": True, "error": str(e)}
 
     def _intercept_stop(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
         try:
             page.intercept.stop()
         except Exception:
             pass
+        self._intercept_modes.pop(page_idx, None)
         return {"intercepting": False}
 
     # ------------------------------------------------------------------

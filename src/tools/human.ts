@@ -27,6 +27,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
         properties: {
           target: { type: 'string', description: '目标元素选择器' },
           pageIdx: { type: 'number', default: 0 },
+          frameContextId: { type: 'string', description: '可选 frame browsing context ID；动作只会在该 frame 执行。' },
           algorithm: {
             type: 'string',
             description: '移动算法',
@@ -47,6 +48,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
       const pageIdx = getPageIdx(args, ctx);
       const result = await ctx.bridgeInstance.call('human.move', {
         pageIdx,
+        frameContextId: args.frameContextId,
         target: args.target,
         algorithm: args.algorithm ?? 'bezier',
         style: args.style ?? 'arc',
@@ -92,6 +94,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
             required: ['x', 'y'],
           },
           pageIdx: { type: 'number', default: 0 },
+          frameContextId: { type: 'string', description: '可选 frame browsing context ID；source 和 target 都在该 frame 的 viewport 内解析。' },
           algorithm: {
             type: 'string',
             enum: ['bezier', 'windmouse'],
@@ -146,6 +149,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
 
       const result = await ctx.bridgeInstance.call('human.drag', {
         pageIdx,
+        frameContextId: args.frameContextId,
         source,
         target,
         algorithm: args.algorithm ?? 'bezier',
@@ -174,6 +178,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
         type: 'object',
         properties: {
           pageIdx: { type: 'number', default: 0 },
+          frameContextId: { type: 'string', description: '可选 frame browsing context ID；wheel action 只会发送到该 frame context。' },
           direction: {
             type: 'string',
             enum: ['down', 'up'],
@@ -222,6 +227,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
       const pageIdx = getPageIdx(args, ctx);
       const result = await ctx.bridgeInstance.call('human.scroll', {
         pageIdx,
+        frameContextId: args.frameContextId,
         direction: args.direction ?? 'down',
         steps: args.steps ?? 4,
         minStep: args.minStep ?? 60,
@@ -248,6 +254,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
         properties: {
           target: { type: 'string', description: '目标元素选择器' },
           pageIdx: { type: 'number', default: 0 },
+          frameContextId: { type: 'string', description: '可选 frame browsing context ID；动作只会在该 frame 执行。' },
           algorithm: {
             type: 'string',
             enum: ['bezier', 'windmouse'],
@@ -261,6 +268,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
       const pageIdx = getPageIdx(args, ctx);
       const result = await ctx.bridgeInstance.call('human.click', {
         pageIdx,
+        frameContextId: args.frameContextId,
         target: args.target,
         algorithm: args.algorithm ?? 'windmouse',
       }) as Record<string, unknown>;
@@ -284,6 +292,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
           target: { type: 'string', description: '目标输入框选择器' },
           text: { type: 'string', description: '要输入的文本' },
           pageIdx: { type: 'number', default: 0 },
+          frameContextId: { type: 'string', description: '可选 frame browsing context ID；输入只会在该 frame 执行。' },
           delayMs: { type: 'number', description: '每个字符间延迟（毫秒），默认 50', default: 50 },
         },
         required: ['target', 'text'],
@@ -293,6 +302,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
       const pageIdx = getPageIdx(args, ctx);
       const result = await ctx.bridgeInstance.call('human.input', {
         pageIdx,
+        frameContextId: args.frameContextId,
         target: args.target,
         text: args.text,
         delayMs: args.delayMs ?? 50,

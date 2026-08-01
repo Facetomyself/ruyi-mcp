@@ -15,10 +15,12 @@
 - 提供 59 个 MCP 工具，覆盖页面生命周期、脚本与运行时分析、网络抓取、Cookie、DOM、Frame、请求/响应拦截、WebSocket、浏览器指纹、人类行为模拟、Session 导出和 Trace。
 - `ruyi_human_drag` 提供原子的拟人拖拽动作链；`ruyi_human_scroll` 使用单方向原生 wheel 小步滚动；`ruyi_human_click` 每次点击前释放陈旧 source，并使用“拟人轨迹 + 带最终坐标的短 click pulse”派发可信 down/up/click。
 - `ruyi_set_fingerprint` 将 outer window、viewport 与 screen 分成显式参数，不再伪造 Firefox 原生窗口几何。
-- `ruyi_select_frame.selector` 使用 ruyiPage 1.2.56 的 `iframe.contentWindow` 映射，可精确区分 `srcdoc` 或同 URL frame。
-- `ruyi_capture_wait` 会把 ruyiPage 的单个 `CapturePacket`、`None` 或多包列表统一为 MCP 侧的 `packets` 数组，默认完整返回 body；只有显式设置 `maxBodyChars > 0` 才截断，并在 TypeScript 层按单包 RPC 排空批次。
+- `ruyi_select_frame.selector` 使用 ruyiPage 1.2.56 的 `iframe.contentWindow` 映射，可精确区分 `srcdoc` 或同 URL frame；返回的 `contextId` 必须由后续 evaluate、DOM 或 human 工具显式作为 `frameContextId` 传入，过期或其他标签页的 ID 会报错，绝不静默回退顶层页。
+- `ruyi_capture_wait` 会把 ruyiPage 的单个 `CapturePacket`、`None` 或多包列表统一为 MCP 侧的 `packets` 数组。`metadata` 是默认模式且不申请 body DataCollector；需要 `schema` 或 `body` 必须在 `capture_start` 时显式启用；`schema` 只返回 body 字段名、长度和 hash，`body` 只能追加到显式 `outputFile` JSONL，不会经过 MCP response。
 - `ruyi_attach_browser` 通过现有 Firefox BiDi 端口接管浏览器，不导航页面；接管会话与 bridge 超时恢复都不会再连带关闭 Firefox。
-- `ruyi_capture_stop` 会先清空 MCP 不再消费的队列/历史，再以 `cleanupTimeout` 有界释放 BiDi 订阅与 DataCollector，避免 stop 隐式补读全部 body。
+- 新建浏览器若未给 `profilePath`，Bridge 会在 `RUYI_MCP_PROFILE_ROOT` 下创建本次会话专属的受控临时 profile，并在正常 `ruyi_browser_quit` / stdio shutdown 时回收；smart fingerprint 的 `fpfile` 同样只写入该目录，不再跟随当前工作目录生成 `userdir_*`。
+- `ruyi_capture_stop` 默认以有界 `discard` 清理；`mode=metadata` 可在清理前输出有上限的脱敏摘要，并回报 `observed` / `returned` / `discarded` / `bodyUnavailable`。
+- `ruyi_intercept_wait` 默认只返回脱敏 metadata，并在取样后继续被拦截请求；`schema` / `body` 遵循同一 JSONL body 边界。
 - Node.js MCP Server 通过常驻 Python JSON-RPC Bridge 调用 ruyiPage。
 - Server/Bridge 生命周期由单一幂等 cleanup 链管理；stdin EOF、transport close、stdout/child stdin `EPIPE` 与 signal 竞争不会重复清理或遗留 pending call。
 - 仓库跟踪 TypeScript 构建产物；依赖安装完成后，MCP Host 可直接从 `build/src/index.js` 启动。
@@ -33,7 +35,7 @@
 
 | ruyi-mcp | ruyiPage | Node.js | Python | 验证环境 |
 |----------|----------|---------|--------|----------|
-| `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 35 Bridge contracts + 59 tools 完整 schema snapshot + lifecycle gates + `151-proxy`/两套 Firefox 151 runtime matrix |
+| `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + 59 tools 完整 schema snapshot + lifecycle gates + 同源/跨域 Firefox frame runtime gate |
 | `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 安全基线 + 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
 | `v0.1.5` | `1.2.54` | `>=20` | `>=3.10` | 21 Bridge contracts + 20 轮 capture runtime gate + 57 tools stdio smoke |
@@ -60,6 +62,7 @@ npm run check
 
 - `RUYI_MCP_PYTHON`：Node Bridge 使用的 Python 可执行文件。Windows 默认使用 `python`，其他平台默认使用 `python3`。
 - `RUYI_FIREFOX_PATH`：新建浏览器时使用的 Firefox 可执行文件路径。未设置时，Bridge 会依次检查 reverse_ENV 便携目录、Windows RuyiPage 浏览器缓存和 `PATH`；`ruyi_attach_browser` 只接管现有 BiDi 端口，不要求本地 browser path。
+- `RUYI_MCP_PROFILE_ROOT`：Bridge 自动创建的 disposable Firefox profile 根目录。必须是绝对路径；未设置时默认为 `<ruyi-mcp>/browser-profiles`。异常退出留下的残留也只会位于此处，且该目录被 Git 忽略。
 
 ## Firefox runtime 选择
 
@@ -89,7 +92,8 @@ $env:RUYI_FIREFOX_PATH='D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox
       "args": ["/absolute/path/to/ruyi-mcp/build/src/index.js"],
       "env": {
         "RUYI_MCP_PYTHON": "/absolute/path/to/python",
-        "RUYI_FIREFOX_PATH": "/absolute/path/to/firefox"
+        "RUYI_FIREFOX_PATH": "/absolute/path/to/firefox",
+        "RUYI_MCP_PROFILE_ROOT": "/absolute/path/to/ruyi-mcp/browser-profiles"
       }
     }
   }
@@ -121,6 +125,13 @@ Firefox 必须以 `--remote-debugging-port=<port>` 启动。MCP 重启后调用�
 
 `ruyi_attach_browser` 只连接现有 BiDi 端口，不创建进程、不导航当前标签页，并强制 `closeOnExit=false`。Firefox 同一时刻只允许一个 BiDi session；旧 bridge 必须先断开，但不得使用进程树终止把 Firefox 一并杀掉。
 
+## Firefox Profile 边界
+
+- `profilePath` 必须为绝对路径，且表示调用者管理的持久 profile；Bridge 不会在启动前清空它，也不会在退出时删除它。
+- 未传 `profilePath` 的新建会话使用 Bridge 管理的 disposable profile。Bridge 将该路径同时传给 ruyiPage 与 `smart_fingerprint(userdir=...)`，避免 ruyiPage 在 MCP Host 的当前工作目录生成 `userdir_<timestamp>_<random>`。
+- 需要保留登录态时，显式把 `profilePath` 放在 ignored 的项目 workspace；不得把 profile、Cookie、fpfile 或 capture 数据放在仓库根目录或提交到 Git。
+- `ruyi_attach_browser` 只接管现有 Firefox；未给 `profilePath` 时不会创建任何 profile 目录。
+
 ## 验证
 
 ```bash
@@ -128,13 +139,14 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` 会执行 TypeScript typecheck、Python 语法检查、35 项 Bridge contract、构建、59 tools canonical schema stdio smoke，以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 不截断。
+`npm run check` 会执行 TypeScript typecheck、Python 语法检查、48 项 Bridge contract、构建、59 tools canonical schema stdio smoke，以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 只写入临时 JSONL、不会回传 MCP response。
 
 对内部命中区域不连续的链接（例如 Google Scholar 下一页），应选择实际可见的稳定子节点，不要点击外层 anchor 的几何中心。MCP stdio transport 关闭会进入 `bridge.stop()`；自建 SDK client 在关闭 stdio 前仍应先调用 `ruyi_browser_quit`，确保 attached browser 完成 detach-only。
 
 ## 数据与凭据边界
 
 - Git 中不得提交凭据、Cookie、代理密钥、浏览器 Profile、抓取数据或运行时产物。
+- `resultMode=body` 的 `outputFile` 应放入 ignored 的项目 workspace；其内容可能包含认证材料，不应回贴到 MCP 对话或提交到 Git。
 - Python 与 Firefox 路径必须通过环境变量或运行时发现机制提供，不得提交开发者个人绝对路径。
 
 ## License

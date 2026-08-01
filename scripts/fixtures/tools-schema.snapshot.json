@@ -17,7 +17,7 @@
             "type": "number"
           },
           "profilePath": {
-            "description": "现有 Firefox profile 绝对路径（可选）",
+            "description": "现有 Firefox profile 绝对路径（可选；外部数据，Bridge 不会创建或删除）",
             "type": "string"
           },
           "traceEnabled": {
@@ -72,7 +72,7 @@
       "name": "ruyi_browser_status"
     },
     {
-      "description": "开始被动抓包。按 URL 模式匹配请求，后续用 ruyi_capture_wait 获取。",
+      "description": "开始被动抓包。默认只收集脱敏 metadata，不申请 body DataCollector；需要字段结构或原始 body 时显式设置 resultMode。",
       "inputSchema": {
         "properties": {
           "method": {
@@ -87,6 +87,16 @@
             "default": "",
             "description": "URL 匹配模式（子串匹配）",
             "type": "string"
+          },
+          "resultMode": {
+            "default": "metadata",
+            "description": "输出模式：metadata 默认；schema 只返回 body 结构、长度和 hash；body 仅写入 ruyi_capture_wait.outputFile。",
+            "enum": [
+              "metadata",
+              "schema",
+              "body"
+            ],
+            "type": "string"
           }
         },
         "required": [],
@@ -95,7 +105,7 @@
       "name": "ruyi_capture_start"
     },
     {
-      "description": "停止被动抓包。会先清空尚未消费的队列/历史，避免 ruyiPage stop 隐式补读全部 body；需要结果时应先调用 ruyi_capture_wait。",
+      "description": "停止被动抓包。会先清空尚未消费的队列/历史，避免 ruyiPage stop 隐式补读全部 body；mode=metadata 可在清理前返回有上限的脱敏摘要，并报告 observed/returned/discarded 计数。",
       "inputSchema": {
         "properties": {
           "cleanupTimeout": {
@@ -104,6 +114,22 @@
             "maximum": 30,
             "minimum": 0.1,
             "type": "number"
+          },
+          "metadataLimit": {
+            "default": 100,
+            "description": "mode=metadata 时最多返回的摘要数，默认 100，范围 0–1000。",
+            "maximum": 1000,
+            "minimum": 0,
+            "type": "number"
+          },
+          "mode": {
+            "default": "discard",
+            "description": "discard 默认直接清理；metadata 在清理前返回未消费 packet 的脱敏摘要。",
+            "enum": [
+              "discard",
+              "metadata"
+            ],
+            "type": "string"
           },
           "pageIdx": {
             "default": 0,
@@ -116,9 +142,16 @@
       "name": "ruyi_capture_stop"
     },
     {
-      "description": "等待并获取抓包结果。在调用 ruyi_capture_start 后使用。默认返回完整 request/response body；内部按单包 RPC 排空，避免大批量补读拖垮 bridge。",
+      "description": "等待并获取抓包结果。在调用 ruyi_capture_start 后使用。默认只返回脱敏 metadata；schema 只返回 body 字段结构、长度和 hash；body 永不经过 MCP response，只会追加到指定的本地 JSONL 文件。",
       "inputSchema": {
         "properties": {
+          "bodyReadTimeout": {
+            "default": 1,
+            "description": "schema/body 读取单个 body 的最多等待秒数，默认 1，范围 0–10。",
+            "maximum": 10,
+            "minimum": 0,
+            "type": "number"
+          },
           "count": {
             "default": 5,
             "description": "期望捕获的请求数，默认 5",
@@ -126,13 +159,26 @@
           },
           "maxBodyChars": {
             "default": 0,
-            "description": "每个 request/response body 的显式字符上限；0 表示不截断，默认 0",
+            "description": "仅 resultMode=body 的本地 JSONL body 字符上限；0 表示不截断，默认 0。",
             "minimum": 0,
             "type": "number"
+          },
+          "outputFile": {
+            "description": "resultMode=body 时必填的绝对 JSONL 文件路径；原始 body 只写该文件。",
+            "type": "string"
           },
           "pageIdx": {
             "default": 0,
             "type": "number"
+          },
+          "resultMode": {
+            "description": "不传时沿用 capture_start 的模式；schema/body 必须在 capture_start 时已启用 collector，不能由 metadata 会话事后升级。",
+            "enum": [
+              "metadata",
+              "schema",
+              "body"
+            ],
+            "type": "string"
           },
           "timeout": {
             "default": 10,
@@ -199,6 +245,10 @@
       "description": "点击 DOM 元素。",
       "inputSchema": {
         "properties": {
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。",
+            "type": "string"
+          },
           "pageIdx": {
             "default": 0,
             "type": "number"
@@ -221,6 +271,10 @@
         "properties": {
           "attribute": {
             "description": "要读取的属性名（如 href, src, data-*）",
+            "type": "string"
+          },
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。",
             "type": "string"
           },
           "pageIdx": {
@@ -248,6 +302,10 @@
             "description": "输入前清空已有内容，默认 true",
             "type": "boolean"
           },
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。",
+            "type": "string"
+          },
           "pageIdx": {
             "default": 0,
             "type": "number"
@@ -273,6 +331,10 @@
       "description": "在页面中定位 DOM 元素。支持 CSS 选择器、XPath、标签名、文本内容等多种定位方式。格式: \"#id\" / \"css:.class\" / \"xpath://div\" / \"tag:input\" / \"text:登录\"",
       "inputSchema": {
         "properties": {
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。",
+            "type": "string"
+          },
           "pageIdx": {
             "default": 0,
             "type": "number"
@@ -388,6 +450,10 @@
       "description": "在浏览器页面中执行 JavaScript 函数并返回结果。可用于运行时采样、Hook 注入、读取页面状态。函数必须返回 JSON-safe 值。支持接收本地文件作为参数。",
       "inputSchema": {
         "properties": {
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；必须来自同一 pageIdx 当前的 ruyi_list_frames/ruyi_select_frame 结果。",
+            "type": "string"
+          },
           "function": {
             "description": "要执行的 JavaScript 函数声明。例: \"() => { return document.title }\" 或 \"async () => { return await fetch('example.com') }\"",
             "type": "string"
@@ -566,6 +632,10 @@
             ],
             "type": "string"
           },
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；动作只会在该 frame 执行。",
+            "type": "string"
+          },
           "pageIdx": {
             "default": 0,
             "type": "number"
@@ -600,6 +670,10 @@
             "maximum": 2,
             "minimum": 0,
             "type": "number"
+          },
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；source 和 target 都在该 frame 的 viewport 内解析。",
+            "type": "string"
           },
           "holdMs": {
             "default": 120,
@@ -685,6 +759,10 @@
             "description": "每个字符间延迟（毫秒），默认 50",
             "type": "number"
           },
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；输入只会在该 frame 执行。",
+            "type": "string"
+          },
           "pageIdx": {
             "default": 0,
             "type": "number"
@@ -717,6 +795,10 @@
               "bezier",
               "windmouse"
             ],
+            "type": "string"
+          },
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；动作只会在该 frame 执行。",
             "type": "string"
           },
           "pageIdx": {
@@ -757,6 +839,10 @@
               "down",
               "up"
             ],
+            "type": "string"
+          },
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；wheel action 只会发送到该 frame context。",
             "type": "string"
           },
           "maxPauseMs": {
@@ -812,6 +898,16 @@
             "default": 0,
             "type": "number"
           },
+          "resultMode": {
+            "default": "metadata",
+            "description": "默认 metadata；schema 只返回 body 结构；body 仅可在 ruyi_intercept_wait 写入本地 JSONL。",
+            "enum": [
+              "metadata",
+              "schema",
+              "body"
+            ],
+            "type": "string"
+          },
           "urlPatterns": {
             "description": "URL 过滤模式。格式: [{\"type\":\"string\",\"pattern\":\"/api/\"}] 或 [{\"type\":\"pattern\",\"protocol\":\"https\",\"pathname\":\"/api/*\"}]",
             "items": {
@@ -832,6 +928,16 @@
           "pageIdx": {
             "default": 0,
             "type": "number"
+          },
+          "resultMode": {
+            "default": "metadata",
+            "description": "默认 metadata；schema 只返回 body 结构；body 仅可在 ruyi_intercept_wait 写入本地 JSONL。",
+            "enum": [
+              "metadata",
+              "schema",
+              "body"
+            ],
+            "type": "string"
           },
           "urlPatterns": {
             "description": "URL 过滤模式。同 ruyi_intercept_requests 格式。",
@@ -861,12 +967,38 @@
       "name": "ruyi_intercept_stop"
     },
     {
-      "description": "等待并消费一个拦截到的请求/响应。队列模式：每次调用返回一个。超时返回 timedOut=true。返回 url、method、headers、body、responseStatus 等。",
+      "description": "等待并消费一个拦截到的请求/响应。队列模式：每次调用返回一个。Bridge 会在取样后立即 continue，避免 MCP 把浏览器请求永久卡住。默认只返回脱敏 metadata；body 只会写入显式指定的本地 JSONL 文件。",
       "inputSchema": {
         "properties": {
+          "bodyReadTimeout": {
+            "default": 1,
+            "description": "schema/body 读取单个 body 的最多等待秒数，默认 1，范围 0–10。",
+            "maximum": 10,
+            "minimum": 0,
+            "type": "number"
+          },
+          "maxBodyChars": {
+            "default": 0,
+            "description": "仅 resultMode=body 的本地 JSONL body 字符上限；0 表示不截断。",
+            "minimum": 0,
+            "type": "number"
+          },
+          "outputFile": {
+            "description": "resultMode=body 时必填的绝对 JSONL 文件路径。",
+            "type": "string"
+          },
           "pageIdx": {
             "default": 0,
             "type": "number"
+          },
+          "resultMode": {
+            "description": "不传时沿用 start 模式；schema/body 必须在 start 时已启用 collector，不能由 metadata 会话事后升级。",
+            "enum": [
+              "metadata",
+              "schema",
+              "body"
+            ],
+            "type": "string"
           },
           "timeout": {
             "default": 10,
@@ -1067,6 +1199,10 @@
             "description": "隐私模式，默认 false",
             "type": "boolean"
           },
+          "profilePath": {
+            "description": "外部持久 Firefox profile 的绝对路径（可选）；默认在 RUYI_MCP_PROFILE_ROOT 创建并在正常退出时回收受控临时 profile",
+            "type": "string"
+          },
           "proxy": {
             "description": "代理地址，如 http://127.0.0.1:7890 或 socks5://host:port",
             "type": "string"
@@ -1176,7 +1312,7 @@
       "name": "ruyi_search_in_sources"
     },
     {
-      "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。选择后的 frame 可在后续 evaluate_script 中通过 frameContextId 参数操作。",
+      "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。",
       "inputSchema": {
         "oneOf": [
           {

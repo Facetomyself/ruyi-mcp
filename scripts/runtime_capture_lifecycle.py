@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import threading
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -77,6 +78,7 @@ def run_gate(firefox_path: Path, cycles: int, cleanup_timeout: float, headless: 
     bridge = bridge_module.RuyiBridge()
     page = None
     metrics = []
+    output_dir = tempfile.TemporaryDirectory(prefix="ruyi_mcp_capture_")
     try:
         bridge._launch(
             {
@@ -91,25 +93,40 @@ def run_gate(firefox_path: Path, cycles: int, cleanup_timeout: float, headless: 
 
         for cycle in range(cycles):
             target = f"http://127.0.0.1:{port}/capture/redirect?cycle={cycle}"
+            output_file = str(Path(output_dir.name) / f"capture-{cycle}.jsonl")
             cycle_started = time.monotonic()
             bridge._capture_start(
                 {
                     "pageIdx": 0,
                     "pattern": pattern,
                     "method": "GET",
+                    "resultMode": "body",
                 }
             )
             bridge._navigate({"pageIdx": 0, "url": target, "timeout": 20})
             capture_result = bridge._capture_wait(
-                {"pageIdx": 0, "timeout": 10, "count": 2}
+                {
+                    "pageIdx": 0,
+                    "timeout": 10,
+                    "count": 2,
+                    "outputFile": output_file,
+                }
             )
             packets = capture_result["packets"]
             assert len(packets) == 2, packets
             assert [packet["status"] for packet in packets] == [302, 200], packets
-            assert "ruyi capture lifecycle" in (packets[1]["responseBody"] or "")
-            assert len(packets[1]["responseBody"].encode("utf-8")) == len(HTML_BODY)
-            assert packets[1]["responseBodyTruncated"] is False
-            assert capture_result["completeBodies"] is True
+            assert capture_result["resultMode"] == "body", capture_result
+            assert capture_result["appendedPackets"] == 2, capture_result
+            assert packets[1]["responseBody"]["length"] == len(HTML_BODY), packets
+            assert "ruyi capture lifecycle" not in json.dumps(capture_result), capture_result
+            body_records = [
+                json.loads(line)
+                for line in Path(output_file).read_text(encoding="utf-8").splitlines()
+            ]
+            assert len(body_records) == 2, body_records
+            assert "ruyi capture lifecycle" in (body_records[1]["responseBody"] or "")
+            assert len(body_records[1]["responseBody"].encode("utf-8")) == len(HTML_BODY)
+            assert body_records[1]["responseBodyTruncated"] is False
 
             stop_result = bridge._capture_stop(
                 {
@@ -152,9 +169,12 @@ def run_gate(firefox_path: Path, cycles: int, cleanup_timeout: float, headless: 
             try:
                 bridge._quit({})
             finally:
-                server.shutdown()
-                server.server_close()
-                server_thread.join(timeout=2)
+                try:
+                    server.shutdown()
+                    server.server_close()
+                    server_thread.join(timeout=2)
+                finally:
+                    output_dir.cleanup()
 
 
 def main() -> int:

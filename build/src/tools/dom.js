@@ -22,6 +22,7 @@ export function registerDomTools(register, ctx) {
                         description: '元素选择器。支持：#id, css:.class, xpath://div, tag:input, text:登录',
                     },
                     pageIdx: { type: 'number', default: 0 },
+                    frameContextId: { type: 'string', description: '可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。' },
                     timeout: { type: 'number', description: '等待超时（秒），默认 10', default: 10 },
                 },
                 required: ['selector'],
@@ -31,6 +32,7 @@ export function registerDomTools(register, ctx) {
             const pageIdx = getPageIdx(args, ctx);
             const result = await ctx.bridgeInstance.call('dom.select', {
                 pageIdx,
+                frameContextId: args.frameContextId,
                 selector: args.selector,
                 timeout: args.timeout ?? 10,
             });
@@ -52,6 +54,7 @@ export function registerDomTools(register, ctx) {
                     selector: { type: 'string', description: '元素选择器' },
                     attribute: { type: 'string', description: '要读取的属性名（如 href, src, data-*）' },
                     pageIdx: { type: 'number', default: 0 },
+                    frameContextId: { type: 'string', description: '可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。' },
                 },
                 required: ['selector'],
             },
@@ -60,6 +63,7 @@ export function registerDomTools(register, ctx) {
             const pageIdx = getPageIdx(args, ctx);
             const result = await ctx.bridgeInstance.call('dom.info', {
                 pageIdx,
+                frameContextId: args.frameContextId,
                 selector: args.selector,
                 attribute: args.attribute,
             });
@@ -83,6 +87,7 @@ export function registerDomTools(register, ctx) {
                     text: { type: 'string', description: '要输入的文本内容' },
                     clear: { type: 'boolean', description: '输入前清空已有内容，默认 true', default: true },
                     pageIdx: { type: 'number', default: 0 },
+                    frameContextId: { type: 'string', description: '可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。' },
                 },
                 required: ['selector', 'text'],
             },
@@ -91,6 +96,7 @@ export function registerDomTools(register, ctx) {
             const pageIdx = getPageIdx(args, ctx);
             const result = await ctx.bridgeInstance.call('dom.input', {
                 pageIdx,
+                frameContextId: args.frameContextId,
                 selector: args.selector,
                 text: args.text,
                 clear: args.clear !== false,
@@ -112,6 +118,7 @@ export function registerDomTools(register, ctx) {
                 properties: {
                     selector: { type: 'string', description: '目标元素选择器' },
                     pageIdx: { type: 'number', default: 0 },
+                    frameContextId: { type: 'string', description: '可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。' },
                 },
                 required: ['selector'],
             },
@@ -120,6 +127,7 @@ export function registerDomTools(register, ctx) {
             const pageIdx = getPageIdx(args, ctx);
             const result = await ctx.bridgeInstance.call('dom.click', {
                 pageIdx,
+                frameContextId: args.frameContextId,
                 selector: args.selector,
             });
             return {

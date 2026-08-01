@@ -63,6 +63,7 @@ class FakeLaunchOptions:
         self.existing = False
         self.close_on_exit_value = True
         self.profile = None
+        self.fingerprint_kwargs = None
         FakeLaunchOptions.instances.append(self)
 
     def set_browser_path(self, path):
@@ -93,6 +94,10 @@ class FakeLaunchOptions:
         self.profile = profile
         return self
 
+    def smart_fingerprint(self, **kwargs):
+        self.fingerprint_kwargs = kwargs
+        return None
+
 
 class FakeLaunchPage:
     url = "about:blank"
@@ -107,6 +112,11 @@ class FakeLaunchPage:
 
     def quit(self):
         self.quit_calls += 1
+
+
+class FailingLaunchPage:
+    def __init__(self, _options):
+        raise RuntimeError("synthetic Firefox startup failure")
 
 
 class FakeAttachBrowser:
@@ -205,6 +215,7 @@ class FakeCaptureManager:
     def __init__(self, result, history=None, stop_error=None):
         self.result = result
         self.wait_calls: list[tuple[float, int]] = []
+        self.start_calls: list[tuple[object, object, bool]] = []
         self._history = list(history or [])
         self.stop_error = stop_error
         self.clear_calls = 0
@@ -218,6 +229,11 @@ class FakeCaptureManager:
     def wait(self, *, timeout, count):
         self.wait_calls.append((timeout, count))
         return self.result
+
+    def start(self, targets, *, method=None, collect_bodies=True):
+        self.start_calls.append((targets, method, bool(collect_bodies)))
+        self.active = True
+        return self
 
     def clear(self):
         self.clear_calls += 1
@@ -241,6 +257,161 @@ class FakeCapturePage:
             history=history,
             stop_error=stop_error,
         )
+
+
+class FakeCapturePacket:
+    """Capture packet whose public body properties must never be read by Bridge."""
+
+    def __init__(
+        self,
+        *,
+        url="https://fixture.invalid/api?token=secret&kind=fixture",
+        method="POST",
+        status=200,
+        request_body='{"credential":"secret","page":1}',
+        response_body='{"ok":true,"token":"secret"}',
+        request_id="fixture-request-id",
+    ):
+        self.url = url
+        self.method = method
+        self.status = status
+        self.request_id = request_id
+        self.event_type = "responseCompleted"
+        self.timestamp = 123.45
+        self.is_failed = False
+        self.request = {
+            "request": request_id,
+            "headers": [
+                {"name": "Content-Type", "value": {"value": "application/json"}},
+                {"name": "Authorization", "value": {"value": "Bearer secret"}},
+            ],
+        }
+        self.response = {
+            "status": status,
+            "headers": [
+                {"name": "Content-Type", "value": {"value": "application/json"}},
+                {"name": "Set-Cookie", "value": {"value": "session=secret"}},
+            ],
+        }
+        self.request_headers = {"content-type": "application/json", "authorization": "Bearer secret"}
+        self.response_headers = {"content-type": "application/json", "set-cookie": "session=secret"}
+        self._request_collector = object()
+        self._response_collector = object()
+        self._bodies = {"request": request_body, "response": response_body}
+        self.body_reads: list[tuple[str, float]] = []
+
+    @property
+    def request_body(self):
+        raise AssertionError("Bridge must not read CapturePacket.request_body")
+
+    @property
+    def response_body(self):
+        raise AssertionError("Bridge must not read CapturePacket.response_body")
+
+    def _decode_body_value(self, value):
+        return value
+
+    def _body_from_collector(self, _collector, direction, timeout=0):
+        self.body_reads.append((direction, timeout))
+        return self._bodies[direction]
+
+
+class FakeInterceptRequest:
+    def __init__(self, *, response_phase=False):
+        self._request = {
+            "request": "intercept-request-id",
+            "url": "https://fixture.invalid/intercept?token=secret",
+            "method": "POST",
+            "headers": [
+                {"name": "Content-Type", "value": {"value": "application/json"}},
+                {"name": "Cookie", "value": {"value": "session=secret"}},
+            ],
+            "body": '{"requestSecret":"secret"}',
+        }
+        self._response_raw = {
+            "status": 201,
+            "headers": [
+                {"name": "Content-Type", "value": {"value": "application/json"}},
+                {"name": "Set-Cookie", "value": {"value": "session=secret"}},
+            ],
+            "body": '{"responseSecret":"secret"}',
+        }
+        self._response_phase = response_phase
+        self.continued: list[str] = []
+
+    @property
+    def request_id(self):
+        return self._request["request"]
+
+    @property
+    def url(self):
+        return self._request["url"]
+
+    @property
+    def method(self):
+        return self._request["method"]
+
+    @property
+    def headers(self):
+        return {"content-type": "application/json", "cookie": "session=secret"}
+
+    @property
+    def is_response_phase(self):
+        return self._response_phase
+
+    @property
+    def response_status(self):
+        return self._response_raw["status"] if self._response_phase else None
+
+    @property
+    def response_headers(self):
+        return {"content-type": "application/json", "set-cookie": "session=secret"}
+
+    @property
+    def handled(self):
+        return bool(self.continued)
+
+    @property
+    def body(self):
+        raise AssertionError("Bridge must not read InterceptedRequest.body")
+
+    @property
+    def response_body(self):
+        raise AssertionError("Bridge must not read InterceptedRequest.response_body")
+
+    def _decode_body_value(self, value):
+        return value
+
+    def continue_request(self):
+        self.continued.append("continue_request")
+
+    def continue_response(self):
+        self.continued.append("continue_response")
+
+
+class FakeInterceptManager:
+    def __init__(self, request):
+        self.request = request
+        self.start_requests_calls: list[tuple[object, bool]] = []
+        self.start_responses_calls: list[tuple[object, bool]] = []
+        self.stop_calls = 0
+
+    def start_requests(self, _handler, *, url_patterns=None, collect_response=False):
+        self.start_requests_calls.append((url_patterns, bool(collect_response)))
+
+    def start_responses(self, _handler, *, url_patterns=None, collect_response=False):
+        self.start_responses_calls.append((url_patterns, bool(collect_response)))
+
+    def wait(self, *, timeout):
+        return self.request
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+class FakeInterceptPage:
+    def __init__(self, request):
+        self.intercept = FakeInterceptManager(request)
 
 
 class FakeRuntimeWindow:
@@ -336,19 +507,47 @@ class FakeNavigationFailurePage:
 
 
 class FakeFrame:
-    _context_id = "frame-selector-context"
-    url = "about:srcdoc"
-    title = "fixture frame"
-    is_cross_origin = False
+    def __init__(
+        self,
+        context_id="frame-selector-context",
+        marker="B",
+        *,
+        is_cross_origin=False,
+    ):
+        self._context_id = context_id
+        self.url = f"https://frame.fixture.invalid/{marker}?secret=value"
+        self.title = f"fixture frame {marker}"
+        self.is_cross_origin = is_cross_origin
+        self.marker = marker
+        self.run_js_calls: list[tuple[str, object, object]] = []
+
+    def run_js(self, script, timeout=None, sandbox=None):
+        self.run_js_calls.append((script, timeout, sandbox))
+        return self.marker
 
 
 class FakeFramePage:
     def __init__(self):
         self.calls: list[dict] = []
+        self._context_id = "top-context"
+        self.url = "https://top.fixture.invalid/?secret=value"
+        self.title = "top fixture"
+        self.frames = [
+            FakeFrame("frame-a", "A"),
+            FakeFrame("frame-selector-context", "B"),
+        ]
+        self.run_js_calls: list[tuple[str, object, object]] = []
 
     def get_frame(self, **kwargs):
         self.calls.append(kwargs)
-        return FakeFrame()
+        return self.frames[1]
+
+    def get_all_frames(self):
+        return list(self.frames)
+
+    def run_js(self, script, timeout=None, sandbox=None):
+        self.run_js_calls.append((script, timeout, sandbox))
+        return "TOP"
 
 
 class FakeHumanActions:
@@ -420,6 +619,18 @@ class FakeHumanPage:
 
     def ele(self, selector):
         return self.elements.get(selector)
+
+
+class FakeFrameActionPage:
+    _context_id = "top-human-context"
+    url = "https://top.fixture.invalid/"
+
+    def __init__(self, frame):
+        self.frame = frame
+        self.top_action_calls: list[object] = []
+
+    def get_all_frames(self):
+        return [self.frame]
 
 
 class FakeWheelDriver:
@@ -551,34 +762,107 @@ class RuyiBridgeContractTests(unittest.TestCase):
             {"id": 1, "result": {"alive": False}},
         )
 
+    def test_safe_url_removes_credentials_query_values_and_opaque_payloads(self):
+        self.assertEqual(
+            BRIDGE_MODULE._safe_url(
+                "https://user:secret@fixture.invalid/api?token=secret&kind=sample"
+            ),
+            {
+                "url": "https://fixture.invalid/api",
+                "queryKeys": ["kind", "token"],
+            },
+        )
+        self.assertEqual(
+            BRIDGE_MODULE._safe_url("data:text/html,<script>secret</script>"),
+            {"url": "data:", "queryKeys": []},
+        )
+        self.assertEqual(
+            BRIDGE_MODULE._safe_url("file:///D:/private/secret.html"),
+            {"url": "file:", "queryKeys": []},
+        )
+
     def test_bridge_passes_credentialed_proxy_urls_to_ruyipage_unchanged(self):
         proxy_urls = (
             "http://user%40tenant:pa%24%24@proxy.example.com:1000",
             "socks5://user%2Bname:pa%24%24@proxy.example.com:1080",
         )
 
-        with (
-            patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
-            patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
-            patch.object(BRIDGE_MODULE, "DEFAULT_FIREFOX_PATH", None),
-        ):
-            for request_id, proxy_url in enumerate(proxy_urls, start=10):
-                with self.subTest(proxy_url=proxy_url):
-                    bridge = BRIDGE_MODULE.RuyiBridge()
-                    response = bridge.handle(
-                        {
-                            "id": request_id,
-                            "method": "browser.launch",
-                            "params": {
-                                "browserPath": "/contract/fake-firefox",
-                                "proxy": proxy_url,
-                            },
-                        }
-                    )
-                    self.assertNotIn("error", response)
-                    self.assertEqual(FakeLaunchOptions.instances[-1].proxy, proxy_url)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    BRIDGE_MODULE.os.environ,
+                    {"RUYI_MCP_PROFILE_ROOT": str(Path(tmp) / "profiles")},
+                    clear=False,
+                ),
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+                patch.object(BRIDGE_MODULE, "DEFAULT_FIREFOX_PATH", None),
+            ):
+                for request_id, proxy_url in enumerate(proxy_urls, start=10):
+                    with self.subTest(proxy_url=proxy_url):
+                        bridge = BRIDGE_MODULE.RuyiBridge()
+                        response = bridge.handle(
+                            {
+                                "id": request_id,
+                                "method": "browser.launch",
+                                "params": {
+                                    "browserPath": "/contract/fake-firefox",
+                                    "proxy": proxy_url,
+                                },
+                            }
+                        )
+                        self.assertNotIn("error", response)
+                        self.assertEqual(FakeLaunchOptions.instances[-1].proxy, proxy_url)
+                        bridge.handle(
+                            {"id": request_id + 100, "method": "browser.quit", "params": {}}
+                        )
 
-    def test_bridge_attaches_existing_browser_without_owning_its_lifecycle(self):
+    def test_bridge_owns_default_profile_and_passes_it_to_smart_fingerprint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = Path(tmp) / "profiles"
+            with (
+                patch.dict(
+                    BRIDGE_MODULE.os.environ,
+                    {"RUYI_MCP_PROFILE_ROOT": str(profile_root)},
+                    clear=False,
+                ),
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+            ):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                launch = bridge.handle(
+                    {
+                        "id": 11,
+                        "method": "browser.launch",
+                        "params": {
+                            "browserPath": "/contract/fake-firefox",
+                            "fingerprint": {"requireCountry": "US"},
+                        },
+                    }
+                )
+                self.assertNotIn("error", launch)
+                profile = Path(launch["result"]["profilePath"])
+                self.assertEqual(profile.parent, profile_root.resolve())
+                self.assertTrue(profile.is_dir())
+                self.assertEqual(launch["result"]["profileMode"], "managed")
+                self.assertEqual(FakeLaunchOptions.instances[-1].profile, str(profile))
+                self.assertEqual(
+                    FakeLaunchOptions.instances[-1].fingerprint_kwargs["userdir"],
+                    str(profile),
+                )
+
+                quit_response = bridge.handle(
+                    {"id": 12, "method": "browser.quit", "params": {}}
+                )
+
+            self.assertNotIn("error", quit_response)
+            self.assertEqual(
+                quit_response["result"]["profileCleanup"],
+                {"attempted": True, "removed": True},
+            )
+            self.assertFalse(profile.exists())
+
+    def test_bridge_rejects_relative_profile_path(self):
         with (
             patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
             patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
@@ -589,23 +873,102 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     "id": 12,
                     "method": "browser.launch",
                     "params": {
-                        "existingOnly": True,
-                        "address": "127.0.0.1",
-                        "port": 26700,
-                        "profilePath": "/contract/profile",
+                        "browserPath": "/contract/fake-firefox",
+                        "profilePath": "relative-profile",
                     },
                 }
             )
 
-        self.assertNotIn("error", response)
-        options = FakeLaunchOptions.instances[-1]
-        self.assertEqual(options.address, "127.0.0.1:26700")
-        self.assertIsNone(options.browser_path)
-        self.assertTrue(options.existing)
-        self.assertFalse(options.close_on_exit_value)
-        self.assertEqual(options.profile, "/contract/profile")
-        self.assertTrue(response["result"]["attached"])
-        self.assertFalse(response["result"]["closeOnExit"])
+        self.assertIn("error", response)
+        self.assertIn("profilePath must be an absolute path", response["error"]["message"])
+
+    def test_bridge_cleans_owned_profile_when_browser_startup_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = Path(tmp) / "profiles"
+            with (
+                patch.dict(
+                    BRIDGE_MODULE.os.environ,
+                    {"RUYI_MCP_PROFILE_ROOT": str(profile_root)},
+                    clear=False,
+                ),
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FailingLaunchPage),
+            ):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                response = bridge.handle(
+                    {
+                        "id": 121,
+                        "method": "browser.launch",
+                        "params": {"browserPath": "/contract/fake-firefox"},
+                    }
+                )
+
+            self.assertIn("error", response)
+            self.assertEqual(list(profile_root.iterdir()), [])
+            self.assertIsNone(bridge._managed_profile)
+            self.assertIsNone(bridge._profile_path)
+
+    def test_bridge_preserves_explicit_external_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "external-profile"
+            with (
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+            ):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                launch = bridge.handle(
+                    {
+                        "id": 13,
+                        "method": "browser.launch",
+                        "params": {
+                            "browserPath": "/contract/fake-firefox",
+                            "profilePath": str(profile),
+                        },
+                    }
+                )
+                self.assertNotIn("error", launch)
+                self.assertEqual(launch["result"]["profileMode"], "external")
+                self.assertEqual(FakeLaunchOptions.instances[-1].profile, str(profile.resolve()))
+                profile.mkdir()
+                quit_response = bridge.handle(
+                    {"id": 14, "method": "browser.quit", "params": {}}
+                )
+
+            self.assertNotIn("error", quit_response)
+            self.assertEqual(quit_response["result"], {})
+            self.assertTrue(profile.exists())
+
+    def test_bridge_attaches_existing_browser_without_owning_its_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "profile"
+            with (
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+            ):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                response = bridge.handle(
+                    {
+                        "id": 20,
+                        "method": "browser.launch",
+                        "params": {
+                            "existingOnly": True,
+                            "address": "127.0.0.1",
+                            "port": 26700,
+                            "profilePath": str(profile),
+                        },
+                    }
+                )
+
+            self.assertNotIn("error", response)
+            options = FakeLaunchOptions.instances[-1]
+            self.assertEqual(options.address, "127.0.0.1:26700")
+            self.assertIsNone(options.browser_path)
+            self.assertTrue(options.existing)
+            self.assertFalse(options.close_on_exit_value)
+            self.assertEqual(options.profile, str(profile.resolve()))
+            self.assertTrue(response["result"]["attached"])
+            self.assertEqual(response["result"]["profileMode"], "external")
+            self.assertFalse(response["result"]["closeOnExit"])
 
     def test_quit_detaches_attached_browser_without_browser_close(self):
         with (
@@ -800,6 +1163,35 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 self.assertNotIn("user%", user_js)
                 self.assertNotIn("pa%24%24", user_js)
 
+    def test_ruyipage_smart_fingerprint_uses_explicit_userdir(self):
+        geo = fingerprint_builder.GeoInfo(
+            ip="198.51.100.42",
+            country_code="US",
+            country="United States",
+            region="CA",
+            city="Los Angeles",
+            timezone="America/Los_Angeles",
+            latitude=34.0522,
+            longitude=-118.2437,
+            source="contract-fixture",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "managed-profile"
+            options = FirefoxOptions()
+            with (
+                patch.object(fingerprint_builder, "fetch_geo_info", return_value=geo),
+                patch.object(fingerprint_builder, "fetch_public_ipv6", return_value=None),
+            ):
+                context = options.smart_fingerprint(
+                    userdir=str(profile),
+                    require_country="US",
+                )
+
+            self.assertEqual(Path(context.userdir), profile.resolve())
+            self.assertEqual(Path(options.profile_path), profile.resolve())
+            self.assertEqual(Path(context.fpfile_path).parent, profile.resolve())
+            self.assertTrue((profile / "fpfile.txt").is_file())
+
     def test_ruyipage_1256_window_fingerprint_and_action_contracts(self):
         smart_signature = inspect.signature(fingerprint_builder.apply_smart_fingerprint)
         self.assertFalse(smart_signature.parameters["set_window_size_on_opts"].default)
@@ -979,13 +1371,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertNotIn("events", payload)
 
     def test_capture_wait_normalizes_count_one_packet_to_list(self):
-        packet = SimpleNamespace(
-            url="https://fixture.invalid/api",
-            status=200,
-            method="POST",
-            request_body='{"fixture":true}',
-            response_body='{"ok":true}',
-        )
+        packet = FakeCapturePacket()
         bridge = BRIDGE_MODULE.RuyiBridge()
         page = FakeCapturePage(packet)
         bridge.pages[0] = page
@@ -1000,47 +1386,60 @@ class RuyiBridgeContractTests(unittest.TestCase):
 
         self.assertNotIn("error", response)
         self.assertEqual(page.capture.wait_calls, [(3, 1)])
-        self.assertEqual(
-            response["result"]["packets"],
-            [
-                {
-                    "url": "https://fixture.invalid/api",
-                    "status": 200,
-                    "method": "POST",
-                    "requestBody": '{"fixture":true}',
-                    "responseBody": '{"ok":true}',
-                    "requestBodyTruncated": False,
-                    "responseBodyTruncated": False,
-                }
-            ],
-        )
-        self.assertTrue(response["result"]["completeBodies"])
-        self.assertEqual(response["result"]["bodyLimitChars"], 0)
+        result_packet = response["result"]["packets"][0]
+        self.assertEqual(result_packet["url"], "https://fixture.invalid/api")
+        self.assertEqual(result_packet["queryKeys"], ["kind", "token"])
+        self.assertEqual(result_packet["status"], 200)
+        self.assertEqual(result_packet["method"], "POST")
+        self.assertEqual(result_packet["requestHeaders"], {"content-type": "application/json"})
+        self.assertEqual(result_packet["responseHeaders"], {"content-type": "application/json"})
+        self.assertEqual(result_packet["requestBody"], {"state": "not_requested"})
+        self.assertEqual(result_packet["responseBody"], {"state": "not_requested"})
+        self.assertEqual(packet.body_reads, [])
+        self.assertNotIn("secret", json.dumps(response))
+        self.assertEqual(response["result"]["resultMode"], "metadata")
+        self.assertIsNone(response["result"]["bodyLimitChars"])
 
-    def test_capture_wait_returns_complete_bodies_unless_limit_is_explicit(self):
-        long_body = "x" * 131072
-        packet = SimpleNamespace(
-            url="https://fixture.invalid/large",
-            status=200,
-            method="GET",
-            request_body=long_body,
-            response_body=long_body,
-        )
+    def test_capture_start_selects_collector_mode_and_schema_never_returns_body_values(self):
+        packet = FakeCapturePacket()
         bridge = BRIDGE_MODULE.RuyiBridge()
         page = FakeCapturePage(packet)
         bridge.pages[0] = page
 
-        complete = bridge.handle(
+        default_started = bridge.handle(
             {
-                "id": 220,
-                "method": "network.capture_wait",
-                "params": {"pageIdx": 0, "timeout": 1, "count": 1},
+                "id": 219,
+                "method": "network.capture_start",
+                "params": {"pageIdx": 0},
             }
         )
-        self.assertEqual(len(complete["result"]["packets"][0]["responseBody"]), len(long_body))
-        self.assertFalse(complete["result"]["packets"][0]["responseBodyTruncated"])
+        self.assertNotIn("error", default_started)
+        self.assertEqual(default_started["result"]["resultMode"], "metadata")
+        blocked_upgrade = bridge.handle(
+            {
+                "id": 2191,
+                "method": "network.capture_wait",
+                "params": {"pageIdx": 0, "resultMode": "schema"},
+            }
+        )
+        self.assertIn("error", blocked_upgrade)
+        self.assertIn("disabled at start", blocked_upgrade["error"]["message"])
 
-        limited = bridge.handle(
+        started = bridge.handle(
+            {
+                "id": 220,
+                "method": "network.capture_start",
+                "params": {"pageIdx": 0, "pattern": "/api", "resultMode": "schema"},
+            }
+        )
+        self.assertNotIn("error", started)
+        self.assertEqual(
+            page.capture.start_calls,
+            [("", None, False), ("/api", None, True)],
+        )
+        self.assertEqual(started["result"]["resultMode"], "schema")
+
+        schema = bridge.handle(
             {
                 "id": 221,
                 "method": "network.capture_wait",
@@ -1048,13 +1447,79 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     "pageIdx": 0,
                     "timeout": 1,
                     "count": 1,
-                    "maxBodyChars": 4096,
                 },
             }
         )
-        self.assertEqual(len(limited["result"]["packets"][0]["responseBody"]), 4096)
-        self.assertTrue(limited["result"]["packets"][0]["responseBodyTruncated"])
-        self.assertFalse(limited["result"]["completeBodies"])
+        self.assertNotIn("error", schema)
+        schema_packet = schema["result"]["packets"][0]
+        self.assertEqual(schema_packet["requestBody"]["format"], "json-object")
+        self.assertEqual(schema_packet["requestBody"]["topLevelKeys"], ["credential", "page"])
+        self.assertEqual(schema_packet["responseBody"]["topLevelKeys"], ["ok", "token"])
+        self.assertEqual(len(packet.body_reads), 2)
+        self.assertNotIn("secret", json.dumps(schema))
+
+    def test_capture_body_mode_writes_jsonl_without_returning_body_values(self):
+        packet = FakeCapturePacket(
+            request_body="x" * 64,
+            response_body="y" * 64,
+        )
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeCapturePage(packet)
+        bridge.pages[0] = page
+
+        bridge.handle(
+            {
+                "id": 221,
+                "method": "network.capture_start",
+                "params": {"pageIdx": 0, "resultMode": "body"},
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            output_file = str(Path(tmp) / "capture.jsonl")
+            response = bridge.handle(
+                {
+                    "id": 222,
+                    "method": "network.capture_wait",
+                    "params": {
+                        "pageIdx": 0,
+                        "timeout": 1,
+                        "count": 1,
+                        "resultMode": "body",
+                        "outputFile": output_file,
+                        "maxBodyChars": 8,
+                    },
+                }
+            )
+            self.assertNotIn("error", response)
+            self.assertEqual(response["result"]["resultMode"], "body")
+            self.assertEqual(response["result"]["appendedPackets"], 1)
+            self.assertNotIn("x" * 64, json.dumps(response))
+            saved = [json.loads(line) for line in Path(output_file).read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["requestBody"], "x" * 8)
+        self.assertEqual(saved[0]["responseBody"], "y" * 8)
+        self.assertTrue(saved[0]["requestBodyTruncated"])
+        self.assertTrue(saved[0]["responseBodyTruncated"])
+
+    def test_capture_restart_clears_active_history_before_upstream_stop_can_hydrate(self):
+        old_packet = FakeCapturePacket()
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeCapturePage(None, history=[old_packet])
+        bridge.pages[0] = page
+
+        restarted = bridge.handle(
+            {
+                "id": 223,
+                "method": "network.capture_start",
+                "params": {"pageIdx": 0},
+            }
+        )
+
+        self.assertNotIn("error", restarted)
+        self.assertEqual(restarted["result"]["clearedPreviousPacketHistory"], 1)
+        self.assertEqual(page.capture.clear_calls, 1)
+        self.assertEqual(old_packet.body_reads, [])
 
     def test_capture_wait_preserves_empty_and_multi_packet_results(self):
         cases = (
@@ -1111,6 +1576,11 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertEqual(self.settings.bidi_timeout, original_bidi_timeout)
         self.assertEqual(response["result"]["capturing"], False)
         self.assertEqual(response["result"]["clearedPacketHistory"], 3)
+        self.assertEqual(response["result"]["mode"], "discard")
+        self.assertEqual(response["result"]["observed"], 3)
+        self.assertEqual(response["result"]["returned"], 0)
+        self.assertEqual(response["result"]["discarded"], 3)
+        self.assertEqual(response["result"]["bodyUnavailable"], 0)
         self.assertEqual(response["result"]["cleanupTimeoutSeconds"], 2.5)
         self.assertGreaterEqual(response["result"]["elapsedMs"], 0)
 
@@ -1122,6 +1592,47 @@ class RuyiBridgeContractTests(unittest.TestCase):
             }
         )
         self.assertIn("error", invalid)
+
+    def test_capture_stop_metadata_returns_only_unconsumed_safe_summaries(self):
+        first = FakeCapturePacket(request_id="first")
+        second = FakeCapturePacket(request_id="second")
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeCapturePage(first, history=[first, second])
+        page.capture.active = False
+        bridge.pages[0] = page
+
+        bridge.handle(
+            {
+                "id": 240,
+                "method": "network.capture_start",
+                "params": {"pageIdx": 0},
+            }
+        )
+        waited = bridge.handle(
+            {
+                "id": 241,
+                "method": "network.capture_wait",
+                "params": {"pageIdx": 0, "timeout": 1, "count": 1},
+            }
+        )
+        self.assertNotIn("error", waited)
+
+        stopped = bridge.handle(
+            {
+                "id": 242,
+                "method": "network.capture_stop",
+                "params": {"pageIdx": 0, "mode": "metadata", "metadataLimit": 10},
+            }
+        )
+        self.assertNotIn("error", stopped)
+        result = stopped["result"]
+        self.assertEqual(result["observed"], 2)
+        self.assertEqual(result["returned"], 2)
+        self.assertEqual(result["discarded"], 0)
+        self.assertEqual(len(result["metadataPackets"]), 1)
+        self.assertEqual(result["metadataPackets"][0]["requestBody"], {"state": "not_requested"})
+        self.assertEqual(second.body_reads, [])
+        self.assertNotIn("secret", json.dumps(stopped))
 
     def test_capture_stop_restores_global_timeout_when_cleanup_raises(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
@@ -1145,6 +1656,77 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertEqual(page.capture.clear_calls, 1)
         self.assertEqual(page.capture.stop_calls, [(0, 1.5)])
         self.assertEqual(self.settings.bidi_timeout, original_bidi_timeout)
+
+    def test_intercept_defaults_to_safe_metadata_and_continues_the_request(self):
+        request = FakeInterceptRequest()
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeInterceptPage(request)
+        bridge.pages[0] = page
+
+        started = bridge.handle(
+            {
+                "id": 270,
+                "method": "intercept.start_req",
+                "params": {"pageIdx": 0},
+            }
+        )
+        self.assertNotIn("error", started)
+        self.assertEqual(page.intercept.start_requests_calls, [(None, False)])
+
+        waited = bridge.handle(
+            {
+                "id": 271,
+                "method": "intercept.wait",
+                "params": {"pageIdx": 0, "timeout": 1},
+            }
+        )
+        self.assertNotIn("error", waited)
+        result = waited["result"]
+        self.assertEqual(result["resultMode"], "metadata")
+        self.assertEqual(result["continued"], "continue_request")
+        self.assertEqual(request.continued, ["continue_request"])
+        self.assertEqual(result["url"], "https://fixture.invalid/intercept")
+        self.assertEqual(result["queryKeys"], ["token"])
+        self.assertEqual(result["requestBody"], {"state": "not_requested"})
+        self.assertEqual(result["requestHeaders"], {"content-type": "application/json"})
+        self.assertNotIn("secret", json.dumps(waited))
+
+    def test_intercept_body_mode_writes_jsonl_without_returning_body_values(self):
+        request = FakeInterceptRequest(response_phase=True)
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeInterceptPage(request)
+        bridge.pages[0] = page
+        bridge.handle(
+            {
+                "id": 272,
+                "method": "intercept.start_resp",
+                "params": {"pageIdx": 0, "resultMode": "body"},
+            }
+        )
+        self.assertEqual(page.intercept.start_responses_calls, [(None, True)])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_file = str(Path(tmp) / "intercept.jsonl")
+            waited = bridge.handle(
+                {
+                    "id": 273,
+                    "method": "intercept.wait",
+                    "params": {
+                        "pageIdx": 0,
+                        "outputFile": output_file,
+                        "maxBodyChars": 16,
+                    },
+                }
+            )
+            self.assertNotIn("error", waited)
+            saved = [json.loads(line) for line in Path(output_file).read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(waited["result"]["resultMode"], "body")
+        self.assertEqual(waited["result"]["continued"], "continue_response")
+        self.assertNotIn("secret", json.dumps(waited))
+        self.assertEqual(len(saved), 1)
+        self.assertTrue(saved[0]["requestBody"].startswith('{"requestSecret'))
+        self.assertTrue(saved[0]["responseBody"].startswith('{"responseSecret'))
 
     def test_new_tabs_reapply_fingerprint_before_first_navigation(self):
         for container in (False, True):
@@ -1255,6 +1837,91 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertEqual(page.calls, [{"locator": "css:#second"}])
         self.assertEqual(response["result"]["selectedBy"], "selector")
         self.assertEqual(response["result"]["contextId"], "frame-selector-context")
+        self.assertEqual(response["result"]["url"], "https://frame.fixture.invalid/B")
+        self.assertEqual(response["result"]["queryKeys"], ["secret"])
+        self.assertEqual(response["result"]["target"]["kind"], "frame")
+
+    def test_frame_context_targets_evaluate_and_invalid_ids_never_fall_back(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeFramePage()
+        other_page = FakeFramePage()
+        other_page.frames[0]._context_id = "other-tab-frame"
+        bridge.pages[0] = page
+        bridge.pages[1] = other_page
+
+        selected = bridge.handle(
+            {
+                "id": 203,
+                "method": "frame.select",
+                "params": {"pageIdx": 0, "contextId": "frame-selector-context"},
+            }
+        )
+        self.assertNotIn("error", selected)
+
+        targeted = bridge.handle(
+            {
+                "id": 204,
+                "method": "script.evaluate",
+                "params": {
+                    "pageIdx": 0,
+                    "frameContextId": "frame-selector-context",
+                    "script": "() => document.querySelector('#value').textContent",
+                },
+            }
+        )
+        self.assertNotIn("error", targeted)
+        self.assertEqual(targeted["result"]["result"], "B")
+        self.assertEqual(targeted["result"]["target"]["contextId"], "frame-selector-context")
+        self.assertEqual(page.run_js_calls, [])
+        self.assertEqual(len(page.frames[1].run_js_calls), 1)
+
+        for request_id, frame_context_id in enumerate(
+            ("missing-frame", "other-tab-frame"),
+            start=205,
+        ):
+            with self.subTest(frame_context_id=frame_context_id):
+                invalid = bridge.handle(
+                    {
+                        "id": request_id,
+                        "method": "script.evaluate",
+                        "params": {
+                            "pageIdx": 0,
+                            "frameContextId": frame_context_id,
+                            "script": "() => 'should-not-run'",
+                        },
+                    }
+                )
+                self.assertIn("error", invalid)
+                self.assertIn("frame_context_not_found", invalid["error"]["message"])
+                self.assertEqual(page.run_js_calls, [])
+
+    def test_human_action_uses_the_explicit_frame_bidi_context(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        frame = FakeHumanPage()
+        frame._context_id = "child-human-context"
+        page = FakeFrameActionPage(frame)
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 210,
+                "method": "human.click",
+                "params": {
+                    "pageIdx": 0,
+                    "frameContextId": "child-human-context",
+                    "target": "#target",
+                    "algorithm": "windmouse",
+                },
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertEqual(response["result"]["target"]["kind"], "frame")
+        self.assertEqual(len(frame.browser_driver.calls), 1)
+        self.assertEqual(
+            frame.browser_driver.calls[0][1]["context"],
+            "child-human-context",
+        )
 
     def test_human_click_resets_remote_and_cached_pointer_before_perform(self):
         bridge = BRIDGE_MODULE.RuyiBridge()

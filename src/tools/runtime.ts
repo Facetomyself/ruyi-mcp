@@ -31,6 +31,10 @@ export function registerRuntimeTools(register: ToolRegistrar, ctx: RuyiContext):
               '例: "() => { return document.title }" 或 "async () => { return await fetch(\'example.com\') }"',
           },
           pageIdx: { type: 'number', description: '标签页索引，默认当前活跃页', default: 0 },
+          frameContextId: {
+            type: 'string',
+            description: '可选 frame browsing context ID；必须来自同一 pageIdx 当前的 ruyi_list_frames/ruyi_select_frame 结果。',
+          },
           timeout: { type: 'number', description: '超时（秒），默认 10', default: 10 },
           sandbox: { type: 'string', description: 'BiDi sandbox 名称（隔离执行上下文）' },
         },
@@ -52,6 +56,7 @@ export function registerRuntimeTools(register: ToolRegistrar, ctx: RuyiContext):
 
       const result = await ctx.bridgeInstance.call('script.evaluate', {
         pageIdx,
+        frameContextId: args.frameContextId,
         script,
         timeout,
         sandbox: args.sandbox,

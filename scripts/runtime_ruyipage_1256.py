@@ -9,7 +9,9 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
 
@@ -66,6 +68,33 @@ class RuntimeFingerprintContext:
         }
 
 
+class FrameFixtureHandler(BaseHTTPRequestHandler):
+    child_origin = ""
+
+    def do_GET(self):
+        if self.path == "/child":
+            body = b"<!doctype html><p id='value'>CROSS</p>"
+        elif self.path == "/parent":
+            body = (
+                "<!doctype html><iframe id='cross' src='"
+                + self.child_origin
+                + "/child'></iframe>"
+            ).encode("utf-8")
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *_args):
+        return
+
+
 def run_gate(firefox_path: Path, headless: bool) -> dict:
     bridge_module = load_bridge_module()
     with tempfile.TemporaryDirectory(prefix="ruyi_mcp_1256_") as tmp:
@@ -79,6 +108,15 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
         if headless:
             options.headless(True)
 
+        parent_server = ThreadingHTTPServer(("127.0.0.1", 0), FrameFixtureHandler)
+        child_server = ThreadingHTTPServer(("127.0.0.1", 0), FrameFixtureHandler)
+        FrameFixtureHandler.child_origin = (
+            f"http://127.0.0.1:{child_server.server_address[1]}"
+        )
+        parent_thread = threading.Thread(target=parent_server.serve_forever, daemon=True)
+        child_thread = threading.Thread(target=child_server.serve_forever, daemon=True)
+        parent_thread.start()
+        child_thread.start()
         page = None
         try:
             page = FirefoxPage(options)
@@ -208,9 +246,36 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
             )
             assert frame_result["found"] is True, frame_result
             assert frame_result["selectedBy"] == "selector", frame_result
-            frame = bridge._frame_obj[frame_result["contextId"]]
-            frame_value = frame.ele("css:#value").text
-            assert frame_value == "B", frame_value
+            frame_evaluation = bridge._evaluate(
+                {
+                    "pageIdx": 0,
+                    "frameContextId": frame_result["contextId"],
+                    "script": "() => document.querySelector('#value').textContent",
+                }
+            )
+            frame_value = frame_evaluation["result"]
+            assert frame_value == "B", frame_evaluation
+            assert frame_evaluation["target"]["contextId"] == frame_result["contextId"]
+
+            parent_url = (
+                f"http://127.0.0.1:{parent_server.server_address[1]}/parent"
+            )
+            page.get(parent_url)
+            page.wait(0.2)
+            cross_frame_result = bridge._frame_select(
+                {"pageIdx": 0, "selector": "#cross"}
+            )
+            assert cross_frame_result["found"] is True, cross_frame_result
+            assert cross_frame_result["isCrossOrigin"] is True, cross_frame_result
+            cross_frame_evaluation = bridge._evaluate(
+                {
+                    "pageIdx": 0,
+                    "frameContextId": cross_frame_result["contextId"],
+                    "script": "() => document.querySelector('#value').textContent",
+                }
+            )
+            cross_frame_value = cross_frame_evaluation["result"]
+            assert cross_frame_value == "CROSS", cross_frame_evaluation
 
             drag_html = """
             <!doctype html><html><head><style>
@@ -366,6 +431,8 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
                 "containerFirstNavigation": container_first_navigation,
                 "frameValue": frame_value,
                 "frameResult": frame_result,
+                "crossFrameValue": cross_frame_value,
+                "crossFrameResult": cross_frame_result,
                 "dragResult": drag_result,
                 "pressedPointerMoves": len(pressed_moves),
                 "clickResult": click_result,
@@ -376,6 +443,12 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
         finally:
             if page is not None:
                 page.quit()
+            parent_server.shutdown()
+            child_server.shutdown()
+            parent_server.server_close()
+            child_server.server_close()
+            parent_thread.join(timeout=2)
+            child_thread.join(timeout=2)
             time.sleep(1.0)
 
 

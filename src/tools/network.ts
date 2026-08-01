@@ -64,13 +64,21 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
   register({
     tool: {
       name: 'ruyi_capture_start',
-      description: '开始被动抓包。按 URL 模式匹配请求，后续用 ruyi_capture_wait 获取。',
+      description:
+        '开始被动抓包。默认只收集脱敏 metadata，不申请 body DataCollector；' +
+        '需要字段结构或原始 body 时显式设置 resultMode。',
       inputSchema: {
         type: 'object',
         properties: {
           pageIdx: { type: 'number', default: 0 },
           pattern: { type: 'string', description: 'URL 匹配模式（子串匹配）', default: '' },
           method: { type: 'string', description: '仅匹配 HTTP 方法（GET/POST/...）' },
+          resultMode: {
+            type: 'string',
+            enum: ['metadata', 'schema', 'body'],
+            description: '输出模式：metadata 默认；schema 只返回 body 结构、长度和 hash；body 仅写入 ruyi_capture_wait.outputFile。',
+            default: 'metadata',
+          },
         },
         required: [],
       },
@@ -79,16 +87,19 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
       const pageIdx = getPageIdx(args, ctx);
       const pattern = args.pattern as string || '';
 
-      await ctx.bridgeInstance.call('network.capture_start', {
+      const result = await ctx.bridgeInstance.call('network.capture_start', {
         pageIdx,
         pattern,
         method: args.method,
-      });
+        resultMode: args.resultMode ?? 'metadata',
+      }) as Record<string, unknown>;
 
-      ctx.setCaptureActive(true, pattern);
+      if (result.capturing) {
+        ctx.setCaptureActive(true, pattern);
+      }
 
       return {
-        content: [{ type: 'text', text: jsonResult({ capturing: true, pattern }) }],
+        content: [{ type: 'text', text: jsonResult(result) }],
       };
     }) as ToolHandler,
   });
@@ -101,7 +112,7 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
       name: 'ruyi_capture_stop',
       description:
         '停止被动抓包。会先清空尚未消费的队列/历史，避免 ruyiPage stop 隐式补读全部 body；' +
-        '需要结果时应先调用 ruyi_capture_wait。',
+        'mode=metadata 可在清理前返回有上限的脱敏摘要，并报告 observed/returned/discarded 计数。',
       inputSchema: {
         type: 'object',
         properties: {
@@ -112,6 +123,19 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
             minimum: 0.1,
             maximum: 30,
             default: 5,
+          },
+          mode: {
+            type: 'string',
+            enum: ['discard', 'metadata'],
+            description: 'discard 默认直接清理；metadata 在清理前返回未消费 packet 的脱敏摘要。',
+            default: 'discard',
+          },
+          metadataLimit: {
+            type: 'number',
+            description: 'mode=metadata 时最多返回的摘要数，默认 100，范围 0–1000。',
+            minimum: 0,
+            maximum: 1000,
+            default: 100,
           },
         },
         required: [],
@@ -126,7 +150,12 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
       const bridgeTimeoutMs = Math.ceil(cleanupTimeout * 2 * 1000) + 5000;
       const result = await ctx.bridgeInstance.call(
         'network.capture_stop',
-        { pageIdx, cleanupTimeout },
+        {
+          pageIdx,
+          cleanupTimeout,
+          mode: args.mode ?? 'discard',
+          metadataLimit: args.metadataLimit ?? 100,
+        },
         bridgeTimeoutMs
       ) as Record<string, unknown>;
       ctx.setCaptureActive(false);
@@ -145,16 +174,33 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
       name: 'ruyi_capture_wait',
       description:
         '等待并获取抓包结果。在调用 ruyi_capture_start 后使用。' +
-        '默认返回完整 request/response body；内部按单包 RPC 排空，避免大批量补读拖垮 bridge。',
+        '默认只返回脱敏 metadata；schema 只返回 body 字段结构、长度和 hash；' +
+        'body 永不经过 MCP response，只会追加到指定的本地 JSONL 文件。',
       inputSchema: {
         type: 'object',
         properties: {
           pageIdx: { type: 'number', default: 0 },
           timeout: { type: 'number', description: '等待超时（秒），默认 10', default: 10 },
           count: { type: 'number', description: '期望捕获的请求数，默认 5', default: 5 },
+          resultMode: {
+            type: 'string',
+            enum: ['metadata', 'schema', 'body'],
+            description: '不传时沿用 capture_start 的模式；schema/body 必须在 capture_start 时已启用 collector，不能由 metadata 会话事后升级。',
+          },
+          bodyReadTimeout: {
+            type: 'number',
+            description: 'schema/body 读取单个 body 的最多等待秒数，默认 1，范围 0–10。',
+            minimum: 0,
+            maximum: 10,
+            default: 1,
+          },
+          outputFile: {
+            type: 'string',
+            description: 'resultMode=body 时必填的绝对 JSONL 文件路径；原始 body 只写该文件。',
+          },
           maxBodyChars: {
             type: 'number',
-            description: '每个 request/response body 的显式字符上限；0 表示不截断，默认 0',
+            description: '仅 resultMode=body 的本地 JSONL body 字符上限；0 表示不截断，默认 0。',
             minimum: 0,
             default: 0,
           },
@@ -174,8 +220,17 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
       const maxBodyChars = Number.isFinite(rawMaxBodyChars)
         ? Math.max(0, Math.floor(rawMaxBodyChars))
         : 0;
+      const resultMode = args.resultMode as string | undefined;
+      const bodyReadTimeout = args.bodyReadTimeout ?? 1;
+      const outputFile = args.outputFile as string | undefined;
+      if (resultMode === 'body' && !outputFile) {
+        throw new Error('outputFile is required when resultMode=body');
+      }
       const deadline = Date.now() + timeout * 1000;
       const packets: unknown[] = [];
+      let resolvedResultMode = resultMode;
+      let appendedPackets = 0;
+      let savedTo: unknown;
 
       // ruyiPage can spend a full global BiDi timeout hydrating every packet
       // when count is large. One packet per bridge RPC bounds the failure
@@ -186,8 +241,19 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
           pageIdx,
           timeout: remainingSeconds,
           count: 1,
+          resultMode,
+          bodyReadTimeout,
+          outputFile,
           maxBodyChars,
-        }) as { packets?: unknown[] };
+        }) as {
+          packets?: unknown[];
+          resultMode?: string;
+          appendedPackets?: number;
+          savedTo?: unknown;
+        };
+        resolvedResultMode = result.resultMode ?? resolvedResultMode;
+        appendedPackets += result.appendedPackets ?? 0;
+        savedTo = result.savedTo ?? savedTo;
         const batch = result.packets || [];
         if (batch.length === 0) break;
         packets.push(...batch);
@@ -196,8 +262,11 @@ export function registerNetworkTools(register: ToolRegistrar, ctx: RuyiContext):
 
       const result = {
         packets,
-        bodyLimitChars: maxBodyChars,
-        completeBodies: maxBodyChars === 0,
+        resultMode: resolvedResultMode ?? 'metadata',
+        bodyReadTimeout,
+        bodyLimitChars: resolvedResultMode === 'body' ? maxBodyChars : null,
+        savedTo: savedTo ?? null,
+        appendedPackets,
       };
 
       return {

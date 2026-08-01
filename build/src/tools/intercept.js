@@ -26,6 +26,12 @@ export function registerInterceptTools(register, ctx) {
                             '或 [{"type":"pattern","protocol":"https","pathname":"/api/*"}]',
                         items: { type: 'object' },
                     },
+                    resultMode: {
+                        type: 'string',
+                        enum: ['metadata', 'schema', 'body'],
+                        description: '默认 metadata；schema 只返回 body 结构；body 仅可在 ruyi_intercept_wait 写入本地 JSONL。',
+                        default: 'metadata',
+                    },
                 },
                 required: [],
             },
@@ -35,6 +41,7 @@ export function registerInterceptTools(register, ctx) {
             const result = await ctx.bridgeInstance.call('intercept.start_req', {
                 pageIdx,
                 urlPatterns: args.urlPatterns,
+                resultMode: args.resultMode ?? 'metadata',
             });
             if (result.intercepting) {
                 ctx.setCaptureActive(true, 'intercept_req');
@@ -61,6 +68,12 @@ export function registerInterceptTools(register, ctx) {
                         description: 'URL 过滤模式。同 ruyi_intercept_requests 格式。',
                         items: { type: 'object' },
                     },
+                    resultMode: {
+                        type: 'string',
+                        enum: ['metadata', 'schema', 'body'],
+                        description: '默认 metadata；schema 只返回 body 结构；body 仅可在 ruyi_intercept_wait 写入本地 JSONL。',
+                        default: 'metadata',
+                    },
                 },
                 required: [],
             },
@@ -70,6 +83,7 @@ export function registerInterceptTools(register, ctx) {
             const result = await ctx.bridgeInstance.call('intercept.start_resp', {
                 pageIdx,
                 urlPatterns: args.urlPatterns,
+                resultMode: args.resultMode ?? 'metadata',
             });
             if (result.intercepting) {
                 ctx.setCaptureActive(true, 'intercept_resp');
@@ -86,21 +100,51 @@ export function registerInterceptTools(register, ctx) {
         tool: {
             name: 'ruyi_intercept_wait',
             description: '等待并消费一个拦截到的请求/响应。队列模式：每次调用返回一个。' +
-                '超时返回 timedOut=true。返回 url、method、headers、body、responseStatus 等。',
+                'Bridge 会在取样后立即 continue，避免 MCP 把浏览器请求永久卡住。' +
+                '默认只返回脱敏 metadata；body 只会写入显式指定的本地 JSONL 文件。',
             inputSchema: {
                 type: 'object',
                 properties: {
                     pageIdx: { type: 'number', default: 0 },
                     timeout: { type: 'number', description: '等待超时（秒），默认 10', default: 10 },
+                    resultMode: {
+                        type: 'string',
+                        enum: ['metadata', 'schema', 'body'],
+                        description: '不传时沿用 start 模式；schema/body 必须在 start 时已启用 collector，不能由 metadata 会话事后升级。',
+                    },
+                    bodyReadTimeout: {
+                        type: 'number',
+                        description: 'schema/body 读取单个 body 的最多等待秒数，默认 1，范围 0–10。',
+                        minimum: 0,
+                        maximum: 10,
+                        default: 1,
+                    },
+                    outputFile: {
+                        type: 'string',
+                        description: 'resultMode=body 时必填的绝对 JSONL 文件路径。',
+                    },
+                    maxBodyChars: {
+                        type: 'number',
+                        description: '仅 resultMode=body 的本地 JSONL body 字符上限；0 表示不截断。',
+                        minimum: 0,
+                        default: 0,
+                    },
                 },
                 required: [],
             },
         },
         handler: (async (args) => {
             const pageIdx = getPageIdx(args, ctx);
+            if (args.resultMode === 'body' && !args.outputFile) {
+                throw new Error('outputFile is required when resultMode=body');
+            }
             const result = await ctx.bridgeInstance.call('intercept.wait', {
                 pageIdx,
                 timeout: args.timeout ?? 10,
+                resultMode: args.resultMode,
+                bodyReadTimeout: args.bodyReadTimeout ?? 1,
+                outputFile: args.outputFile,
+                maxBodyChars: args.maxBodyChars ?? 0,
             });
             return {
                 content: [{ type: 'text', text: jsonResult(result) }],
