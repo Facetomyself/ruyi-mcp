@@ -56,8 +56,14 @@ const client = new Client({ name: 'ruyi-mcp-smoke', version: '1.0.0' }, { capabi
 try {
   await client.connect(transport);
   const result = await client.listTools();
-  if (result.tools.length !== 59) {
-    throw new Error(`Expected 59 tools, received ${result.tools.length}`);
+  const retiredTraceTools = new Set([
+    'ruyi_trace_start',
+    'ruyi_trace_stop',
+    'ruyi_trace_get_results',
+  ]);
+  const unexpectedTraceTool = result.tools.find((tool) => retiredTraceTools.has(tool.name));
+  if (unexpectedTraceTool) {
+    throw new Error(`${unexpectedTraceTool.name} must remain retired from the control plane`);
   }
   const humanDrag = result.tools.find((tool) => tool.name === 'ruyi_human_drag');
   if (!humanDrag) {
@@ -76,6 +82,14 @@ try {
   const selectFrame = result.tools.find((tool) => tool.name === 'ruyi_select_frame');
   if (!selectFrame?.inputSchema?.properties?.selector) {
     throw new Error('ruyi_select_frame.selector is not exposed');
+  }
+  const exportSession = result.tools.find((tool) => tool.name === 'ruyi_export_session');
+  const exportRequired = exportSession?.inputSchema?.required ?? [];
+  if (!exportRequired.includes('caseId') || !exportRequired.includes('workspaceRoot')) {
+    throw new Error('ruyi_export_session must require canonical caseId and workspaceRoot inputs');
+  }
+  if (exportSession?.inputSchema?.properties?.outputFile) {
+    throw new Error('ruyi_export_session legacy outputFile contract must remain retired');
   }
   if (!Array.isArray(selectFrame.inputSchema.oneOf) || selectFrame.inputSchema.oneOf.length !== 2) {
     throw new Error('ruyi_select_frame contextId/selector exclusivity is not exposed');

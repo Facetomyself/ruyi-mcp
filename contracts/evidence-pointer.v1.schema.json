@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Facetomyself/reverse_ENV/contracts/web-reverse/evidence-pointer.v1.schema.json",
+  "title": "Web evidence pointer v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "caseId",
+    "plane",
+    "runId",
+    "artifactId",
+    "path",
+    "sha256",
+    "bytes",
+    "mediaType",
+    "sensitivity",
+    "redaction"
+  ],
+  "properties": {
+    "schema": {"const": "evidence-pointer.v1"},
+    "caseId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,79}$"},
+    "plane": {"enum": ["ruyi-control", "ruyitrace", "v8trace", "parity"]},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,95}$"},
+    "artifactId": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{1,95}$"},
+    "path": {
+      "type": "string",
+      "pattern": "^evidence/web/(handoff|ruyitrace|v8trace|parity)/[a-z0-9][a-z0-9_-]{0,95}/[^\\\\]+"
+    },
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "bytes": {"type": "integer", "minimum": 0},
+    "mediaType": {"type": "string", "pattern": "^[a-z0-9.+-]+/[a-zA-Z0-9.+-]+$"},
+    "recordCount": {"type": "integer", "minimum": 0},
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"enum": ["json-pointer", "line-range", "record-range", "sqlite-row"]},
+        "value": {"type": "string", "minLength": 1, "maxLength": 512}
+      }
+    },
+    "cursor": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "sensitivity": {"enum": ["public-synthetic", "private-redacted", "private-raw"]},
+    "redaction": {"enum": ["not-applicable", "synthetic", "allowlist-summary", "manual-reviewed"]}
+  }
+}

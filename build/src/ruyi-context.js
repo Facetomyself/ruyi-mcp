@@ -1,14 +1,13 @@
 /**
  * RuyiContext — manages browser session state across MCP tool calls.
  *
- * Tracks: active browser, open pages, breakpoints, trace state, network intercepts.
+ * Tracks: active browser, open pages, breakpoints, and network capture state.
  */
 function createInitialState() {
     return {
         alive: false,
         browserLaunched: false,
         fingerprintApplied: false,
-        traceEnabled: false,
         pages: [],
         activePageIdx: 0,
         breakpoints: [],
@@ -38,9 +37,6 @@ export class RuyiContext {
         this.state.lastLaunchParams = params;
         if (params.fingerprint) {
             this.state.fingerprintApplied = true;
-        }
-        if (params.traceEnabled) {
-            this.state.traceEnabled = true;
         }
         if (params.proxy) {
             this.state.proxy = params.proxy;
@@ -101,16 +97,13 @@ export class RuyiContext {
         return this.state.breakpoints;
     }
     // ------------------------------------------------------------------
-    // Capture / Trace
+    // Capture
     // ------------------------------------------------------------------
     setCaptureActive(active, pattern) {
         this.state.captureActive = active;
         if (pattern !== undefined) {
             this.state.capturePattern = pattern;
         }
-    }
-    setTraceEnabled(enabled) {
-        this.state.traceEnabled = enabled;
     }
     // ------------------------------------------------------------------
     // Reset

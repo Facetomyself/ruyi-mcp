@@ -21,6 +21,9 @@ import random
 import time
 import tempfile
 import hashlib
+import re
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlsplit
@@ -88,6 +91,12 @@ def _serialize(obj: Any, depth: int = 0) -> Any:
 
 _RESULT_MODES = frozenset({"metadata", "schema", "body"})
 _CAPTURE_STOP_MODES = frozenset({"discard", "metadata"})
+_HANDOFF_STATE_KINDS = frozenset({"cookies", "storage"})
+_CASE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,79}$")
+_HANDOFF_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,95}$")
+_GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{7,40}$")
+PUBLIC_BASE_SHA = "788d7af28dd9ec4e91d79470cd30030aac3f8aba"
+CONTROL_PLANE_SERVICE = "ruyi-mcp-reverse-env"
 _HEADER_ALLOWLIST = frozenset({
     "content-type",
     "content-length",
@@ -126,6 +135,125 @@ def _sha256_text(value: Any) -> str:
     else:
         raw = str(value).encode("utf-8", errors="replace")
     return hashlib.sha256(raw).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_git_head(repo_root: Path) -> str:
+    """Resolve HEAD without spawning git; release installs may override it."""
+    configured = os.environ.get("RUYI_MCP_LOCAL_HEAD", "").strip().lower()
+    if configured:
+        if not _GIT_SHA_PATTERN.fullmatch(configured):
+            raise ValueError("RUYI_MCP_LOCAL_HEAD must be a 7-40 character lowercase Git SHA")
+        return configured
+
+    dot_git = repo_root / ".git"
+    git_dir = dot_git
+    if dot_git.is_file():
+        marker = dot_git.read_text(encoding="utf-8").strip()
+        if not marker.lower().startswith("gitdir:"):
+            raise RuntimeError(f"Unsupported .git file: {dot_git}")
+        git_dir = Path(marker.split(":", 1)[1].strip())
+        if not git_dir.is_absolute():
+            git_dir = (repo_root / git_dir).resolve()
+
+    head_path = git_dir / "HEAD"
+    if not head_path.is_file():
+        raise RuntimeError(
+            "Cannot resolve localHeadSha; set RUYI_MCP_LOCAL_HEAD for packaged installs"
+        )
+    head = head_path.read_text(encoding="utf-8").strip()
+    if head.startswith("ref:"):
+        ref_name = head.split(":", 1)[1].strip()
+        common_dir = git_dir
+        common_marker = git_dir / "commondir"
+        if common_marker.is_file():
+            common_dir = Path(
+                common_marker.read_text(encoding="utf-8").strip()
+            )
+            if not common_dir.is_absolute():
+                common_dir = (git_dir / common_dir).resolve()
+        head = ""
+        for ref_root in (git_dir, common_dir):
+            ref_path = ref_root / Path(ref_name)
+            if ref_path.is_file():
+                head = ref_path.read_text(encoding="utf-8").strip()
+                break
+        if not head:
+            packed_refs = common_dir / "packed-refs"
+            if packed_refs.is_file():
+                for line in packed_refs.read_text(encoding="utf-8").splitlines():
+                    if not line or line.startswith(("#", "^")):
+                        continue
+                    sha, _, candidate_ref = line.partition(" ")
+                    if candidate_ref == ref_name:
+                        head = sha
+                        break
+    head = head.lower()
+    if not _GIT_SHA_PATTERN.fullmatch(head):
+        raise RuntimeError("Cannot resolve a valid localHeadSha from repository metadata")
+    return head
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _safe_proxy(value: Any) -> dict:
+    raw = str(value or "").strip()
+    if not raw:
+        return {"mode": "direct", "credentials": "none"}
+    if raw.lower() == "system":
+        return {"mode": "system", "credentials": "external-ref"}
+
+    parsed = urlsplit(raw)
+    scheme = parsed.scheme.lower()
+    if scheme in {"socks5h", "socks"}:
+        scheme = "socks5"
+    if scheme not in {"http", "https", "socks5"} or not parsed.hostname:
+        raise ValueError("proxy must use http, https, or socks5 with an explicit host")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("proxy has an invalid port") from exc
+    endpoint = parsed.hostname
+    if port is not None:
+        endpoint = f"{endpoint}:{port}"
+    return {
+        "mode": scheme,
+        "endpoint": endpoint[:512],
+        "credentials": "omitted" if parsed.username or parsed.password else "none",
+    }
+
+
+def _write_json_atomic(path: Path, payload: Any) -> tuple[int, str]:
+    raw = (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return len(raw), hashlib.sha256(raw).hexdigest()
 
 
 def _safe_url(value: Any) -> dict:
@@ -246,13 +374,6 @@ def _discover_firefox_path() -> str:
 
     candidates: list[Path] = []
     if os.name == "nt":
-        candidates.append(
-            Path(__file__).resolve().parents[3]
-            / "tools"
-            / "ruyitrace"
-            / "firefox"
-            / "firefox.exe"
-        )
         browser_root = Path.home() / "AppData" / "Local" / "ruyipage" / "browsers"
         if browser_root.is_dir():
             candidates.extend(sorted(browser_root.glob("firefox-*/firefox/firefox.exe"), reverse=True))
@@ -299,7 +420,7 @@ def _path_is_within(path: Path, root: Path) -> bool:
 # RuyiBridge
 # ---------------------------------------------------------------------------
 class RuyiBridge:
-    """JSON-RPC bridge wrapping ruyipage browser and BiDi trace capabilities."""
+    """JSON-RPC bridge wrapping the ruyipage browser control plane."""
 
     def __init__(self):
         self.page: Optional[FirefoxPage] = None
@@ -308,9 +429,6 @@ class RuyiBridge:
         self.pages: dict[int, Any] = {}          # pageIdx → FirefoxPage/Tab
         self._next_page_idx: int = 0
         self._breakpoints: list[dict] = []        # soft breakpoint registry
-        self._trace_output: Optional[str] = None
-        self._trace_enabled_at_launch: bool = False
-        self._trace_active: bool = False
         self._preload_scripts: dict[str, str] = {}  # scriptId → script text
         self._fingerprint_ctx: Any = None
         self._capture_stats: dict[int, dict[str, Any]] = {}
@@ -318,6 +436,12 @@ class RuyiBridge:
         self._profile_path: Optional[Path] = None
         self._managed_profile: Optional[Path] = None
         self._managed_profile_root: Optional[Path] = None
+        self._browser_path: Optional[Path] = None
+        self._proxy_url: Optional[str] = None
+        self._headless: bool = False
+        self._private_mode: bool = False
+        self._connection_address: Optional[str] = None
+        self._connection_port: Optional[int] = None
 
         self._handlers = {
             # Browser lifecycle
@@ -375,10 +499,6 @@ class RuyiBridge:
             "debug.set_breakpoint":  self._set_breakpoint,
             "debug.remove_breakpoint": self._remove_breakpoint,
             "debug.list_breakpoints":  self._list_breakpoints,
-            # Trace
-            "trace.start":           self._trace_start,
-            "trace.stop":            self._trace_stop,
-            "trace.results":         self._trace_results,
             # Frame
             "frame.list":            self._frame_list,
             "frame.select":          self._frame_select,
@@ -480,6 +600,220 @@ class RuyiBridge:
             return getattr(obj, name, default)
         except Exception:
             return default
+
+    @staticmethod
+    def _parse_connection(value: str) -> tuple[str, int]:
+        raw = str(value or "").strip()
+        if not raw:
+            raise ValueError("Firefox BiDi address is unavailable")
+        if "://" in raw:
+            parsed = urlsplit(raw)
+            host = parsed.hostname
+            port = parsed.port
+        elif raw.startswith("["):
+            closing = raw.find("]")
+            if closing < 0 or closing + 2 > len(raw) or raw[closing + 1] != ":":
+                raise ValueError("Firefox BiDi address has an invalid IPv6 form")
+            host = raw[1:closing]
+            port = int(raw[closing + 2 :])
+        else:
+            host, separator, raw_port = raw.rpartition(":")
+            if not separator:
+                raise ValueError("Firefox BiDi address must include a port")
+            port = int(raw_port)
+        normalized_host = str(host or "").lower()
+        if normalized_host not in {"127.0.0.1", "localhost", "::1"}:
+            raise ValueError("Firefox BiDi handoff only permits a loopback address")
+        if port is None or not 1 <= int(port) <= 65535:
+            raise ValueError("Firefox BiDi port must be between 1 and 65535")
+        return normalized_host, int(port)
+
+    def _current_connection(self, page: Any) -> tuple[str, int]:
+        browser = self._attribute(page, "_firefox", None) or self._attribute(
+            page, "_browser", None
+        )
+        address = self._attribute(browser, "address", None) or self._attribute(
+            browser, "_address", None
+        )
+        if address:
+            return self._parse_connection(str(address))
+        if self._connection_address and self._connection_port:
+            return self._connection_address, self._connection_port
+        raise RuntimeError("Active Firefox does not expose a verifiable BiDi endpoint")
+
+    def _browser_identity(self, params: dict) -> dict:
+        configured = params.get("browserPath")
+        if configured is not None and str(configured).strip():
+            binary = Path(str(configured).strip()).expanduser()
+            if not binary.is_absolute():
+                raise ValueError("browserPath must be an absolute path")
+            binary = binary.resolve()
+        else:
+            binary = self._browser_path
+        if binary is None or not binary.is_file():
+            raise RuntimeError(
+                "Firefox binary is unavailable; pass browserPath to ruyi_export_session"
+            )
+
+        application_ini = binary.parent / "application.ini"
+        if not application_ini.is_file():
+            raise RuntimeError(f"Firefox application.ini not found beside {binary}")
+        section = ""
+        app_values: dict[str, str] = {}
+        for raw_line in application_ini.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(("#", ";")):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip().lower()
+                continue
+            if section == "app" and "=" in line:
+                key, value = line.split("=", 1)
+                app_values[key.strip().lower()] = value.strip()
+
+        version = app_values.get("version", "")
+        build_id = app_values.get("buildid", "")
+        if not version or not build_id:
+            raise RuntimeError("Firefox application.ini lacks App.Version or App.BuildID")
+        return {
+            "name": "Firefox",
+            "version": version[:80],
+            "buildId": build_id[:80],
+            "binarySha256": _sha256_file(binary),
+        }
+
+    @staticmethod
+    def _artifact_pointer(
+        *,
+        case_id: str,
+        handoff_id: str,
+        artifact_id: str,
+        relative_path: str,
+        byte_count: int,
+        sha256: str,
+        record_count: int,
+    ) -> dict:
+        return {
+            "schema": "evidence-pointer.v1",
+            "caseId": case_id,
+            "plane": "ruyi-control",
+            "runId": handoff_id,
+            "artifactId": artifact_id,
+            "path": relative_path,
+            "sha256": sha256,
+            "bytes": byte_count,
+            "mediaType": "application/json",
+            "recordCount": record_count,
+            "sensitivity": "private-raw",
+            "redaction": "not-applicable",
+        }
+
+    def _cookie_state(self, page_idx: int, case_id: str, handoff_id: str, exported_at: str) -> tuple[dict, int]:
+        result = self._get_cookies({"pageIdx": page_idx})
+        if result.get("error"):
+            raise RuntimeError(f"Cookie export failed: {result['error']}")
+        cookies: list[dict[str, Any]] = []
+        for item in result.get("cookies", []):
+            if not isinstance(item, dict):
+                raise RuntimeError("Cookie export returned a non-object item")
+            cookie: dict[str, Any] = {
+                "name": str(item.get("name") or ""),
+                "value": str(item.get("value") or ""),
+                "domain": str(item.get("domain") or ""),
+            }
+            if item.get("path") is not None:
+                cookie["path"] = str(item["path"])
+            if item.get("secure") is not None:
+                cookie["secure"] = bool(item["secure"])
+            if item.get("httpOnly") is not None:
+                cookie["httpOnly"] = bool(item["httpOnly"])
+            same_site = str(item.get("sameSite") or "").strip().lower()
+            if same_site in {"strict", "lax", "none"}:
+                cookie["sameSite"] = same_site
+            expiry = item.get("expiry")
+            if (
+                isinstance(expiry, (int, float))
+                and not isinstance(expiry, bool)
+                and math.isfinite(expiry)
+            ):
+                cookie["expiry"] = expiry
+            cookies.append(cookie)
+        return (
+            {
+                "schema": "browser-cookie-state.v1",
+                "caseId": case_id,
+                "handoffId": handoff_id,
+                "exportedAt": exported_at,
+                "cookies": cookies,
+            },
+            len(cookies),
+        )
+
+    @staticmethod
+    def _normalize_storage_items(value: Any) -> dict[str, str]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            items = value.items()
+        elif isinstance(value, list):
+            normalized_items = []
+            for item in value:
+                if not isinstance(item, dict) or "key" not in item:
+                    raise RuntimeError("Storage export returned an invalid item")
+                normalized_items.append((item["key"], item.get("value")))
+            items = normalized_items
+        else:
+            raise RuntimeError("Storage export returned an unsupported collection")
+        result: dict[str, str] = {}
+        for key, item_value in items:
+            result[str(key)] = "" if item_value is None else str(item_value)
+        return result
+
+    def _storage_state(self, page: Any, case_id: str, handoff_id: str, exported_at: str) -> tuple[dict, int]:
+        snapshot = page.run_js(
+            """
+            (() => {
+              const __RUYI_HANDOFF_STORAGE__ = true;
+              const collect = (store) => {
+                const items = {};
+                for (let index = 0; index < store.length; index += 1) {
+                  const key = store.key(index);
+                  items[key] = store.getItem(key);
+                }
+                return items;
+              };
+              return {
+                origin: location.origin,
+                localStorage: collect(localStorage),
+                sessionStorage: collect(sessionStorage)
+              };
+            })()
+            """
+        )
+        if not isinstance(snapshot, dict):
+            raise RuntimeError("Storage export did not return an object")
+        origin = str(snapshot.get("origin") or "")
+        parsed_origin = urlsplit(origin)
+        if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname:
+            raise RuntimeError("Storage export requires an HTTP(S) page origin")
+        canonical_origin = f"{parsed_origin.scheme}://{parsed_origin.hostname}"
+        if parsed_origin.port is not None:
+            canonical_origin += f":{parsed_origin.port}"
+        local_items = self._normalize_storage_items(snapshot.get("localStorage"))
+        session_items = self._normalize_storage_items(snapshot.get("sessionStorage"))
+        return (
+            {
+                "schema": "browser-storage-state.v1",
+                "caseId": case_id,
+                "handoffId": handoff_id,
+                "exportedAt": exported_at,
+                "localStorage": [{"origin": canonical_origin, "items": local_items}],
+                "sessionStorage": [{"origin": canonical_origin, "items": session_items}],
+            },
+            len(local_items) + len(session_items),
+        )
 
     def _target_metadata(self, target: Any, page_idx: int, kind: str) -> dict:
         context_id = self._attribute(target, "_context_id", None)
@@ -594,11 +928,12 @@ class RuyiBridge:
             raise RuntimeError("ruyipage not installed. Run: pip install ruyipage")
 
         self._fingerprint_ctx = None
-        self._trace_output = None
-        self._trace_enabled_at_launch = bool(params.get("traceEnabled"))
-        self._trace_active = False
-        if Settings is not None:
-            Settings.trace_enabled = False
+        self._proxy_url = str(params.get("proxy") or "").strip() or None
+        self._headless = bool(params.get("headless"))
+        self._private_mode = bool(params.get("privateMode"))
+        self._connection_address = None
+        self._connection_port = None
+        self._browser_path = None
 
         existing_only = bool(params.get("existingOnly"))
         opts = FirefoxOptions()
@@ -610,6 +945,7 @@ class RuyiBridge:
                     "with: python -m ruyipage install"
                 )
             opts.set_browser_path(browser_path)
+            self._browser_path = Path(str(browser_path)).expanduser().resolve()
 
         existing_address = str(params.get("address") or "127.0.0.1")
         existing_port = params.get("port")
@@ -667,10 +1003,6 @@ class RuyiBridge:
                     fp_kwargs["userdir"] = str(profile_path)
                 self._fingerprint_ctx = opts.smart_fingerprint(**fp_kwargs)
 
-            # Trace
-            if self._trace_enabled_at_launch:
-                opts.enable_trace(True)
-
             self.opts = opts
             self.page = FirefoxPage(opts)
         except Exception:
@@ -681,9 +1013,22 @@ class RuyiBridge:
             self._profile_path = None
             raise
         self._attached_existing = existing_only
-        if Settings is not None:
-            Settings.trace_enabled = self._trace_enabled_at_launch
-        self._trace_active = self._trace_enabled_at_launch
+        browser = getattr(self.page, "_firefox", None) or getattr(
+            self.page, "_browser", None
+        )
+        connection = getattr(browser, "address", None) or getattr(
+            browser, "_address", None
+        )
+        if connection:
+            try:
+                self._connection_address, self._connection_port = self._parse_connection(
+                    str(connection)
+                )
+            except ValueError:
+                # Export will fail closed if the runtime does not expose a
+                # canonical loopback BiDi endpoint.
+                self._connection_address = None
+                self._connection_port = None
 
         # Apply fingerprint emulation AFTER page creation
         if self._fingerprint_ctx:
@@ -718,11 +1063,6 @@ class RuyiBridge:
         }
 
     def _quit(self, params: dict) -> dict:
-        if Settings is not None:
-            Settings.trace_enabled = False
-        if self.opts is not None and hasattr(self.opts, "enable_trace"):
-            self.opts.enable_trace(False)
-        self._trace_active = False
         if self.page:
             try:
                 if self._attached_existing:
@@ -759,14 +1099,17 @@ class RuyiBridge:
         self.opts = None
         self.pages = {}
         self._breakpoints = []
-        self._trace_enabled_at_launch = False
-        self._trace_active = False
-        self._trace_output = None
         self._preload_scripts = {}
         self._fingerprint_ctx = None
         self._capture_stats = {}
         self._intercept_modes = {}
         self._attached_existing = False
+        self._browser_path = None
+        self._proxy_url = None
+        self._headless = False
+        self._private_mode = False
+        self._connection_address = None
+        self._connection_port = None
         cleanup = self._cleanup_managed_profile()
         self._profile_path = None
         return {"profileCleanup": cleanup} if cleanup is not None else {}
@@ -782,7 +1125,6 @@ class RuyiBridge:
                 "pageCount": len(self.pages),
                 "breakpointCount": len(self._breakpoints),
                 "preloadScriptCount": len(self._preload_scripts),
-                "tracing": self._trace_active,
                 "profileMode": (
                     "managed"
                     if self._managed_profile is not None
@@ -1992,81 +2334,159 @@ class RuyiBridge:
     # Session export
     # ------------------------------------------------------------------
     def _export_session(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
-        output_file = params.get("outputFile")
-        include = params.get("include", ["cookies", "localStorage", "sessionStorage"])
+        page_idx = self._normalize_page_idx(params.get("pageIdx", 0))
+        page = self._get_page(page_idx)
 
-        session = {}
+        case_id = str(params.get("caseId") or "").strip()
+        if not _CASE_ID_PATTERN.fullmatch(case_id):
+            raise ValueError(
+                "caseId must match ^[a-z0-9][a-z0-9._-]{1,79}$"
+            )
+        handoff_id = str(params.get("handoffId") or "").strip()
+        if not handoff_id:
+            handoff_id = (
+                f"handoff_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_"
+                f"{uuid.uuid4().hex[:12]}"
+            )
+        if not _HANDOFF_ID_PATTERN.fullmatch(handoff_id):
+            raise ValueError(
+                "handoffId must match ^[a-z0-9][a-z0-9_-]{0,95}$"
+            )
 
+        workspace_value = str(params.get("workspaceRoot") or "").strip()
+        workspace_root = Path(workspace_value).expanduser()
+        if not workspace_root.is_absolute():
+            raise ValueError("workspaceRoot must be an absolute project path")
+        workspace_root = workspace_root.resolve()
+        if not workspace_root.is_dir():
+            raise ValueError("workspaceRoot must be an existing directory")
+        repository_root = Path(__file__).resolve().parents[1]
+        if _path_is_within(workspace_root, repository_root) or _path_is_within(
+            repository_root, workspace_root
+        ):
+            raise ValueError(
+                "workspaceRoot must be an external project workspace, not this repository"
+            )
+
+        raw_include = params.get("include", ["cookies", "storage"])
+        if not isinstance(raw_include, list) or not raw_include:
+            raise ValueError("include must be a non-empty array")
+        include = [str(item) for item in raw_include]
+        if len(set(include)) != len(include):
+            raise ValueError("include must not contain duplicate state kinds")
+        unsupported = sorted(set(include) - _HANDOFF_STATE_KINDS)
+        if unsupported:
+            raise ValueError(
+                f"Unsupported handoff state kind(s): {', '.join(unsupported)}"
+            )
+
+        exported_at = _utc_timestamp()
+        browser = self._browser_identity(params)
+        local_head = _read_git_head(repository_root)
+        proxy = _safe_proxy(self._proxy_url)
+        connection_address, connection_port = self._current_connection(page)
+        context_id = str(self._attribute(page, "_context_id", "") or "").strip()
+        if not context_id:
+            raise RuntimeError("Active page does not expose a browsing context ID")
+        raw_url = str(self._attribute(page, "url", "") or "").strip()
+        safe_url = _safe_url(raw_url)["url"]
+        if not safe_url:
+            raise RuntimeError("Active page URL is unavailable")
+
+        raw_states: dict[str, tuple[dict, int]] = {}
         if "cookies" in include:
-            try:
-                # Keep export_session compatible with get_cookies.  CookieInfo
-                # is a Python object and the generic serializer degrades it to
-                # "<...CookieInfo object at ...>", which makes HTTP replay
-                # impossible and may leak a meaningless process address.
-                cookie_result = self._get_cookies({"pageIdx": params.get("pageIdx", 0)})
-                session["cookies"] = cookie_result.get("cookies", [])
-                if cookie_result.get("error"):
-                    session["cookiesError"] = cookie_result["error"]
-            except Exception as e:
-                session["cookiesError"] = str(e)
+            raw_states["cookies"] = self._cookie_state(
+                page_idx, case_id, handoff_id, exported_at
+            )
+        if "storage" in include:
+            raw_states["storage"] = self._storage_state(
+                page, case_id, handoff_id, exported_at
+            )
 
-        if "localStorage" in include:
-            try:
-                ls = page.run_js("""
-                    (() => {
-                        const items = {};
-                        for (let i = 0; i < localStorage.length; i++) {
-                            const key = localStorage.key(i);
-                            items[key] = localStorage.getItem(key);
-                        }
-                        return items;
-                    })()
-                """)
-                session["localStorage"] = _serialize(ls)
-            except Exception as e:
-                session["localStorageError"] = str(e)
+        relative_dir = Path("evidence") / "web" / "handoff" / handoff_id
+        output_dir = (workspace_root / relative_dir).resolve()
+        if not _path_is_within(output_dir, workspace_root):
+            raise RuntimeError("handoff output escaped workspaceRoot")
 
-        if "sessionStorage" in include:
-            try:
-                ss = page.run_js("""
-                    (() => {
-                        const items = {};
-                        for (let i = 0; i < sessionStorage.length; i++) {
-                            const key = sessionStorage.key(i);
-                            items[key] = sessionStorage.getItem(key);
-                        }
-                        return items;
-                    })()
-                """)
-                session["sessionStorage"] = _serialize(ss)
-            except Exception as e:
-                session["sessionStorageError"] = str(e)
-
-        if "userAgent" in include:
-            try:
-                session["userAgent"] = str(page.run_js("(() => navigator.userAgent)()"))
-            except Exception:
-                pass
-
-        if "url" in include:
-            try:
-                session["url"] = getattr(page, 'url', '')
-            except Exception:
-                pass
-
-        # Write to file if path provided
-        if output_file:
-            output_dir = os.path.dirname(os.path.abspath(output_file))
-            if output_dir:
-                os.makedirs(output_dir, exist_ok=True)
-            with open(output_file, "w", encoding="utf-8") as f:
-                json.dump(session, f, ensure_ascii=False, indent=2)
-
-        return {
-            "session": session if not output_file else {"savedTo": output_file},
-            "outputFile": output_file,
+        state_files: dict[str, dict] = {}
+        artifact_names = {
+            "cookies": ("cookies.json", "cookies-state"),
+            "storage": ("storage.json", "storage-state"),
         }
+        for state_kind in include:
+            payload, record_count = raw_states[state_kind]
+            filename, artifact_id = artifact_names[state_kind]
+            absolute_path = output_dir / filename
+            byte_count, sha256 = _write_json_atomic(absolute_path, payload)
+            relative_path = (relative_dir / filename).as_posix()
+            state_files[state_kind] = self._artifact_pointer(
+                case_id=case_id,
+                handoff_id=handoff_id,
+                artifact_id=artifact_id,
+                relative_path=relative_path,
+                byte_count=byte_count,
+                sha256=sha256,
+                record_count=record_count,
+            )
+
+        connection: dict[str, Any] = {
+            "mode": "attach" if self._attached_existing else "launch",
+            "address": connection_address,
+            "port": connection_port,
+            "ownership": "external" if self._attached_existing else "control-plane",
+        }
+        profile_path = self._profile_path
+        if (
+            profile_path is not None
+            and profile_path.is_absolute()
+            and profile_path.exists()
+            and _path_is_within(profile_path, workspace_root)
+            and os.name == "nt"
+        ):
+            connection["profilePath"] = str(profile_path)
+
+        capabilities = ["bidi-attach"]
+        if "profilePath" in connection:
+            capabilities.append("profile-clone")
+        if "cookies" in state_files:
+            capabilities.append("cookie-import")
+        if "storage" in state_files:
+            capabilities.append("storage-import")
+        if proxy["mode"] != "direct":
+            capabilities.append("proxy")
+        capabilities.append("headless" if self._headless else "interactive")
+
+        handoff: dict[str, Any] = {
+            "schema": "browser-session-handoff.v1",
+            "caseId": case_id,
+            "handoffId": handoff_id,
+            "exportedAt": exported_at,
+            "source": {
+                "service": CONTROL_PLANE_SERVICE,
+                "publicBaseSha": PUBLIC_BASE_SHA,
+                "localHeadSha": local_head,
+            },
+            "browser": browser,
+            "connection": connection,
+            "page": {"url": safe_url, "contextId": context_id},
+            "stateFiles": state_files,
+            "proxy": proxy,
+            "capabilities": capabilities,
+            "redaction": {
+                "status": "allowlist-summary",
+                "inlineSecrets": False,
+            },
+        }
+        user_context_id = str(
+            self._attribute(page, "_user_context_id", "") or ""
+        ).strip()
+        if user_context_id:
+            handoff["page"]["userContextId"] = user_context_id
+
+        # The handoff itself is an allowlisted control-plane document. Raw
+        # values live only in the two evidence files referenced above.
+        _write_json_atomic(output_dir / "browser-session-handoff.json", handoff)
+        return handoff
 
     # ------------------------------------------------------------------
     # Debug (soft breakpoints via preload scripts)
@@ -2141,116 +2561,6 @@ class RuyiBridge:
 
     def _list_breakpoints(self, params: dict) -> dict:
         return {"breakpoints": self._breakpoints}
-
-    # ------------------------------------------------------------------
-    # Trace (ruyitrace integration)
-    # ------------------------------------------------------------------
-    def _trace_start(self, params: dict) -> dict:
-        """Start a fresh ruyipage BiDi trace segment."""
-        page = self._get_page(params.get("pageIdx", 0))
-        if Settings is None:
-            raise RuntimeError("ruyipage Settings API is unavailable")
-
-        settings_was_enabled = bool(Settings.trace_enabled)
-        options_was_enabled = bool(
-            getattr(self.opts, "trace_enabled", settings_was_enabled)
-        )
-        was_tracing = bool(settings_was_enabled or self._trace_active)
-        try:
-            Settings.trace_enabled = True
-            if self.opts is not None and hasattr(self.opts, "enable_trace"):
-                self.opts.enable_trace(True)
-            tracer = page.trace
-        except Exception:
-            Settings.trace_enabled = settings_was_enabled
-            if self.opts is not None and hasattr(self.opts, "enable_trace"):
-                try:
-                    self.opts.enable_trace(options_was_enabled)
-                except Exception:
-                    pass
-            raise
-        if not self._trace_enabled_at_launch and not was_tracing and hasattr(tracer, "clear"):
-            tracer.clear()
-        self._trace_active = True
-
-        output_file = params.get("outputFile")
-        self._trace_output = output_file
-
-        result = {
-            "tracing": True,
-            "fullTrace": self._trace_enabled_at_launch,
-            "partialTrace": not self._trace_enabled_at_launch,
-            "startedAtRuntime": not self._trace_enabled_at_launch,
-            "alreadyTracing": was_tracing,
-            "outputFile": output_file,
-        }
-        if not self._trace_enabled_at_launch:
-            result["warning"] = (
-                "Runtime trace started successfully, but browser launch events are not included. "
-                "Use traceEnabled:true in ruyi_new_page when launch coverage is required."
-            )
-        return result
-
-    def _trace_stop(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
-
-        result = {"tracing": False}
-        tracer = None
-        try:
-            tracer = page.trace
-            summary = tracer.summary() if hasattr(tracer, 'summary') else ""
-            result["summary"] = str(summary)[:10000]
-        except Exception as e:
-            result["summaryError"] = str(e)
-
-        try:
-            json_data = page.trace.dump_json() if hasattr(page.trace, 'dump_json') else "{}"
-            if self._trace_output:
-                output_dir = os.path.dirname(os.path.abspath(self._trace_output))
-                if output_dir:
-                    os.makedirs(output_dir, exist_ok=True)
-                with open(self._trace_output, "w", encoding="utf-8") as f:
-                    f.write(str(json_data))
-                result["savedTo"] = self._trace_output
-            result["data"] = str(json_data)[:100000]
-        except Exception as e:
-            result["dumpError"] = str(e)
-
-        if Settings is not None:
-            Settings.trace_enabled = False
-        if self.opts is not None and hasattr(self.opts, "enable_trace"):
-            self.opts.enable_trace(False)
-        self._trace_active = False
-        self._trace_output = None
-        return result
-
-    def _trace_results(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
-        limit = params.get("limit", 50)
-
-        try:
-            tracer = page.trace
-            if hasattr(tracer, 'latest'):
-                latest = tracer.latest(limit)
-                return {
-                    "tracing": bool(
-                        self._trace_active
-                        and Settings is not None
-                        and Settings.trace_enabled
-                    ),
-                    "entries": _serialize(latest),
-                }
-            summary = tracer.summary() if hasattr(tracer, 'summary') else "Trace available"
-            return {
-                "tracing": bool(
-                    self._trace_active
-                    and Settings is not None
-                    and Settings.trace_enabled
-                ),
-                "summary": str(summary)[:10000],
-            }
-        except Exception as e:
-            return {"tracing": self._trace_active, "error": str(e)}
 
     # ------------------------------------------------------------------
     # Frame

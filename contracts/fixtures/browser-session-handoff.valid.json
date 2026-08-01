@@ -1,0 +1,45 @@
+{
+  "schema": "browser-session-handoff.v1",
+  "caseId": "synthetic-web-case",
+  "handoffId": "handoff_synthetic_001",
+  "exportedAt": "2026-08-01T00:00:00Z",
+  "source": {
+    "service": "ruyi-mcp-reverse-env",
+    "publicBaseSha": "788d7af",
+    "localHeadSha": "abcdef1"
+  },
+  "browser": {
+    "name": "Firefox",
+    "version": "151.0a1",
+    "buildId": "20260718144531",
+    "binarySha256": "9e7406848c1c55eaa2bd2bcb1abb03643d50b5a09413cdb2c7958fdcd1f6b352"
+  },
+  "connection": {
+    "mode": "attach",
+    "address": "127.0.0.1",
+    "port": 9222,
+    "ownership": "external"
+  },
+  "page": {
+    "url": "https://example.invalid/synthetic",
+    "contextId": "context-1"
+  },
+  "stateFiles": {
+    "storage": {
+      "schema": "evidence-pointer.v1",
+      "caseId": "synthetic-web-case",
+      "plane": "ruyi-control",
+      "runId": "handoff_synthetic_001",
+      "artifactId": "storage-state",
+      "path": "evidence/web/handoff/handoff_synthetic_001/storage.json",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "bytes": 2,
+      "mediaType": "application/json",
+      "sensitivity": "public-synthetic",
+      "redaction": "synthetic"
+    }
+  },
+  "proxy": {"mode": "direct", "credentials": "none"},
+  "capabilities": ["bidi-attach", "storage-import", "headless"],
+  "redaction": {"status": "allowlist-summary", "inlineSecrets": false}
+}

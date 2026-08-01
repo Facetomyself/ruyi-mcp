@@ -20,7 +20,6 @@ import { registerScriptTools } from './tools/script.js';
 import { registerNetworkTools } from './tools/network.js';
 import { registerDebugTools } from './tools/debug.js';
 import { registerHumanTools } from './tools/human.js';
-import { registerTraceTools } from './tools/trace.js';
 import { registerNetEnhanceTools } from './tools/netenhance.js';
 import { registerUtilTools } from './tools/util.js';
 import { registerCookieTools } from './tools/cookie.js';
@@ -77,7 +76,6 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
   registerInterceptTools(register, ctx);
   registerDebugTools(register, ctx);
   registerHumanTools(register, ctx);
-  registerTraceTools(register, ctx);
   registerNetEnhanceTools(register, ctx);
   registerWebSocketTools(register, ctx);
   registerUtilTools(register, ctx);
@@ -87,7 +85,7 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
   const server = new Server(
     {
       name: 'ruyi-mcp',
-      version: '0.1.8',
+      version: '0.2.0-reverse-env.1',
     },
     {
       capabilities: {

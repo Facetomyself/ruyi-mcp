@@ -1,5 +1,5 @@
 /**
- * Session export tool: export_session.
+ * Canonical browser-session handoff for the reverse_ENV evidence plane.
  */
 import { getPageIdx } from './types.js';
 function jsonResult(data) {
@@ -12,33 +12,51 @@ export function registerSessionTools(register, ctx) {
     register({
         tool: {
             name: 'ruyi_export_session',
-            description: '导出当前浏览器会话状态（Cookie、localStorage、sessionStorage、UserAgent、URL）。' +
-                '可保存到 JSON 文件供 js-reverse-mcp、ruyitrace 或其他工具复用。' +
-                '这是跨工具 session 桥接的核心工具。',
+            description: '导出 browser-session-handoff.v1。Cookie 与 Storage 原值只写入 workspace 下的 ignored evidence 文件，' +
+                'MCP 响应仅返回带 evidence-pointer.v1 的脱敏 handoff；该产物供 ruyitrace-mcp 做受控 profile clone 或状态导入。',
             inputSchema: {
                 type: 'object',
                 properties: {
                     pageIdx: { type: 'number', description: '标签页索引', default: 0 },
-                    outputFile: {
+                    caseId: {
                         type: 'string',
-                        description: '保存到的 JSON 文件路径（绝对路径）。不提供则直接返回内容。',
+                        description: 'Web reverse case ID，需匹配 ^[a-z0-9][a-z0-9._-]{1,79}$。',
+                        pattern: '^[a-z0-9][a-z0-9._-]{1,79}$',
+                    },
+                    handoffId: {
+                        type: 'string',
+                        description: '可选 handoff ID；未提供时自动生成。',
+                        pattern: '^[a-z0-9][a-z0-9_-]{0,95}$',
+                    },
+                    workspaceRoot: {
+                        type: 'string',
+                        description: '当前项目 workspace 根目录的绝对路径；状态文件固定写入 evidence/web/handoff/<handoffId>。',
+                    },
+                    browserPath: {
+                        type: 'string',
+                        description: 'Firefox 可执行文件绝对路径；attach 模式无法自动发现时必填，用于版本、BuildID 与 SHA-256 校验。',
                     },
                     include: {
                         type: 'array',
-                        description: '要导出的内容类型',
-                        items: { type: 'string' },
-                        default: ['cookies', 'localStorage', 'sessionStorage'],
+                        description: '要写入 evidence 文件的浏览器状态；原值不会 inline 返回。',
+                        items: { type: 'string', enum: ['cookies', 'storage'] },
+                        minItems: 1,
+                        uniqueItems: true,
+                        default: ['cookies', 'storage'],
                     },
                 },
-                required: [],
+                required: ['caseId', 'workspaceRoot'],
             },
         },
         handler: (async (args) => {
             const pageIdx = getPageIdx(args, ctx);
             const result = await ctx.bridgeInstance.call('session.export', {
                 pageIdx,
-                outputFile: args.outputFile,
-                include: args.include ?? ['cookies', 'localStorage', 'sessionStorage'],
+                caseId: args.caseId,
+                handoffId: args.handoffId,
+                workspaceRoot: args.workspaceRoot,
+                browserPath: args.browserPath,
+                include: args.include ?? ['cookies', 'storage'],
             });
             return {
                 content: [{ type: 'text', text: jsonResult(result) }],

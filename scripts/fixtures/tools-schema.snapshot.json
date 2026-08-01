@@ -19,11 +19,6 @@
           "profilePath": {
             "description": "现有 Firefox profile 绝对路径（可选；外部数据，Bridge 不会创建或删除）",
             "type": "string"
-          },
-          "traceEnabled": {
-            "default": false,
-            "description": "接管后启用 BiDi trace，默认 false",
-            "type": "boolean"
           }
         },
         "required": [
@@ -481,32 +476,54 @@
       "name": "ruyi_evaluate_script"
     },
     {
-      "description": "导出当前浏览器会话状态（Cookie、localStorage、sessionStorage、UserAgent、URL）。可保存到 JSON 文件供 js-reverse-mcp、ruyitrace 或其他工具复用。这是跨工具 session 桥接的核心工具。",
+      "description": "导出 browser-session-handoff.v1。Cookie 与 Storage 原值只写入 workspace 下的 ignored evidence 文件，MCP 响应仅返回带 evidence-pointer.v1 的脱敏 handoff；该产物供 ruyitrace-mcp 做受控 profile clone 或状态导入。",
       "inputSchema": {
         "properties": {
+          "browserPath": {
+            "description": "Firefox 可执行文件绝对路径；attach 模式无法自动发现时必填，用于版本、BuildID 与 SHA-256 校验。",
+            "type": "string"
+          },
+          "caseId": {
+            "description": "Web reverse case ID，需匹配 ^[a-z0-9][a-z0-9._-]{1,79}$。",
+            "pattern": "^[a-z0-9][a-z0-9._-]{1,79}$",
+            "type": "string"
+          },
+          "handoffId": {
+            "description": "可选 handoff ID；未提供时自动生成。",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,95}$",
+            "type": "string"
+          },
           "include": {
             "default": [
               "cookies",
-              "localStorage",
-              "sessionStorage"
+              "storage"
             ],
-            "description": "要导出的内容类型",
+            "description": "要写入 evidence 文件的浏览器状态；原值不会 inline 返回。",
             "items": {
+              "enum": [
+                "cookies",
+                "storage"
+              ],
               "type": "string"
             },
-            "type": "array"
-          },
-          "outputFile": {
-            "description": "保存到的 JSON 文件路径（绝对路径）。不提供则直接返回内容。",
-            "type": "string"
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
           },
           "pageIdx": {
             "default": 0,
             "description": "标签页索引",
             "type": "number"
+          },
+          "workspaceRoot": {
+            "description": "当前项目 workspace 根目录的绝对路径；状态文件固定写入 evidence/web/handoff/<handoffId>。",
+            "type": "string"
           }
         },
-        "required": [],
+        "required": [
+          "caseId",
+          "workspaceRoot"
+        ],
         "type": "object"
       },
       "name": "ruyi_export_session"
@@ -1212,11 +1229,6 @@
             "description": "导航超时（秒），默认 30",
             "type": "number"
           },
-          "traceEnabled": {
-            "default": false,
-            "description": "启用 BiDi trace 记录",
-            "type": "boolean"
-          },
           "url": {
             "description": "目标 URL（必填）",
             "type": "string"
@@ -1626,57 +1638,6 @@
         "type": "object"
       },
       "name": "ruyi_take_screenshot"
-    },
-    {
-      "description": "获取当前的追踪结果（不停止追踪）。返回最近的 BiDi 事件条目。",
-      "inputSchema": {
-        "properties": {
-          "limit": {
-            "default": 50,
-            "description": "最大返回条数，默认 50",
-            "type": "number"
-          },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
-          }
-        },
-        "required": [],
-        "type": "object"
-      },
-      "name": "ruyi_trace_get_results"
-    },
-    {
-      "description": "从当前时刻开始记录结构化 BiDi trace；首次在运行中的浏览器上启动时，会清空旧缓冲区并建立新的 trace 段。浏览器启动时已开启或重复调用时会保留现有缓冲区。浏览器启动后调用也会真实启用记录，但不包含此前的启动事件。如需覆盖启动阶段，请在 ruyi_new_page 时设置 traceEnabled:true。该工具记录 BiDi 协议级事件，不等同于 Firefox 内核 DOMTrace。",
-      "inputSchema": {
-        "properties": {
-          "outputFile": {
-            "description": "停止追踪后保存到的 JSON 文件路径",
-            "type": "string"
-          },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
-          }
-        },
-        "required": [],
-        "type": "object"
-      },
-      "name": "ruyi_trace_start"
-    },
-    {
-      "description": "停止 BiDi 追踪并返回结果摘要和数据。",
-      "inputSchema": {
-        "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
-          }
-        },
-        "required": [],
-        "type": "object"
-      },
-      "name": "ruyi_trace_stop"
     },
     {
       "description": "注入 WebSocket Proxy 以捕获后续 WebSocket 连接的消息。注入后，新创建的 WebSocket 连接的 send/receive 消息会记录到 window.__ruyi_ws_messages。⚠ 只能捕获注入后创建的 WebSocket 连接。binary 帧以 \"[binary]\" 标记。",

@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { cleanupServer, createServer } from '../build/src/server.js';
+
+const toolSnapshot = JSON.parse(
+  readFileSync(new URL('./fixtures/tools-schema.snapshot.json', import.meta.url), 'utf8')
+);
+const expectedToolNames = toolSnapshot.tools.map((tool) => tool.name);
 
 class FakeBridge {
   constructor(name) {
@@ -49,10 +55,16 @@ test('createServer isolates tool handlers and cleanup per instance', async () =>
   try {
     const toolsA = await clientA.listTools();
     const toolsB = await clientB.listTools();
-    assert.equal(toolsA.tools.length, 59);
-    assert.equal(toolsB.tools.length, 59);
-    assert.equal(new Set(toolsA.tools.map((tool) => tool.name)).size, 59);
-    assert.equal(new Set(toolsB.tools.map((tool) => tool.name)).size, 59);
+    assert.deepEqual(
+      toolsA.tools.map((tool) => tool.name).sort(),
+      [...expectedToolNames].sort()
+    );
+    assert.deepEqual(
+      toolsB.tools.map((tool) => tool.name).sort(),
+      [...expectedToolNames].sort()
+    );
+    assert.equal(new Set(toolsA.tools.map((tool) => tool.name)).size, expectedToolNames.length);
+    assert.equal(new Set(toolsB.tools.map((tool) => tool.name)).size, expectedToolNames.length);
 
     const statusA = await clientA.callTool({ name: 'ruyi_browser_status', arguments: {} });
     const statusB = await clientB.callTool({ name: 'ruyi_browser_status', arguments: {} });
