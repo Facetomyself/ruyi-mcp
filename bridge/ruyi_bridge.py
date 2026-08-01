@@ -16,6 +16,7 @@ import json
 import traceback
 import os
 import shutil
+import ipaddress
 import math
 import random
 import time
@@ -95,6 +96,8 @@ _HANDOFF_STATE_KINDS = frozenset({"cookies", "storage"})
 _CASE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{1,79}$")
 _HANDOFF_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,95}$")
 _GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{7,40}$")
+_COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,4096}$")
+_COOKIE_DOMAIN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 PUBLIC_BASE_SHA = "788d7af28dd9ec4e91d79470cd30030aac3f8aba"
 CONTROL_PLANE_SERVICE = "ruyi-mcp-reverse-env"
 _HEADER_ALLOWLIST = frozenset({
@@ -287,6 +290,56 @@ def _safe_url(value: Any) -> dict:
         "url": safe[:2048],
         "queryKeys": query_keys[:50],
     }
+
+
+def _is_valid_cookie_domain(value: Any) -> bool:
+    """Accept an ASCII DNS host or IP literal, with an optional DNS leading dot."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        return False
+    leading_dot = value.startswith(".")
+    candidate = value[1:] if leading_dot else value
+    if (
+        not candidate
+        or candidate.startswith(".")
+        or candidate.endswith(".")
+        or len(candidate) > 253
+        or not candidate.isascii()
+    ):
+        return False
+
+    try:
+        ipaddress.ip_address(candidate)
+        return not leading_dot
+    except ValueError:
+        pass
+
+    # Do not reinterpret a malformed dotted-quad as a DNS name.
+    if re.fullmatch(r"[0-9.]+", candidate):
+        return False
+    return all(
+        _COOKIE_DOMAIN_LABEL_PATTERN.fullmatch(label) is not None
+        for label in candidate.split(".")
+    )
+
+
+def _cookie_host_from_page_url(value: Any) -> str:
+    """Derive a host-only cookie domain from an unambiguous HTTP(S) page URL."""
+    try:
+        parsed = urlsplit(str(value or ""))
+        hostname = parsed.hostname
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "Domainless cookie export requires a valid HTTP(S) page URL"
+        ) from exc
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
+        raise RuntimeError(
+            "Domainless cookie export requires a valid HTTP(S) page URL"
+        )
+    if not _is_valid_cookie_domain(hostname) or hostname.startswith("."):
+        raise RuntimeError(
+            "Domainless cookie export could not derive a valid host-only domain"
+        )
+    return hostname
 
 
 def _safe_headers(headers: Any) -> dict[str, str]:
@@ -710,18 +763,48 @@ class RuyiBridge:
             "redaction": "not-applicable",
         }
 
-    def _cookie_state(self, page_idx: int, case_id: str, handoff_id: str, exported_at: str) -> tuple[dict, int]:
+    def _cookie_state(
+        self,
+        page_idx: int,
+        page_url: str,
+        case_id: str,
+        handoff_id: str,
+        exported_at: str,
+    ) -> tuple[dict, int]:
         result = self._get_cookies({"pageIdx": page_idx})
         if result.get("error"):
             raise RuntimeError(f"Cookie export failed: {result['error']}")
         cookies: list[dict[str, Any]] = []
-        for item in result.get("cookies", []):
+        inferred_domain: str | None = None
+        for index, item in enumerate(result.get("cookies", [])):
             if not isinstance(item, dict):
                 raise RuntimeError("Cookie export returned a non-object item")
+            raw_name = item.get("name")
+            if (
+                not isinstance(raw_name, str)
+                or _COOKIE_NAME_PATTERN.fullmatch(raw_name) is None
+            ):
+                raise RuntimeError(
+                    f"Cookie export item {index} has an invalid name"
+                )
+
+            raw_domain = item.get("domain")
+            if raw_domain is None or raw_domain == "":
+                if inferred_domain is None:
+                    inferred_domain = _cookie_host_from_page_url(page_url)
+                domain = inferred_domain
+            elif not _is_valid_cookie_domain(raw_domain):
+                raise RuntimeError(
+                    f"Cookie export item {index} has an invalid domain"
+                )
+            else:
+                # Preserve an explicit browser-provided domain byte-for-byte.
+                domain = raw_domain
+
             cookie: dict[str, Any] = {
-                "name": str(item.get("name") or ""),
+                "name": raw_name,
                 "value": str(item.get("value") or ""),
-                "domain": str(item.get("domain") or ""),
+                "domain": domain,
             }
             if item.get("path") is not None:
                 cookie["path"] = str(item["path"])
@@ -2368,7 +2451,7 @@ class RuyiBridge:
                 "workspaceRoot must be an external project workspace, not this repository"
             )
 
-        raw_include = params.get("include", ["cookies", "storage"])
+        raw_include = params.get("include", ["cookies"])
         if not isinstance(raw_include, list) or not raw_include:
             raise ValueError("include must be a non-empty array")
         include = [str(item) for item in raw_include]
@@ -2396,7 +2479,7 @@ class RuyiBridge:
         raw_states: dict[str, tuple[dict, int]] = {}
         if "cookies" in include:
             raw_states["cookies"] = self._cookie_state(
-                page_idx, case_id, handoff_id, exported_at
+                page_idx, raw_url, case_id, handoff_id, exported_at
             )
         if "storage" in include:
             raw_states["storage"] = self._storage_state(
@@ -2450,8 +2533,6 @@ class RuyiBridge:
             capabilities.append("profile-clone")
         if "cookies" in state_files:
             capabilities.append("cookie-import")
-        if "storage" in state_files:
-            capabilities.append("storage-import")
         if proxy["mode"] != "direct":
             capabilities.append("proxy")
         capabilities.append("headless" if self._headless else "interactive")
@@ -2484,7 +2565,8 @@ class RuyiBridge:
             handoff["page"]["userContextId"] = user_context_id
 
         # The handoff itself is an allowlisted control-plane document. Raw
-        # values live only in the two evidence files referenced above.
+        # values live only in the evidence files referenced above. Storage is
+        # observation-only in v1 and is never advertised as importable.
         _write_json_atomic(output_dir / "browser-session-handoff.json", handoff)
         return handoff
 

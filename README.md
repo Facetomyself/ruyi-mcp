@@ -15,7 +15,7 @@
 - 提供 56 个 MCP 工具，覆盖页面生命周期、脚本与运行时分析、网络抓取、Cookie、DOM、Frame、请求/响应拦截、WebSocket、浏览器指纹、人类行为模拟与 Session handoff。
 - 控制面不再伪装 Trace 能力：`ruyi_trace_*`、`traceEnabled` 和 Bridge Trace 状态均已删除；RuyiTrace 证据采集只由独立 Private `ruyitrace-mcp` 承担。
 - 启动日志只声明 `Evidence handoff: browser-session-handoff.v1`，不得把 ruyiPage 的 BiDi 观察能力表述为 Trace 证据面。
-- `ruyi_export_session` 输出 canonical `browser-session-handoff.v1`。Cookie 与 Storage 原值只写入项目 `evidence/web/handoff/<handoffId>/`，响应只包含 `evidence-pointer.v1`、脱敏代理端点和可验证的 browser/source 元数据。
+- `ruyi_export_session` 默认输出 Cookie-only 的 canonical `browser-session-handoff.v1`。Cookie 原值只写入项目 `evidence/web/handoff/<handoffId>/`，响应只包含 `evidence-pointer.v1`、脱敏代理端点和可验证的 browser/source 元数据。
 - `ruyi_human_drag` 提供原子的拟人拖拽动作链；`ruyi_human_scroll` 使用单方向原生 wheel 小步滚动；`ruyi_human_click` 每次点击前释放陈旧 source，并使用“拟人轨迹 + 带最终坐标的短 click pulse”派发可信 down/up/click。
 - `ruyi_set_fingerprint` 将 outer window、viewport 与 screen 分成显式参数，不再伪造 Firefox 原生窗口几何。
 - `ruyi_select_frame.selector` 使用 ruyiPage 1.2.56 的 `iframe.contentWindow` 映射，可精确区分 `srcdoc` 或同 URL frame；返回的 `contextId` 必须由后续 evaluate、DOM 或 human 工具显式作为 `frameContextId` 传入，过期或其他标签页的 ID 会报错，绝不静默回退顶层页。
@@ -38,7 +38,7 @@
 
 | ruyi-mcp | ruyiPage | Node.js | Python | 验证环境 |
 |----------|----------|---------|--------|----------|
-| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 45 Bridge contracts + 56 tools canonical snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
+| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + 56 tools canonical snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
 | `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + 59 tools 完整 schema snapshot + lifecycle gates + 同源/跨域 Firefox frame runtime gate |
 | `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 安全基线 + 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
@@ -123,12 +123,13 @@ git -C "D:\reverse_ENV" submodule update --init "mcp/ruyi-mcp"
 ```json
 {
   "caseId": "target-web-case",
-  "workspaceRoot": "D:\\reverse_ENV\\workspace\\target-web-case",
-  "include": ["cookies", "storage"]
+  "workspaceRoot": "D:\\reverse_ENV\\workspace\\target-web-case"
 }
 ```
 
-工具会原子写入 `evidence/web/handoff/<handoffId>/`：canonical handoff、`cookies.json` 与 `storage.json`。MCP 响应严格符合 `contracts/browser-session-handoff.v1.schema.json`，raw state 只通过带 bytes/SHA-256 的 `evidence-pointer.v1` 引用。attach 模式若无法发现 Firefox binary，需额外传绝对 `browserPath`，否则拒绝生成不可验证 handoff。
+默认调用会在 `evidence/web/handoff/<handoffId>/` 原子写入 canonical handoff 与 `cookies.json`。浏览器返回空 Cookie domain 时，仅允许从当前 HTTP(S) 页面 URL 的 hostname 推导 host-only domain；页面 origin 不明确或 Cookie name/domain 非法时直接 fail-closed。MCP 响应严格符合 `contracts/browser-session-handoff.v1.schema.json`，raw state 只通过带 bytes/SHA-256 的 `evidence-pointer.v1` 引用。attach 模式若无法发现 Firefox binary，需额外传绝对 `browserPath`，否则拒绝生成不可验证 handoff。
+
+只有显式传入 `"include": ["cookies", "storage"]` 才会额外生成 `storage.json`。该 pointer 仅表示 control-plane observation；RuyiTrace v1 不支持 Storage import，handoff 不得声明 `storage-import`，consumer 遇到非空 local/session Storage 必须 fail-closed。
 
 ## 接管已有 Firefox
 
@@ -158,7 +159,7 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` 会执行 TypeScript typecheck、Python 语法检查、45 项 Bridge contract、构建、56 tools canonical schema stdio smoke，以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 只写入临时 JSONL、不会回传 MCP response。
+`npm run check` 会执行 TypeScript typecheck、Python 语法检查、48 项 Bridge contract、构建、56 tools canonical schema stdio smoke，以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 只写入临时 JSONL、不会回传 MCP response。
 
 对内部命中区域不连续的链接（例如 Google Scholar 下一页），应选择实际可见的稳定子节点，不要点击外层 anchor 的几何中心。MCP stdio transport 关闭会进入 `bridge.stop()`；自建 SDK client 在关闭 stdio 前仍应先调用 `ruyi_browser_quit`，确保 attached browser 完成 detach-only。
 
@@ -166,7 +167,7 @@ npm audit --omit=dev
 
 - Git 中不得提交凭据、Cookie、代理密钥、浏览器 Profile、抓取数据或运行时产物。
 - `resultMode=body` 的 `outputFile` 应放入 ignored 的项目 workspace；其内容可能包含认证材料，不应回贴到 MCP 对话或提交到 Git。
-- Session handoff 的 Cookie/Storage 原值只允许存在于 ignored evidence 文件；handoff 本体固定 `redaction.inlineSecrets=false`。
+- Session handoff 的 Cookie 原值与显式请求的 observation-only Storage 原值只允许存在于 ignored evidence 文件；handoff 本体固定 `redaction.inlineSecrets=false`。
 - Python 与 Firefox 路径必须通过环境变量或运行时发现机制提供，不得提交开发者个人绝对路径。
 
 ## 来源与写入策略

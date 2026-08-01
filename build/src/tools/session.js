@@ -12,8 +12,8 @@ export function registerSessionTools(register, ctx) {
     register({
         tool: {
             name: 'ruyi_export_session',
-            description: '导出 browser-session-handoff.v1。Cookie 与 Storage 原值只写入 workspace 下的 ignored evidence 文件，' +
-                'MCP 响应仅返回带 evidence-pointer.v1 的脱敏 handoff；该产物供 ruyitrace-mcp 做受控 profile clone 或状态导入。',
+            description: '导出 browser-session-handoff.v1。默认仅导出 Cookie；Storage 只有显式请求时才作为 observation-only evidence 写盘，' +
+                'RuyiTrace v1 不支持 Storage import。MCP 响应仅返回带 evidence-pointer.v1 的脱敏 handoff。',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -38,11 +38,11 @@ export function registerSessionTools(register, ctx) {
                     },
                     include: {
                         type: 'array',
-                        description: '要写入 evidence 文件的浏览器状态；原值不会 inline 返回。',
+                        description: '要写入 evidence 文件的浏览器状态。默认仅 Cookie；Storage 需显式请求且仅供观察，consumer 不支持导入。原值不会 inline 返回。',
                         items: { type: 'string', enum: ['cookies', 'storage'] },
                         minItems: 1,
                         uniqueItems: true,
-                        default: ['cookies', 'storage'],
+                        default: ['cookies'],
                     },
                 },
                 required: ['caseId', 'workspaceRoot'],
@@ -56,7 +56,7 @@ export function registerSessionTools(register, ctx) {
                 handoffId: args.handoffId,
                 workspaceRoot: args.workspaceRoot,
                 browserPath: args.browserPath,
-                include: args.include ?? ['cookies', 'storage'],
+                include: args.include ?? ['cookies'],
             });
             return {
                 content: [{ type: 'text', text: jsonResult(result) }],
