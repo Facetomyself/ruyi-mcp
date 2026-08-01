@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
   console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
   console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
-  console.error('[ruyi-mcp] Trace: ruyiPage WebDriver BiDi JSON Trace');
+  console.error('[ruyi-mcp] Evidence handoff: browser-session-handoff.v1');
 
   const bridge = new PythonBridge();
   let server: Awaited<ReturnType<typeof createServer>> | null = null;

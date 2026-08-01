@@ -14,6 +14,7 @@ This project is independently maintained by the community. It is not an official
 
 - 56 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, and session handoff.
 - The control plane no longer pretends to be a trace plane: `ruyi_trace_*`, `traceEnabled`, and Bridge trace state are removed. The independent Private `ruyitrace-mcp` owns RuyiTrace evidence capture.
+- The startup log identifies only `Evidence handoff: browser-session-handoff.v1`; ruyiPage BiDi observation must not be presented as a Trace evidence plane.
 - `ruyi_export_session` emits canonical `browser-session-handoff.v1`. Raw cookies and storage are written only under the project `evidence/web/handoff/<handoffId>/`; the response contains `evidence-pointer.v1`, a redacted proxy endpoint, and verifiable browser/source metadata.
 - `ruyi_human_drag` provides an atomic human-like drag chain. `ruyi_human_scroll` emits small native wheel steps in one direction. `ruyi_human_click` releases stale sources, runs a human trajectory, and finishes with a short click pulse that carries its own final coordinates.
 - `ruyi_set_fingerprint` exposes outer-window, viewport, and screen sizing as separate operations instead of spoofing Firefox's native window geometry.
