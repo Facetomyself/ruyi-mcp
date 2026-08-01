@@ -1417,9 +1417,9 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     require_country="US",
                 )
 
-            self.assertEqual(Path(context.userdir), profile.resolve())
-            self.assertEqual(Path(options.profile_path), profile.resolve())
-            self.assertEqual(Path(context.fpfile_path).parent, profile.resolve())
+            self.assertTrue(Path(context.userdir).samefile(profile))
+            self.assertTrue(Path(options.profile_path).samefile(profile))
+            self.assertTrue(Path(context.fpfile_path).parent.samefile(profile))
             self.assertTrue((profile / "fpfile.txt").is_file())
 
     def test_ruyipage_1256_window_fingerprint_and_action_contracts(self):
