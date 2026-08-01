@@ -44,7 +44,7 @@ POINTER_SCHEMA_PATH = REPO_ROOT / "contracts" / "evidence-pointer.v1.schema.json
 HANDOFF_FIXTURE_PATH = REPO_ROOT / "contracts" / "fixtures" / "browser-session-handoff.valid.json"
 LIVE_COOKIE_FIXTURE_PATH = REPO_ROOT / "scripts" / "fixtures" / "cookies-domainless.live-shape.json"
 HANDOFF_SCHEMA_SHA256 = "9a759a8a5a9af92ae6958a06975bbd58a0d20f67aeb87543100548f36b9ea240"
-POINTER_SCHEMA_SHA256 = "ab07ae2592929c7d329d6ae7da4dee3aa86606b4a2baa700eaf4e4e735ed09db"
+POINTER_SCHEMA_SHA256 = "986b8965c5b41d41f7bed3d8294de2551165e739f81d1822bb6e529d081c1dbd"
 
 
 def load_bridge_module():
