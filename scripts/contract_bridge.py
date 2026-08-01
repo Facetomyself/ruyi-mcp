@@ -842,6 +842,14 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 "cookie-secret-value",
             )
             self.assertEqual(
+                state_payloads["cookies"]["cookies"][0]["sameSite"],
+                "lax",
+            )
+            self.assertEqual(
+                state_payloads["cookies"]["cookies"][0]["expiry"],
+                2_000_000_000,
+            )
+            self.assertEqual(
                 state_payloads["storage"]["localStorage"][0]["items"]["access_token"],
                 "local-storage-secret",
             )

@@ -718,18 +718,28 @@ class RuyiBridge:
         for item in result.get("cookies", []):
             if not isinstance(item, dict):
                 raise RuntimeError("Cookie export returned a non-object item")
-            cookies.append(
-                {
-                    "name": str(item.get("name") or ""),
-                    "value": str(item.get("value") or ""),
-                    "domain": item.get("domain"),
-                    "path": item.get("path"),
-                    "secure": item.get("secure"),
-                    "httpOnly": item.get("httpOnly"),
-                    "sameSite": item.get("sameSite"),
-                    "expiry": item.get("expiry"),
-                }
-            )
+            cookie: dict[str, Any] = {
+                "name": str(item.get("name") or ""),
+                "value": str(item.get("value") or ""),
+                "domain": str(item.get("domain") or ""),
+            }
+            if item.get("path") is not None:
+                cookie["path"] = str(item["path"])
+            if item.get("secure") is not None:
+                cookie["secure"] = bool(item["secure"])
+            if item.get("httpOnly") is not None:
+                cookie["httpOnly"] = bool(item["httpOnly"])
+            same_site = str(item.get("sameSite") or "").strip().lower()
+            if same_site in {"strict", "lax", "none"}:
+                cookie["sameSite"] = same_site
+            expiry = item.get("expiry")
+            if (
+                isinstance(expiry, (int, float))
+                and not isinstance(expiry, bool)
+                and math.isfinite(expiry)
+            ):
+                cookie["expiry"] = expiry
+            cookies.append(cookie)
         return (
             {
                 "schema": "browser-cookie-state.v1",
@@ -785,8 +795,12 @@ class RuyiBridge:
         if not isinstance(snapshot, dict):
             raise RuntimeError("Storage export did not return an object")
         origin = str(snapshot.get("origin") or "")
-        if not origin:
-            raise RuntimeError("Storage export did not return the current origin")
+        parsed_origin = urlsplit(origin)
+        if parsed_origin.scheme not in {"http", "https"} or not parsed_origin.hostname:
+            raise RuntimeError("Storage export requires an HTTP(S) page origin")
+        canonical_origin = f"{parsed_origin.scheme}://{parsed_origin.hostname}"
+        if parsed_origin.port is not None:
+            canonical_origin += f":{parsed_origin.port}"
         local_items = self._normalize_storage_items(snapshot.get("localStorage"))
         session_items = self._normalize_storage_items(snapshot.get("sessionStorage"))
         return (
@@ -795,8 +809,8 @@ class RuyiBridge:
                 "caseId": case_id,
                 "handoffId": handoff_id,
                 "exportedAt": exported_at,
-                "localStorage": [{"origin": origin, "items": local_items}],
-                "sessionStorage": [{"origin": origin, "items": session_items}],
+                "localStorage": [{"origin": canonical_origin, "items": local_items}],
+                "sessionStorage": [{"origin": canonical_origin, "items": session_items}],
             },
             len(local_items) + len(session_items),
         )
