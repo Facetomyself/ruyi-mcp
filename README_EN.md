@@ -15,7 +15,7 @@ This project is independently maintained by the community. It is not an official
 - 56 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, and session handoff.
 - The control plane no longer pretends to be a trace plane: `ruyi_trace_*`, `traceEnabled`, and Bridge trace state are removed. The independent Private `ruyitrace-mcp` owns RuyiTrace evidence capture.
 - The startup log identifies only `Evidence handoff: browser-session-handoff.v1`; ruyiPage BiDi observation must not be presented as a Trace evidence plane.
-- `ruyi_export_session` emits canonical `browser-session-handoff.v1`. Raw cookies and storage are written only under the project `evidence/web/handoff/<handoffId>/`; the response contains `evidence-pointer.v1`, a redacted proxy endpoint, and verifiable browser/source metadata.
+- `ruyi_export_session` emits a Cookie-only canonical `browser-session-handoff.v1` by default. Raw cookies are written only under the project `evidence/web/handoff/<handoffId>/`; the response contains `evidence-pointer.v1`, a redacted proxy endpoint, and verifiable browser/source metadata.
 - `ruyi_human_drag` provides an atomic human-like drag chain. `ruyi_human_scroll` emits small native wheel steps in one direction. `ruyi_human_click` releases stale sources, runs a human trajectory, and finishes with a short click pulse that carries its own final coordinates.
 - `ruyi_set_fingerprint` exposes outer-window, viewport, and screen sizing as separate operations instead of spoofing Firefox's native window geometry.
 - `ruyi_select_frame.selector` uses ruyiPage 1.2.56's `iframe.contentWindow` mapping to distinguish `srcdoc` and same-URL frames precisely. The returned `contextId` must be passed explicitly as `frameContextId` to later evaluate, DOM, or human tools; stale and cross-tab IDs fail instead of silently falling back to the top-level page.
@@ -38,7 +38,7 @@ This project is independently maintained by the community. It is not an official
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
-| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 45 Bridge contracts + canonical 56-tool snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
+| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + canonical 56-tool snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
 | `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + complete 59-tool schema snapshot + lifecycle gates + same-origin/cross-origin Firefox frame runtime gate |
 | `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 security baseline + 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
@@ -123,12 +123,13 @@ The parent repository pins a verified commit through its gitlink. Make changes, 
 ```json
 {
   "caseId": "target-web-case",
-  "workspaceRoot": "D:\\reverse_ENV\\workspace\\target-web-case",
-  "include": ["cookies", "storage"]
+  "workspaceRoot": "D:\\reverse_ENV\\workspace\\target-web-case"
 }
 ```
 
-The tool atomically writes the canonical handoff, `cookies.json`, and `storage.json` under `evidence/web/handoff/<handoffId>/`. Its MCP response validates against `contracts/browser-session-handoff.v1.schema.json`; raw state is referenced only through `evidence-pointer.v1` records carrying byte counts and SHA-256. In attach mode, pass an absolute `browserPath` when the Firefox binary cannot be discovered, otherwise the exporter rejects an unverifiable handoff.
+The default call atomically writes the canonical handoff and `cookies.json` under `evidence/web/handoff/<handoffId>/`. When the browser returns an empty Cookie domain, the exporter may derive a host-only domain only from the current HTTP(S) page URL hostname; an ambiguous origin or invalid Cookie name/domain fails closed. Its MCP response validates against `contracts/browser-session-handoff.v1.schema.json`; raw state is referenced only through `evidence-pointer.v1` records carrying byte counts and SHA-256. In attach mode, pass an absolute `browserPath` when the Firefox binary cannot be discovered, otherwise the exporter rejects an unverifiable handoff.
+
+Only an explicit `"include": ["cookies", "storage"]` request writes `storage.json`. That pointer is a control-plane observation only: RuyiTrace v1 does not support Storage import, the handoff must not advertise `storage-import`, and consumers must fail closed on non-empty local/session Storage.
 
 ## Attaching to an Existing Firefox
 
@@ -158,7 +159,7 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` runs TypeScript type checking, Python syntax checks, 45 Bridge contracts, the build, a 56-tool canonical-schema stdio smoke test, and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is written only to a temporary JSONL file, never returned through MCP.
+`npm run check` runs TypeScript type checking, Python syntax checks, 48 Bridge contracts, the build, a 56-tool canonical-schema stdio smoke test, and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is written only to a temporary JSONL file, never returned through MCP.
 
 For links with discontinuous internal hit regions, select a stable visible descendant instead of the outer anchor's geometric center. MCP stdio closure enters `bridge.stop()`; custom SDK clients should still call `ruyi_browser_quit` before closing stdio so an attached browser completes detach-only cleanup.
 
@@ -166,7 +167,7 @@ For links with discontinuous internal hit regions, select a stable visible desce
 
 - Do not commit credentials, cookies, proxy secrets, browser profiles, captured traffic, or runtime artifacts.
 - Put a `resultMode=body` `outputFile` in an ignored project workspace. Its content can contain authentication material and must not be pasted into MCP conversations or committed to Git.
-- Raw cookie/storage values from a session handoff may exist only in ignored evidence files; the handoff itself always has `redaction.inlineSecrets=false`.
+- Raw Cookie values and explicitly requested observation-only Storage values may exist only in ignored evidence files; the handoff itself always has `redaction.inlineSecrets=false`.
 - Provide Python and Firefox paths through environment variables or runtime discovery. Do not commit developer-specific absolute paths.
 
 ## Lineage and Write Policy

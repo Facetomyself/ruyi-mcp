@@ -1,0 +1,14 @@
+{
+  "cookies": [
+    {
+      "name": "session_token",
+      "value": "synthetic-cookie-value-a",
+      "domain": ""
+    },
+    {
+      "name": "challenge_sig",
+      "value": "synthetic-cookie-value-b",
+      "domain": ""
+    }
+  ]
+}

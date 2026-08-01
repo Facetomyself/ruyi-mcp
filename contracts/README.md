@@ -6,11 +6,17 @@ checkout. The canonical source remains
 `reverse_ENV/contracts/web-reverse/`.
 
 - `browser-session-handoff.v1.schema.json` canonical SHA-256:
-  `6bb05c886be34da5ad83fed5e70eb7921a5840c11458e0b9bb590b2ffc072367`
+  `9a759a8a5a9af92ae6958a06975bbd58a0d20f67aeb87543100548f36b9ea240`
 - `evidence-pointer.v1.schema.json` canonical SHA-256:
-  `19eb8ae4965c0396c56c3e470e3d4d54a6991606d3dc12b5f76821edb82ba6ab`
+  `ab07ae2592929c7d329d6ae7da4dee3aa86606b4a2baa700eaf4e4e735ed09db`
+
+Handoff v1 supports Cookie import. A Storage pointer is observation-only;
+non-empty local/session Storage import is unsupported and consumers must fail
+closed. The canonical valid fixture is therefore Cookie-only and never
+advertises `storage-import`.
 
 `scripts/contract_bridge.py` validates both the bundled fixture and a synthetic
-`ruyi_export_session` result against these schemas. Contract changes must be
+`ruyi_export_session` result against these schemas. Both schema digests are
+checked so an incomplete vendor sync fails CI. Contract changes must be
 landed in the canonical root first, then synchronized here with compatibility
 tests in the same commit.

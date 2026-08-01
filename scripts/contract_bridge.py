@@ -42,7 +42,9 @@ REQUIREMENTS_PATH = REPO_ROOT / "requirements.txt"
 HANDOFF_SCHEMA_PATH = REPO_ROOT / "contracts" / "browser-session-handoff.v1.schema.json"
 POINTER_SCHEMA_PATH = REPO_ROOT / "contracts" / "evidence-pointer.v1.schema.json"
 HANDOFF_FIXTURE_PATH = REPO_ROOT / "contracts" / "fixtures" / "browser-session-handoff.valid.json"
-HANDOFF_SCHEMA_SHA256 = "6bb05c886be34da5ad83fed5e70eb7921a5840c11458e0b9bb590b2ffc072367"
+LIVE_COOKIE_FIXTURE_PATH = REPO_ROOT / "scripts" / "fixtures" / "cookies-domainless.live-shape.json"
+HANDOFF_SCHEMA_SHA256 = "9a759a8a5a9af92ae6958a06975bbd58a0d20f67aeb87543100548f36b9ea240"
+POINTER_SCHEMA_SHA256 = "ab07ae2592929c7d329d6ae7da4dee3aa86606b4a2baa700eaf4e4e735ed09db"
 
 
 def load_bridge_module():
@@ -691,6 +693,7 @@ class FakeSessionPage:
 
     def __init__(self):
         self._firefox = SimpleNamespace(address="127.0.0.1:26700")
+        self.storage_export_calls = 0
 
     def get_cookies(self):
         return [FakeSessionCookie()]
@@ -698,6 +701,7 @@ class FakeSessionPage:
     def run_js(self, script):
         if "__RUYI_HANDOFF_STORAGE__" not in script:
             raise AssertionError("unexpected session export script")
+        self.storage_export_calls += 1
         return {
             "origin": "https://fixture.invalid",
             "localStorage": {"access_token": "local-storage-secret"},
@@ -717,6 +721,34 @@ class RuyiBridgeContractTests(unittest.TestCase):
     def tearDown(self):
         Firefox._BROWSERS.clear()
         Firefox._RESERVED_PORTS.clear()
+
+    def _prepare_session_export(self, temporary_root: Path):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeSessionPage()
+        bridge.page = page
+        bridge.pages[0] = page
+        bridge._headless = True
+        bridge._proxy_url = "http://proxy-user:proxy-secret@proxy.invalid:8080"
+
+        workspace_root = temporary_root / "project"
+        workspace_root.mkdir()
+        profile_path = workspace_root / "profiles" / "source"
+        profile_path.mkdir(parents=True)
+        bridge._profile_path = profile_path.resolve()
+
+        browser_root = temporary_root / "firefox"
+        browser_root.mkdir()
+        browser_binary = browser_root / (
+            "firefox.exe" if BRIDGE_MODULE.os.name == "nt" else "firefox"
+        )
+        browser_binary.write_bytes(b"synthetic-firefox-binary")
+        (browser_root / "application.ini").write_text(
+            "[App]\nVersion=151.0a1\nBuildID=20260718144531\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        bridge._browser_path = browser_binary.resolve()
+        return bridge, page, workspace_root
 
     def test_exact_ruyipage_version_is_installed_and_pinned(self):
         requirements = REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines()
@@ -752,37 +784,127 @@ class RuyiBridgeContractTests(unittest.TestCase):
 
     def test_bundled_handoff_contract_matches_canonical_snapshot(self):
         schema_digest = hashlib.sha256(HANDOFF_SCHEMA_PATH.read_bytes()).hexdigest()
+        pointer_digest = hashlib.sha256(POINTER_SCHEMA_PATH.read_bytes()).hexdigest()
         self.assertEqual(schema_digest, HANDOFF_SCHEMA_SHA256)
+        self.assertEqual(pointer_digest, POINTER_SCHEMA_SHA256)
         HANDOFF_VALIDATOR.validate(load_json(HANDOFF_FIXTURE_PATH))
 
-    def test_export_session_writes_raw_state_only_to_evidence_pointers(self):
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        page = FakeSessionPage()
-        bridge.page = page
-        bridge.pages[0] = page
-        bridge._headless = True
-        bridge._proxy_url = "http://proxy-user:proxy-secret@proxy.invalid:8080"
+    def test_export_session_defaults_to_cookie_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge, page, workspace_root = self._prepare_session_export(Path(tmp))
+            response = bridge.handle(
+                {
+                    "id": 2,
+                    "method": "session.export",
+                    "params": {
+                        "pageIdx": 0,
+                        "caseId": "synthetic-web-case",
+                        "handoffId": "handoff_cookie_default_001",
+                        "workspaceRoot": str(workspace_root),
+                    },
+                }
+            )
 
+            self.assertNotIn("error", response)
+            handoff = response["result"]
+            HANDOFF_VALIDATOR.validate(handoff)
+            self.assertEqual(set(handoff["stateFiles"]), {"cookies"})
+            self.assertIn("cookie-import", handoff["capabilities"])
+            self.assertNotIn("storage-import", handoff["capabilities"])
+            self.assertEqual(page.storage_export_calls, 0)
+            self.assertFalse(
+                (
+                    workspace_root
+                    / "evidence"
+                    / "web"
+                    / "handoff"
+                    / "handoff_cookie_default_001"
+                    / "storage.json"
+                ).exists()
+            )
+
+    def test_domainless_live_cookie_shape_infers_current_http_host(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        live_shape = load_json(LIVE_COOKIE_FIXTURE_PATH)
+        bridge._get_cookies = Mock(return_value=live_shape)
+
+        state, count = bridge._cookie_state(
+            0,
+            "https://pmos.nx.sgcc.com.cn:10443/#/login",
+            "synthetic-web-case",
+            "handoff_domainless_001",
+            "2026-08-01T00:00:00Z",
+        )
+
+        self.assertEqual(count, 2)
+        self.assertEqual(
+            [cookie["domain"] for cookie in state["cookies"]],
+            ["pmos.nx.sgcc.com.cn", "pmos.nx.sgcc.com.cn"],
+        )
+        self.assertEqual(
+            [cookie["name"] for cookie in state["cookies"]],
+            ["session_token", "challenge_sig"],
+        )
+
+    def test_cookie_state_fails_closed_on_ambiguous_origin_or_invalid_identity(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+
+        for page_url in ("about:blank", "file:///private/page.html", ""):
+            with self.subTest(page_url=page_url):
+                bridge._get_cookies = Mock(
+                    return_value={
+                        "cookies": [
+                            {"name": "sid", "value": "synthetic", "domain": ""}
+                        ]
+                    }
+                )
+                with self.assertRaisesRegex(RuntimeError, "valid HTTP\\(S\\) page URL"):
+                    bridge._cookie_state(
+                        0,
+                        page_url,
+                        "synthetic-web-case",
+                        "handoff_invalid_origin",
+                        "2026-08-01T00:00:00Z",
+                    )
+
+        invalid_items = (
+            {"name": "bad;name", "value": "synthetic", "domain": "fixture.invalid"},
+            {"name": "sid", "value": "synthetic", "domain": "fixture.invalid/path"},
+            {"name": "sid", "value": "synthetic", "domain": "999.999.999.999"},
+        )
+        for item in invalid_items:
+            with self.subTest(item_keys=sorted(item)):
+                bridge._get_cookies = Mock(return_value={"cookies": [item]})
+                with self.assertRaisesRegex(RuntimeError, "invalid (name|domain)"):
+                    bridge._cookie_state(
+                        0,
+                        "https://fixture.invalid/app",
+                        "synthetic-web-case",
+                        "handoff_invalid_cookie",
+                        "2026-08-01T00:00:00Z",
+                    )
+
+        explicit_domain = ".Example.INVALID"
+        bridge._get_cookies = Mock(
+            return_value={
+                "cookies": [
+                    {"name": "sid", "value": "synthetic", "domain": explicit_domain}
+                ]
+            }
+        )
+        state, _ = bridge._cookie_state(
+            0,
+            "about:blank",
+            "synthetic-web-case",
+            "handoff_explicit_domain",
+            "2026-08-01T00:00:00Z",
+        )
+        self.assertEqual(state["cookies"][0]["domain"], explicit_domain)
+
+    def test_export_session_writes_raw_state_only_to_evidence_pointers(self):
         with tempfile.TemporaryDirectory() as tmp:
             temporary_root = Path(tmp)
-            workspace_root = temporary_root / "project"
-            workspace_root.mkdir()
-            profile_path = workspace_root / "profiles" / "source"
-            profile_path.mkdir(parents=True)
-            bridge._profile_path = profile_path.resolve()
-
-            browser_root = temporary_root / "firefox"
-            browser_root.mkdir()
-            browser_binary = browser_root / (
-                "firefox.exe" if BRIDGE_MODULE.os.name == "nt" else "firefox"
-            )
-            browser_binary.write_bytes(b"synthetic-firefox-binary")
-            (browser_root / "application.ini").write_text(
-                "[App]\nVersion=151.0a1\nBuildID=20260718144531\n",
-                encoding="utf-8",
-                newline="\n",
-            )
-            bridge._browser_path = browser_binary.resolve()
+            bridge, page, workspace_root = self._prepare_session_export(temporary_root)
 
             response = bridge.handle(
                 {
@@ -828,6 +950,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 handoff["browser"]["binarySha256"],
                 hashlib.sha256(b"synthetic-firefox-binary").hexdigest(),
             )
+            self.assertEqual(page.storage_export_calls, 1)
+            self.assertNotIn("storage-import", handoff["capabilities"])
 
             state_payloads = {}
             for state_kind, pointer in handoff["stateFiles"].items():

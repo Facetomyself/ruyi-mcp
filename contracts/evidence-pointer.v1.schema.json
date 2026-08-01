@@ -25,7 +25,8 @@
     "artifactId": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{1,95}$"},
     "path": {
       "type": "string",
-      "pattern": "^evidence/web/(handoff|ruyitrace|v8trace|parity)/[a-z0-9][a-z0-9_-]{0,95}/[^\\\\]+"
+      "maxLength": 1024,
+      "pattern": "^evidence/web/(handoff|ruyitrace|v8trace|parity)/[a-z0-9][a-z0-9_-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
     },
     "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "bytes": {"type": "integer", "minimum": 0},
@@ -43,5 +44,23 @@
     "cursor": {"type": "string", "minLength": 1, "maxLength": 2048},
     "sensitivity": {"enum": ["public-synthetic", "private-redacted", "private-raw"]},
     "redaction": {"enum": ["not-applicable", "synthetic", "allowlist-summary", "manual-reviewed"]}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"plane": {"const": "ruyi-control"}}, "required": ["plane"]},
+      "then": {"properties": {"path": {"pattern": "^evidence/web/handoff/"}}}
+    },
+    {
+      "if": {"properties": {"plane": {"const": "ruyitrace"}}, "required": ["plane"]},
+      "then": {"properties": {"path": {"pattern": "^evidence/web/ruyitrace/"}}}
+    },
+    {
+      "if": {"properties": {"plane": {"const": "v8trace"}}, "required": ["plane"]},
+      "then": {"properties": {"path": {"pattern": "^evidence/web/v8trace/"}}}
+    },
+    {
+      "if": {"properties": {"plane": {"const": "parity"}}, "required": ["plane"]},
+      "then": {"properties": {"path": {"pattern": "^evidence/web/parity/"}}}
+    }
+  ]
 }
