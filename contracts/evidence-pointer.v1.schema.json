@@ -48,19 +48,19 @@
   "allOf": [
     {
       "if": {"properties": {"plane": {"const": "ruyi-control"}}, "required": ["plane"]},
-      "then": {"properties": {"path": {"pattern": "^evidence/web/handoff/"}}}
+      "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/handoff/"}}}
     },
     {
       "if": {"properties": {"plane": {"const": "ruyitrace"}}, "required": ["plane"]},
-      "then": {"properties": {"path": {"pattern": "^evidence/web/ruyitrace/"}}}
+      "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/ruyitrace/"}}}
     },
     {
       "if": {"properties": {"plane": {"const": "v8trace"}}, "required": ["plane"]},
-      "then": {"properties": {"path": {"pattern": "^evidence/web/v8trace/"}}}
+      "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/v8trace/"}}}
     },
     {
       "if": {"properties": {"plane": {"const": "parity"}}, "required": ["plane"]},
-      "then": {"properties": {"path": {"pattern": "^evidence/web/parity/"}}}
+      "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/parity/"}}}
     }
   ]
 }

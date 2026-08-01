@@ -8,7 +8,7 @@ checkout. The canonical source remains
 - `browser-session-handoff.v1.schema.json` canonical SHA-256:
   `9a759a8a5a9af92ae6958a06975bbd58a0d20f67aeb87543100548f36b9ea240`
 - `evidence-pointer.v1.schema.json` canonical SHA-256:
-  `ab07ae2592929c7d329d6ae7da4dee3aa86606b4a2baa700eaf4e4e735ed09db`
+  `986b8965c5b41d41f7bed3d8294de2551165e739f81d1822bb6e529d081c1dbd`
 
 Handoff v1 supports Cookie import. A Storage pointer is observation-only;
 non-empty local/session Storage import is unsupported and consumers must fail
