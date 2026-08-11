@@ -501,6 +501,7 @@ class RuyiBridge:
             "browser.launch":        self._launch,
             "browser.quit":          self._quit,
             "browser.status":        self._status,
+            "download.set_behavior": self._set_download_behavior,
             # Page management
             "page.navigate":         self._navigate,
             "page.new":              self._new_tab,
@@ -1220,6 +1221,60 @@ class RuyiBridge:
             }
         except Exception:
             return {"alive": False}
+
+    def _set_download_behavior(self, params: dict) -> dict:
+        """Configure Firefox's native BiDi download handling for this session."""
+        behavior = str(params.get("behavior") or "").strip().lower()
+        if behavior in {"allow", "allowed"}:
+            raw_path = params.get("downloadPath")
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("downloadPath is required when behavior is allow")
+            destination = Path(raw_path.strip()).expanduser()
+            if not destination.is_absolute():
+                raise ValueError("downloadPath must be an absolute path")
+            destination = destination.resolve()
+            destination.mkdir(parents=True, exist_ok=True)
+            download_behavior = {
+                "type": "allowed",
+                "destinationFolder": str(destination),
+            }
+        elif behavior in {"deny", "denied"}:
+            destination = None
+            download_behavior = {"type": "denied"}
+        else:
+            raise ValueError("behavior must be allow or deny")
+
+        raw_user_contexts = params.get("userContexts")
+        if raw_user_contexts is None:
+            user_contexts = []
+        elif isinstance(raw_user_contexts, list):
+            user_contexts = [str(item).strip() for item in raw_user_contexts]
+        else:
+            raise ValueError("userContexts must be an array of Firefox container IDs")
+        if any(not item for item in user_contexts):
+            raise ValueError("userContexts must not contain empty IDs")
+
+        page = self._get_page(params.get("pageIdx", 0))
+        driver = self._attribute(
+            self._attribute(page, "_driver", None), "_browser_driver", None
+        )
+        run = self._attribute(driver, "run", None)
+        if not callable(run):
+            raise RuntimeError("Active ruyiPage target has no BiDi browser driver")
+
+        payload = {"downloadBehavior": download_behavior}
+        if user_contexts:
+            payload["userContexts"] = user_contexts
+        result = run("browser.setDownloadBehavior", payload)
+        response = {
+            "behavior": download_behavior["type"],
+            "userContextCount": len(user_contexts),
+        }
+        if destination is not None:
+            response["downloadPath"] = str(destination)
+        if result is not None:
+            response["result"] = _serialize(result)
+        return response
 
     # ------------------------------------------------------------------
     # Page management

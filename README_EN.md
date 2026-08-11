@@ -12,7 +12,7 @@ This project is independently maintained by the community. It is not an official
 
 ## Highlights
 
-- 56 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, and session handoff.
+- 57 MCP tools covering page lifecycle, scripts and runtime inspection, network capture, cookies, DOM, frames, request and response interception, WebSocket, browser fingerprints, human-like interaction, native download behavior, and session handoff.
 - The control plane no longer pretends to be a trace plane: `ruyi_trace_*`, `traceEnabled`, and Bridge trace state are removed. The independent Private `ruyitrace-mcp` owns RuyiTrace evidence capture.
 - The startup log identifies only `Evidence handoff: browser-session-handoff.v1`; ruyiPage BiDi observation must not be presented as a Trace evidence plane.
 - `ruyi_export_session` emits a Cookie-only canonical `browser-session-handoff.v1` by default. Raw cookies are written only under the project `evidence/web/handoff/<handoffId>/`; the response contains `evidence-pointer.v1`, a redacted proxy endpoint, and verifiable browser/source metadata.
@@ -23,6 +23,7 @@ This project is independently maintained by the community. It is not an official
 - `ruyi_attach_browser` attaches to an existing Firefox BiDi port without navigation. Attached sessions and bridge timeout recovery no longer terminate Firefox as part of a process tree.
 - When a new browser has no `profilePath`, the Bridge creates a session-owned disposable profile under `RUYI_MCP_PROFILE_ROOT` and removes it on normal `ruyi_browser_quit` / stdio shutdown. Smart-fingerprint `fpfile` data uses that same directory instead of creating `userdir_*` under the host working directory.
 - `ruyi_capture_stop` uses bounded `discard` cleanup by default. `mode=metadata` returns a bounded, redacted summary before cleanup and reports `observed` / `returned` / `discarded` / `bodyUnavailable`.
+- `ruyi_set_download_behavior` calls Firefox BiDi `browser.setDownloadBehavior` directly. `allow + downloadPath` saves to a local directory and handles Firefox's local save confirmation without bypassing site authorization.
 - `ruyi_intercept_wait` returns redacted metadata by default and continues the intercepted request after sampling; `schema` / `body` follow the same JSONL body boundary.
 - A Node.js MCP server backed by a persistent Python JSON-RPC bridge to ruyiPage.
 - One idempotent cleanup chain owns the Server/Bridge lifecycle. Races between stdin EOF, transport close, stdout/child-stdin `EPIPE`, and signals neither duplicate cleanup nor strand pending calls.
@@ -38,7 +39,7 @@ This project is independently maintained by the community. It is not an official
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
-| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + canonical 56-tool snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
+| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 49 Bridge contracts + canonical 57-tool snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
 | `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + complete 59-tool schema snapshot + lifecycle gates + same-origin/cross-origin Firefox frame runtime gate |
 | `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 security baseline + 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + complete 128 KiB body runtime gate + 59-tool stdio smoke |
@@ -85,6 +86,7 @@ $env:RUYI_FIREFOX_PATH='D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:runtime
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:capture-runtime
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:attach-runtime
+& 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:download-runtime
 ```
 
 ## MCP Configuration
@@ -159,7 +161,7 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` runs TypeScript type checking, Python syntax checks, 48 Bridge contracts, the build, a 56-tool canonical-schema stdio smoke test, and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is written only to a temporary JSONL file, never returned through MCP.
+`npm run check` runs TypeScript type checking, Python syntax checks, 49 Bridge contracts, the build, a 57-tool canonical-schema stdio smoke test, and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is written only to a temporary JSONL file, never returned through MCP. `npm run check:download-runtime` downloads one local attachment and verifies that the BiDi-configured directory receives the complete file automatically.
 
 For links with discontinuous internal hit regions, select a stable visible descendant instead of the outer anchor's geometric center. MCP stdio closure enters `bridge.stop()`; custom SDK clients should still call `ruyi_browser_quit` before closing stdio so an attached browser completes detach-only cleanup.
 

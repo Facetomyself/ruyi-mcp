@@ -72,6 +72,25 @@ test('createServer isolates tool handlers and cleanup per instance', async () =>
     assert.equal(JSON.parse(statusB.content[0].text).bridge, 'B');
     assert.equal(bridgeA.calls.filter((call) => call.method === 'browser.status').length, 1);
     assert.equal(bridgeB.calls.filter((call) => call.method === 'browser.status').length, 1);
+
+    const configuredDownload = await clientA.callTool({
+      name: 'ruyi_set_download_behavior',
+      arguments: {
+        behavior: 'allow',
+        downloadPath: 'D:\\downloads',
+        userContexts: ['container-a'],
+      },
+    });
+    assert.notEqual(configuredDownload.isError, true);
+    assert.deepEqual(bridgeA.calls.at(-1), {
+      method: 'download.set_behavior',
+      params: {
+        pageIdx: 0,
+        behavior: 'allow',
+        downloadPath: 'D:\\downloads',
+        userContexts: ['container-a'],
+      },
+    });
   } finally {
     await Promise.allSettled([clientA.close(), clientB.close()]);
     await Promise.all([

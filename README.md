@@ -12,7 +12,7 @@
 
 ## 核心能力
 
-- 提供 56 个 MCP 工具，覆盖页面生命周期、脚本与运行时分析、网络抓取、Cookie、DOM、Frame、请求/响应拦截、WebSocket、浏览器指纹、人类行为模拟与 Session handoff。
+- 提供 57 个 MCP 工具，覆盖页面生命周期、脚本与运行时分析、网络抓取、Cookie、DOM、Frame、请求/响应拦截、WebSocket、浏览器指纹、人类行为模拟、原生下载策略与 Session handoff。
 - 控制面不再伪装 Trace 能力：`ruyi_trace_*`、`traceEnabled` 和 Bridge Trace 状态均已删除；RuyiTrace 证据采集只由独立 Private `ruyitrace-mcp` 承担。
 - 启动日志只声明 `Evidence handoff: browser-session-handoff.v1`，不得把 ruyiPage 的 BiDi 观察能力表述为 Trace 证据面。
 - `ruyi_export_session` 默认输出 Cookie-only 的 canonical `browser-session-handoff.v1`。Cookie 原值只写入项目 `evidence/web/handoff/<handoffId>/`，响应只包含 `evidence-pointer.v1`、脱敏代理端点和可验证的 browser/source 元数据。
@@ -23,6 +23,7 @@
 - `ruyi_attach_browser` 通过现有 Firefox BiDi 端口接管浏览器，不导航页面；接管会话与 bridge 超时恢复都不会再连带关闭 Firefox。
 - 新建浏览器若未给 `profilePath`，Bridge 会在 `RUYI_MCP_PROFILE_ROOT` 下创建本次会话专属的受控临时 profile，并在正常 `ruyi_browser_quit` / stdio shutdown 时回收；smart fingerprint 的 `fpfile` 同样只写入该目录，不再跟随当前工作目录生成 `userdir_*`。
 - `ruyi_capture_stop` 默认以有界 `discard` 清理；`mode=metadata` 可在清理前输出有上限的脱敏摘要，并回报 `observed` / `returned` / `discarded` / `bodyUnavailable`。
+- `ruyi_set_download_behavior` 直接调用 Firefox BiDi `browser.setDownloadBehavior`；`allow + downloadPath` 会保存至本地指定目录，处理 Firefox 的本地保存确认，不绕过站点授权。
 - `ruyi_intercept_wait` 默认只返回脱敏 metadata，并在取样后继续被拦截请求；`schema` / `body` 遵循同一 JSONL body 边界。
 - Node.js MCP Server 通过常驻 Python JSON-RPC Bridge 调用 ruyiPage。
 - Server/Bridge 生命周期由单一幂等 cleanup 链管理；stdin EOF、transport close、stdout/child stdin `EPIPE` 与 signal 竞争不会重复清理或遗留 pending call。
@@ -38,7 +39,7 @@
 
 | ruyi-mcp | ruyiPage | Node.js | Python | 验证环境 |
 |----------|----------|---------|--------|----------|
-| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + 56 tools canonical snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
+| `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 49 Bridge contracts + 57 tools canonical snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
 | `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + 59 tools 完整 schema snapshot + lifecycle gates + 同源/跨域 Firefox frame runtime gate |
 | `v0.1.7` | `1.2.54` | `>=20` | `>=3.10` | MCP SDK 1.30.0 安全基线 + 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
 | `v0.1.6` | `1.2.54` | `>=20` | `>=3.10` | 27 Bridge contracts + 完整 128 KiB body runtime gate + 59 tools stdio smoke |
@@ -85,6 +86,7 @@ $env:RUYI_FIREFOX_PATH='D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:runtime
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:capture-runtime
 & 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:attach-runtime
+& 'D:\reverse_ENV\tools\node\npm.cmd' --prefix 'D:\reverse_ENV\mcp\ruyi-mcp' run check:download-runtime
 ```
 
 ## MCP 配置
@@ -159,7 +161,7 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` 会执行 TypeScript typecheck、Python 语法检查、48 项 Bridge contract、构建、56 tools canonical schema stdio smoke，以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 只写入临时 JSONL、不会回传 MCP response。
+`npm run check` 会执行 TypeScript typecheck、Python 语法检查、49 项 Bridge contract、构建、57 tools canonical schema stdio smoke，以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 只写入临时 JSONL、不会回传 MCP response。`npm run check:download-runtime` 使用一次本地附件下载，确认 BiDi 下载目录配置能自动落盘并校验完整文件内容。
 
 对内部命中区域不连续的链接（例如 Google Scholar 下一页），应选择实际可见的稳定子节点，不要点击外层 anchor 的几何中心。MCP stdio transport 关闭会进入 `bridge.stop()`；自建 SDK client 在关闭 stdio 前仍应先调用 `ruyi_browser_quit`，确保 attached browser 完成 detach-only。
 

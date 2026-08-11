@@ -18,6 +18,7 @@ import { registerUtilTools } from './tools/util.js';
 import { registerCookieTools } from './tools/cookie.js';
 import { registerInterceptTools } from './tools/intercept.js';
 import { registerWebSocketTools } from './tools/websocket.js';
+import { registerDownloadTools } from './tools/downloads.js';
 const serverCleanups = new WeakMap();
 /**
  * Dispose the resources owned by one server instance.
@@ -53,6 +54,7 @@ export async function createServer(bridge) {
     registerDebugTools(register, ctx);
     registerHumanTools(register, ctx);
     registerNetEnhanceTools(register, ctx);
+    registerDownloadTools(register, ctx);
     registerWebSocketTools(register, ctx);
     registerUtilTools(register, ctx);
     const tools = Array.from(toolHandlers.values()).map((h) => h.tool);

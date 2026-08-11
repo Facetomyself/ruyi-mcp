@@ -25,6 +25,7 @@ import { registerUtilTools } from './tools/util.js';
 import { registerCookieTools } from './tools/cookie.js';
 import { registerInterceptTools } from './tools/intercept.js';
 import { registerWebSocketTools } from './tools/websocket.js';
+import { registerDownloadTools } from './tools/downloads.js';
 
 // ---------------------------------------------------------------------------
 // Tool registry
@@ -77,6 +78,7 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
   registerDebugTools(register, ctx);
   registerHumanTools(register, ctx);
   registerNetEnhanceTools(register, ctx);
+  registerDownloadTools(register, ctx);
   registerWebSocketTools(register, ctx);
   registerUtilTools(register, ctx);
 
