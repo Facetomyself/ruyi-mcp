@@ -4,6 +4,7 @@
 
 import { RuyiContext } from '../ruyi-context.js';
 import { ToolDef, ToolHandler, ToolRegistrar, getPageIdx } from './types.js';
+import { declaredWriteRoot, resolveSafeOutputPath } from './security.js';
 
 function jsonResult(data: unknown): string {
   return JSON.stringify(data, null, 2);
@@ -22,7 +23,11 @@ export function registerUtilTools(register: ToolRegistrar, ctx: RuyiContext): vo
         type: 'object',
         properties: {
           pageIdx: { type: 'number', default: 0 },
-          filePath: { type: 'string', description: '保存路径（PNG）。不提供则返回 base64。' },
+          filePath: {
+            type: 'string',
+            description:
+              '保存路径（PNG，绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）。不提供则返回 base64。',
+          },
           fullPage: { type: 'boolean', description: '是否截取整页（默认仅视口）', default: false },
         },
         required: [],
@@ -30,9 +35,30 @@ export function registerUtilTools(register: ToolRegistrar, ctx: RuyiContext): vo
     },
     handler: (async (args) => {
       const pageIdx = getPageIdx(args, ctx);
+      const filePath = args.filePath as string | undefined;
+      let safeFilePath: string | undefined;
+      if (filePath !== undefined) {
+        const pathCheck = resolveSafeOutputPath(filePath, 'filePath', 'file', declaredWriteRoot(args));
+        if (!pathCheck.ok) {
+          return {
+            content: [{
+              type: 'text',
+              text: jsonResult({
+                error: {
+                  code: pathCheck.errorCode,
+                  message: pathCheck.errorMessage,
+                  field: 'filePath',
+                },
+              }),
+            }],
+            isError: true,
+          };
+        }
+        safeFilePath = pathCheck.resolved;
+      }
       const result = await ctx.bridgeInstance.call('page.screenshot', {
         pageIdx,
-        filePath: args.filePath,
+        filePath: safeFilePath,
         fullPage: args.fullPage ?? false,
       }) as Record<string, unknown>;
 

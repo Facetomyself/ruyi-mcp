@@ -3,6 +3,7 @@
  * Wraps ruyipage's page.intercept API (BiDi network.addIntercept).
  */
 import { getPageIdx } from './types.js';
+import { declaredWriteRoot, resolveSafeOutputPath } from './security.js';
 function jsonResult(data) {
     return JSON.stringify(data, null, 2);
 }
@@ -121,7 +122,7 @@ export function registerInterceptTools(register, ctx) {
                     },
                     outputFile: {
                         type: 'string',
-                        description: 'resultMode=body 时必填的绝对 JSONL 文件路径。',
+                        description: 'resultMode=body 时必填的绝对 JSONL 文件路径（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）。',
                     },
                     maxBodyChars: {
                         type: 'number',
@@ -138,12 +139,20 @@ export function registerInterceptTools(register, ctx) {
             if (args.resultMode === 'body' && !args.outputFile) {
                 throw new Error('outputFile is required when resultMode=body');
             }
+            let safeOutputFile;
+            if (args.outputFile !== undefined) {
+                const pathCheck = resolveSafeOutputPath(args.outputFile, 'outputFile', 'file', declaredWriteRoot(args));
+                if (!pathCheck.ok) {
+                    throw new Error(`${pathCheck.errorCode}: ${pathCheck.errorMessage}`);
+                }
+                safeOutputFile = pathCheck.resolved;
+            }
             const result = await ctx.bridgeInstance.call('intercept.wait', {
                 pageIdx,
                 timeout: args.timeout ?? 10,
                 resultMode: args.resultMode,
                 bodyReadTimeout: args.bodyReadTimeout ?? 1,
-                outputFile: args.outputFile,
+                outputFile: safeOutputFile,
                 maxBodyChars: args.maxBodyChars ?? 0,
             });
             return {

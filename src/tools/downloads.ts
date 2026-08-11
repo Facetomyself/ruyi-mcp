@@ -4,6 +4,7 @@
 
 import { RuyiContext } from '../ruyi-context.js';
 import { ToolHandler, ToolRegistrar, getPageIdx } from './types.js';
+import { declaredWriteRoot, resolveSafeOutputPath } from './security.js';
 
 function jsonResult(data: unknown): string {
   return JSON.stringify(data, null, 2);
@@ -27,7 +28,8 @@ export function registerDownloadTools(register: ToolRegistrar, ctx: RuyiContext)
           },
           downloadPath: {
             type: 'string',
-            description: 'allow 时必填的本地绝对下载目录；Bridge 会创建该目录。',
+            description:
+              'allow 时必填的本地绝对下载目录（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）；Bridge 会创建该目录。',
           },
           userContexts: {
             type: 'array',
@@ -48,10 +50,24 @@ export function registerDownloadTools(register: ToolRegistrar, ctx: RuyiContext)
         throw new Error('downloadPath is only valid when behavior is allow');
       }
 
+      let safeDownloadPath: string | undefined;
+      if (behavior === 'allow') {
+        const pathCheck = resolveSafeOutputPath(
+          args.downloadPath,
+          'downloadPath',
+          'directory',
+          declaredWriteRoot(args)
+        );
+        if (!pathCheck.ok) {
+          throw new Error(`${pathCheck.errorCode}: ${pathCheck.errorMessage}`);
+        }
+        safeDownloadPath = pathCheck.resolved;
+      }
+
       const result = await ctx.bridgeInstance.call('download.set_behavior', {
         pageIdx: getPageIdx(args, ctx),
         behavior,
-        downloadPath: args.downloadPath,
+        downloadPath: safeDownloadPath,
         userContexts: args.userContexts,
       }) as Record<string, unknown>;
 

@@ -8,6 +8,7 @@
 
 import { RuyiContext } from '../ruyi-context.js';
 import { ToolDef, ToolHandler, ToolRegistrar, getPageIdx } from './types.js';
+import { safeProxySummary } from './security.js';
 
 function jsonResult(data: unknown): string {
   return JSON.stringify(data, null, 2);
@@ -299,7 +300,7 @@ export function registerAntiDetectTools(register: ToolRegistrar, ctx: RuyiContex
           type: 'text',
           text: jsonResult({
             warning: 'Proxy must be set at ruyi_new_page time via the proxy parameter.',
-            currentProxy: ctx.state.proxy || 'none',
+            currentProxy: safeProxySummary(ctx.state.proxy),
             guidance: 'To switch proxy: ruyi_browser_quit → ruyi_new_page with new proxy parameter',
           }),
         }],

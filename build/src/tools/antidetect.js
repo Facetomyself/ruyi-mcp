@@ -6,6 +6,7 @@
  * Note: proxy must be set at browser.launch time (ruyi_new_page params).
  */
 import { getPageIdx } from './types.js';
+import { safeProxySummary } from './security.js';
 function jsonResult(data) {
     return JSON.stringify(data, null, 2);
 }
@@ -276,7 +277,7 @@ export function registerAntiDetectTools(register, ctx) {
                         type: 'text',
                         text: jsonResult({
                             warning: 'Proxy must be set at ruyi_new_page time via the proxy parameter.',
-                            currentProxy: ctx.state.proxy || 'none',
+                            currentProxy: safeProxySummary(ctx.state.proxy),
                             guidance: 'To switch proxy: ruyi_browser_quit → ruyi_new_page with new proxy parameter',
                         }),
                     }],

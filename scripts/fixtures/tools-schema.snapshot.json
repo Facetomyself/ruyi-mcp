@@ -159,7 +159,7 @@
             "type": "number"
           },
           "outputFile": {
-            "description": "resultMode=body 时必填的绝对 JSONL 文件路径；原始 body 只写该文件。",
+            "description": "resultMode=body 时必填的绝对 JSONL 文件路径（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）；原始 body 只写该文件。",
             "type": "string"
           },
           "pageIdx": {
@@ -1000,7 +1000,7 @@
             "type": "number"
           },
           "outputFile": {
-            "description": "resultMode=body 时必填的绝对 JSONL 文件路径。",
+            "description": "resultMode=body 时必填的绝对 JSONL 文件路径（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）。",
             "type": "string"
           },
           "pageIdx": {
@@ -1265,7 +1265,7 @@
       "inputSchema": {
         "properties": {
           "filePath": {
-            "description": "本地保存路径（绝对路径）",
+            "description": "本地保存路径（绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）",
             "type": "string"
           },
           "pageIdx": {
@@ -1464,7 +1464,7 @@
             "type": "string"
           },
           "downloadPath": {
-            "description": "allow 时必填的本地绝对下载目录；Bridge 会创建该目录。",
+            "description": "allow 时必填的本地绝对下载目录（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）；Bridge 会创建该目录。",
             "type": "string"
           },
           "pageIdx": {
@@ -1657,7 +1657,7 @@
       "inputSchema": {
         "properties": {
           "filePath": {
-            "description": "保存路径（PNG）。不提供则返回 base64。",
+            "description": "保存路径（PNG，绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）。不提供则返回 base64。",
             "type": "string"
           },
           "fullPage": {

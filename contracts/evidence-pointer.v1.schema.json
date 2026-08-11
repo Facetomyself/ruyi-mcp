@@ -26,7 +26,7 @@
     "path": {
       "type": "string",
       "maxLength": 1024,
-      "pattern": "^evidence/web/(handoff|ruyitrace|v8trace|iv8|parity)/[a-z0-9][a-z0-9_-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+      "pattern": "^evidence/web/(handoff|ruyitrace|v8trace|iv8|ruyidom|parity)/[a-z0-9][a-z0-9_-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
     },
     "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "bytes": {"type": "integer", "minimum": 0},
@@ -61,6 +61,10 @@
     {
       "if": {"properties": {"plane": {"const": "iv8"}}, "required": ["plane"]},
       "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/iv8/"}}}
+    },
+    {
+      "if": {"properties": {"plane": {"const": "ruyidom"}}, "required": ["plane"]},
+      "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/ruyidom/"}}}
     },
     {
       "if": {"properties": {"plane": {"const": "parity"}}, "required": ["plane"]},

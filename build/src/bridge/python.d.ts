@@ -31,6 +31,13 @@ export declare class PythonBridge {
     private handleBridgeStdinError;
     private writeRequest;
     private killBridgeProcess;
+    /**
+     * Send a fire-and-forget __shutdown__ notification so the Python bridge
+     * runs its common cleanup path (browser ownership contract + managed
+     * profile removal) and exits by itself. Returns true when the process
+     * exited within the grace period; false means the hard kill must proceed.
+     */
+    private requestBridgeCleanup;
     start(): Promise<void>;
     stop(): Promise<void>;
     private stopInternal;

@@ -25,6 +25,7 @@ const DEFAULT_PYTHON_EXE = process.env.RUYI_MCP_PYTHON || (process.platform === 
 const DEFAULT_BRIDGE_SCRIPT = process.env.RUYI_MCP_BRIDGE_SCRIPT
     || resolve(MODULE_DIR, '../../../bridge/ruyi_bridge.py');
 const DEFAULT_CALL_TIMEOUT_MS = 120_000; // 2 minutes for browser ops
+const BRIDGE_CLEANUP_GRACE_MS = 2_000; // best-effort window for the bridge to self-clean before the hard kill
 // ---------------------------------------------------------------------------
 // PythonBridge
 // ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ export class PythonBridge {
             }
         });
     }
-    killBridgeProcess(reason) {
+    async killBridgeProcess(reason) {
         const proc = this.proc;
         if (!proc)
             return;
@@ -129,6 +130,17 @@ export class PythonBridge {
         this.closeReadline();
         this.proc = null;
         this.ready = false;
+        // Best-effort recovery before the hard kill: ask the Python bridge to run
+        // its own shutdown path, which closes launch-owned Firefox via
+        // page.quit() and removes the managed profile via
+        // _cleanup_managed_profile(). Attached browsers are only detached, never
+        // closed, and their external profiles are never touched. If the bridge is
+        // wedged, the notification simply sits unread in its stdin pipe and the
+        // hard kill below still proceeds.
+        const exitedCleanly = await this.requestBridgeCleanup(proc);
+        if (exitedCleanly) {
+            return;
+        }
         if (pid && process.platform === 'win32') {
             // Kill only the wedged Python bridge. `/T` also terminates Firefox,
             // destroying the very session that ruyi_attach_browser is meant to
@@ -154,6 +166,44 @@ export class PythonBridge {
                 // Ignore kill errors.
             }
         }
+    }
+    /**
+     * Send a fire-and-forget __shutdown__ notification so the Python bridge
+     * runs its common cleanup path (browser ownership contract + managed
+     * profile removal) and exits by itself. Returns true when the process
+     * exited within the grace period; false means the hard kill must proceed.
+     */
+    async requestBridgeCleanup(child) {
+        const stdin = child.stdin;
+        if (!child.pid
+            || child.exitCode !== null
+            || !stdin
+            || stdin.destroyed
+            || !stdin.writable) {
+            return false;
+        }
+        try {
+            stdin.write(JSON.stringify({ id: null, method: '__shutdown__', params: {} }) + '\n');
+        }
+        catch {
+            // stdin broken: the Python side already sees EOF and self-cleans.
+            return false;
+        }
+        return new Promise((resolve) => {
+            let settled = false;
+            const finish = (value) => {
+                if (settled)
+                    return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(value);
+            };
+            const timer = setTimeout(() => finish(false), BRIDGE_CLEANUP_GRACE_MS);
+            child.once('exit', () => finish(true));
+            if (child.exitCode !== null) {
+                finish(true);
+            }
+        });
     }
     // ------------------------------------------------------------------
     // Lifecycle

@@ -292,6 +292,68 @@ def _safe_url(value: Any) -> dict:
     }
 
 
+def _declared_write_root() -> Optional[Path]:
+    """Return the caller-declared evidence/workspace root, if configured.
+
+    Fail closed: a configured-but-invalid root raises instead of silently
+    falling back to unanchored writes.
+    """
+    configured = os.environ.get("RUYI_MCP_WORKSPACE_ROOT", "").strip()
+    if not configured:
+        return None
+    root = Path(configured).expanduser()
+    raw = str(root)
+    if (
+        not root.is_absolute()
+        or raw.startswith(("\\\\", "//"))
+        or ".." in raw.replace("\\", "/").split("/")
+    ):
+        raise ValueError(
+            "RUYI_MCP_WORKSPACE_ROOT must be an absolute, non-UNC path without '..' segments"
+        )
+    return root.resolve()
+
+
+def _contained_output_path(value: Any, label: str = "outputFile", *, kind: str = "file") -> str:
+    """Validate a caller-supplied output path with shared containment rules.
+
+    Floor rules (always enforced):
+      1. absolute path only (relative paths rejected)
+      2. no '..' traversal segments
+      3. no UNC paths (\\\\host\\share or //host/share)
+      4. no root-level writes ('file' kind also rejects files whose parent is
+         a filesystem root; 'directory' kind rejects roots themselves)
+
+    Anchor rule (when RUYI_MCP_WORKSPACE_ROOT is set): the resolved path must
+    stay within the declared workspace root.
+    """
+    if kind not in {"file", "directory"}:
+        raise ValueError("kind must be 'file' or 'directory'")
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(f"{label} is required")
+    expanded = os.path.expanduser(raw).strip()
+    if not os.path.isabs(expanded):
+        raise ValueError(f"{label} must be an absolute path")
+    if expanded.startswith(("\\\\", "//")):
+        raise ValueError(f"{label} must not be a UNC path")
+    if ".." in expanded.replace("\\", "/").split("/"):
+        raise ValueError(f"{label} must not contain '..' path segments")
+
+    path_obj = Path(expanded)
+    remainder = str(path_obj)[len(path_obj.anchor):]
+    if not remainder:
+        raise ValueError(f"{label} must not target a filesystem root")
+    if kind == "file" and "/" not in remainder and "\\" not in remainder:
+        raise ValueError(f"{label} must not write a file directly at a filesystem root")
+
+    resolved = path_obj.resolve()
+    anchor = _declared_write_root()
+    if anchor is not None and not _path_is_within(resolved, anchor):
+        raise ValueError(f"{label} must stay within the declared workspace root: {anchor}")
+    return str(resolved)
+
+
 def _is_valid_cookie_domain(value: Any) -> bool:
     """Accept an ASCII DNS host or IP literal, with an optional DNS leading dot."""
     if not isinstance(value, str) or not value or value != value.strip():
@@ -1136,7 +1198,7 @@ class RuyiBridge:
 
         return {
             "pageIdx": 0,
-            "url": getattr(self.page, 'url', ''),
+            "url": _safe_url(getattr(self.page, 'url', ''))["url"],
             "title": getattr(self.page, 'title', ''),
             "pageCount": len(self.pages),
             "attached": existing_only,
@@ -1204,7 +1266,7 @@ class RuyiBridge:
         try:
             return {
                 "alive": True,
-                "url": getattr(self.page, 'url', ''),
+                "url": _safe_url(getattr(self.page, 'url', ''))["url"],
                 "title": getattr(self.page, 'title', ''),
                 "pageCount": len(self.pages),
                 "breakpointCount": len(self._breakpoints),
@@ -1229,10 +1291,9 @@ class RuyiBridge:
             raw_path = params.get("downloadPath")
             if not isinstance(raw_path, str) or not raw_path.strip():
                 raise ValueError("downloadPath is required when behavior is allow")
-            destination = Path(raw_path.strip()).expanduser()
-            if not destination.is_absolute():
-                raise ValueError("downloadPath must be an absolute path")
-            destination = destination.resolve()
+            destination = Path(
+                _contained_output_path(raw_path, "downloadPath", kind="directory")
+            )
             destination.mkdir(parents=True, exist_ok=True)
             download_behavior = {
                 "type": "allowed",
@@ -1285,7 +1346,7 @@ class RuyiBridge:
         timeout = params.get("timeout", 30)
         page.get(url, timeout=timeout)
         return {
-            "url": getattr(page, 'url', url),
+            "url": _safe_url(getattr(page, 'url', url))["url"],
             "title": getattr(page, 'title', ''),
         }
 
@@ -1348,7 +1409,7 @@ class RuyiBridge:
 
         result = {
             "pageIdx": idx,
-            "url": getattr(tab, 'url', url) if tab else url,
+            "url": _safe_url(getattr(tab, 'url', url) if tab else url)["url"],
         }
         if fingerprint_emulation is not None:
             result["fingerprintEmulation"] = _serialize(fingerprint_emulation)
@@ -1375,7 +1436,7 @@ class RuyiBridge:
         idx = params["pageIdx"]
         page = self._get_page(idx)
         # ruyipage auto-switches when using a tab object
-        return {"pageIdx": idx, "url": getattr(page, 'url', '')}
+        return {"pageIdx": idx, "url": _safe_url(getattr(page, 'url', ''))["url"]}
 
     def _list_tabs(self, params: dict) -> dict:
         tabs = []
@@ -1383,7 +1444,7 @@ class RuyiBridge:
             try:
                 tabs.append({
                     "pageIdx": idx,
-                    "url": getattr(page, 'url', ''),
+                    "url": _safe_url(getattr(page, 'url', ''))["url"],
                     "title": getattr(page, 'title', ''),
                 })
             except Exception:
@@ -1393,7 +1454,7 @@ class RuyiBridge:
     def _reload(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx"))
         page.refresh()
-        return {"url": getattr(page, 'url', '')}
+        return {"url": _safe_url(getattr(page, 'url', ''))["url"]}
 
     def _screenshot(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx"))
@@ -1401,13 +1462,15 @@ class RuyiBridge:
         full_page = params.get("fullPage", False)
 
         if file_path:
-            page.screenshot(file_path, full_page=full_page)
-            return {"filePath": file_path}
+            safe_path = _contained_output_path(file_path, "filePath", kind="file")
+            page.screenshot(safe_path, full_page=full_page)
+            return {"filePath": safe_path}
         else:
             # Return base64 screenshot
             import base64
             import tempfile
-            tmp = tempfile.mktemp(suffix=".png")
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
             try:
                 page.screenshot(tmp, full_page=full_page)
                 with open(tmp, "rb") as f:
@@ -1606,9 +1669,7 @@ class RuyiBridge:
         output_file = params.get("outputFile")
         if not isinstance(output_file, str) or not output_file.strip():
             raise ValueError("outputFile is required when resultMode is body")
-        if not os.path.isabs(output_file):
-            raise ValueError("outputFile must be an absolute path")
-        return os.path.abspath(output_file)
+        return _contained_output_path(output_file, "outputFile", kind="file")
 
     @staticmethod
     def _append_jsonl(output_file: str, records: list[dict]) -> None:
@@ -2057,10 +2118,14 @@ class RuyiBridge:
     def _set_proxy(self, params: dict) -> dict:
         """Note: proxy must be set BEFORE browser launch via browser.launch params.
         This is a no-op if browser is already running."""
+        try:
+            proxy_state = _safe_proxy(self._proxy_url)
+        except ValueError:
+            proxy_state = {"mode": "unknown", "credentials": "omitted"}
         return {
             "warning": "Proxy must be set at browser.launch time. "
                        "Use the 'proxy' parameter in browser.launch.",
-            "proxy": params.get("proxyUrl", "not set"),
+            "proxy": proxy_state,
         }
 
     def _set_geolocation(self, params: dict) -> dict:
