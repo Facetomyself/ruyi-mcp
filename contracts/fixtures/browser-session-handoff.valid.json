@@ -11,7 +11,7 @@
   "browser": {
     "name": "Firefox",
     "version": "151.0a1",
-    "buildId": "20260718144531",
+    "buildId": "20260702113527",
     "binarySha256": "4a7aecf0b57d6cf7f5ef2c1df27f0462070d369929290abd286fb9678f05e0bc"
   },
   "connection": {
@@ -39,7 +39,17 @@
       "redaction": "synthetic"
     }
   },
-  "proxy": {"mode": "direct", "credentials": "none"},
-  "capabilities": ["bidi-attach", "cookie-import", "headless"],
-  "redaction": {"status": "allowlist-summary", "inlineSecrets": false}
+  "proxy": {
+    "mode": "direct",
+    "credentials": "none"
+  },
+  "capabilities": [
+    "bidi-attach",
+    "cookie-import",
+    "headless"
+  ],
+  "redaction": {
+    "status": "allowlist-summary",
+    "inlineSecrets": false
+  }
 }
