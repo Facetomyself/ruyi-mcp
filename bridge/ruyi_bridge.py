@@ -2124,7 +2124,11 @@ class RuyiBridge:
             proxy_state = {"mode": "unknown", "credentials": "omitted"}
         return {
             "warning": "Proxy must be set at browser.launch time. "
-                       "Use the 'proxy' parameter in browser.launch.",
+                       "Use the 'proxy' parameter in browser.launch. For Cliproxy from a "
+                       "domestic machine, pass a verified loopback listener of a local chained "
+                       "sidecar, never a Cliproxy provider endpoint or credentials. The main Clash "
+                       "mixed listener (for example http://127.0.0.1:7897) is not a Cliproxy relay "
+                       "unless its dialer-proxy -> Cliproxy chain is explicitly configured and verified.",
             "proxy": proxy_state,
         }
 

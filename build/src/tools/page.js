@@ -52,13 +52,17 @@ export function registerPageTools(register, ctx) {
             name: 'ruyi_new_page',
             description: '在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。' +
                 '支持配置代理、指纹伪装、无头模式、隐私模式。' +
+                '国内机器使用 Cliproxy 时，浏览器代理只能指向已验证的本机 Cliproxy chained sidecar listener，不能直连 provider endpoint。' +
                 '首次调用自动启动 Firefox 浏览器。',
             inputSchema: {
                 type: 'object',
                 properties: {
                     url: { type: 'string', description: '目标 URL（必填）' },
                     timeout: { type: 'number', description: '导航超时（秒），默认 30', default: 30 },
-                    proxy: { type: 'string', description: '代理地址，如 http://127.0.0.1:7890 或 socks5://host:port' },
+                    proxy: {
+                        type: 'string',
+                        description: '浏览器第一跳代理。Cliproxy 场景仅填写已验证的本机 chained sidecar loopback listener，例如 http://127.0.0.1:<sidecar-port>；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy。不得填写 *.cliproxy.io:3010 或 provider 账密 URL。',
+                    },
                     headless: { type: 'boolean', description: '无头模式，默认 false', default: false },
                     privateMode: { type: 'boolean', description: '隐私模式，默认 false', default: false },
                     profilePath: {
@@ -70,10 +74,10 @@ export function registerPageTools(register, ctx) {
                         type: 'object',
                         description: '智能指纹配置（smart_fingerprint）',
                         properties: {
-                            proxyHost: { type: 'string' },
-                            proxyPort: { type: 'number' },
-                            proxyUser: { type: 'string' },
-                            proxyPwd: { type: 'string' },
+                            proxyHost: { type: 'string', description: '浏览器第一跳 host；Cliproxy 场景填已验证的本机 chained sidecar host，不填 provider host。' },
+                            proxyPort: { type: 'number', description: '浏览器第一跳端口；Cliproxy 场景填 sidecar listener port，主 Clash 7897 不等于 Cliproxy relay。' },
+                            proxyUser: { type: 'string', description: '第一跳认证；不得填入 Cliproxy provider 账号。' },
+                            proxyPwd: { type: 'string', description: '第一跳认证；不得填入 Cliproxy provider 密码。' },
                             requireCountry: { type: 'string', description: '要求代理出口国家，如 US' },
                         },
                     },

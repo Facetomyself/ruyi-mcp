@@ -70,6 +70,14 @@ npm run check
 - `RUYI_MCP_PROFILE_ROOT`：Bridge 自动创建的 disposable Firefox profile 根目录。必须是绝对路径；未设置时默认为 `<ruyi-mcp>/browser-profiles`。异常退出留下的残留也只会位于此处，且该目录被 Git 忽略。
 - `RUYI_MCP_LOCAL_HEAD`：仅供无 `.git` 的 release 安装显式提供 Private mirror Git SHA；普通 checkout 会直接读取本地 HEAD。
 
+## 代理接入（reverse_ENV）
+
+- `ruyi_new_page.proxy` 配置的是 Firefox 的第一跳，不是 Cliproxy provider 配置入口。
+- 国内机器使用 Cliproxy 时，RuyiPage 只能拿到已启动且验收通过的本机 Cliproxy chained sidecar loopback listener，例如 `http://127.0.0.1:<sidecar-port>`。sidecar 内部应固定为 `RuyiPage → loopback sidecar → 海外 Clash 节点（dialer-proxy）→ Cliproxy → target`。
+- 普通主 Clash mixed listener（例如 `http://127.0.0.1:7897`）本身不等于 Cliproxy relay。只有已显式配置并验证 `dialer-proxy → Cliproxy` 链时才可作为该第一跳；否则 Ruyi 只是走普通 Clash 出口，不是在使用 Cliproxy。
+- 不得把 `*.cliproxy.io:3010`、Cliproxy provider 账号或密码直接传给 `ruyi_new_page`、`ruyi_set_proxy` 或 fingerprint proxy 字段。provider endpoint 和凭据只保留在被 Git 忽略的本地 sidecar 配置/运行环境中，不进入 MCP 参数、日志或仓库。
+- 这是一条调用提醒，不增加运行时拦截，也不改变 Ruyi MCP 对其他明确指定代理的兼容能力；代理仍只能在 browser launch 时设置，切换须先 quit/relaunch。
+
 ## Firefox runtime 选择
 
 - 本控制面不注册 `ruyi_trace_*`，也不接受 `traceEnabled`。RuyiPage 内存 BiDi Trace 不再冒充证据平面。

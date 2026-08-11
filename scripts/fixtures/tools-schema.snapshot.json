@@ -1175,7 +1175,7 @@
       "name": "ruyi_navigate_page"
     },
     {
-      "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。首次调用自动启动 Firefox 浏览器。",
+      "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。国内机器使用 Cliproxy 时，浏览器代理只能指向已验证的本机 Cliproxy chained sidecar listener，不能直连 provider endpoint。首次调用自动启动 Firefox 浏览器。",
       "inputSchema": {
         "properties": {
           "container": {
@@ -1187,15 +1187,19 @@
             "description": "智能指纹配置（smart_fingerprint）",
             "properties": {
               "proxyHost": {
+                "description": "浏览器第一跳 host；Cliproxy 场景填已验证的本机 chained sidecar host，不填 provider host。",
                 "type": "string"
               },
               "proxyPort": {
+                "description": "浏览器第一跳端口；Cliproxy 场景填 sidecar listener port，主 Clash 7897 不等于 Cliproxy relay。",
                 "type": "number"
               },
               "proxyPwd": {
+                "description": "第一跳认证；不得填入 Cliproxy provider 密码。",
                 "type": "string"
               },
               "proxyUser": {
+                "description": "第一跳认证；不得填入 Cliproxy provider 账号。",
                 "type": "string"
               },
               "requireCountry": {
@@ -1220,7 +1224,7 @@
             "type": "string"
           },
           "proxy": {
-            "description": "代理地址，如 http://127.0.0.1:7890 或 socks5://host:port",
+            "description": "浏览器第一跳代理。Cliproxy 场景仅填写已验证的本机 chained sidecar loopback listener，例如 http://127.0.0.1:<sidecar-port>；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy。不得填写 *.cliproxy.io:3010 或 provider 账密 URL。",
             "type": "string"
           },
           "timeout": {
@@ -1639,11 +1643,11 @@
       "name": "ruyi_set_fingerprint"
     },
     {
-      "description": "⚠ 代理必须在 ruyi_new_page 时通过 proxy 参数设置。浏览器启动后无法切换代理。此工具仅返回说明和当前代理状态。如需切换代理，请先 ruyi_browser_quit，再用新代理调用 ruyi_new_page。",
+      "description": "⚠ 代理必须在 ruyi_new_page 时通过 proxy 参数设置。浏览器启动后无法切换代理。此工具仅返回说明和当前代理状态。国内机器使用 Cliproxy 时只传已验证的本机 chained sidecar listener；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy，且不得直填 Cliproxy endpoint 或账密 URL。如需切换代理，请先 ruyi_browser_quit，再用新代理调用 ruyi_new_page。",
       "inputSchema": {
         "properties": {
           "proxyUrl": {
-            "description": "代理 URL（仅供参考，不会实际切换）",
+            "description": "代理 URL（仅供参考，不会实际切换；Cliproxy 场景应为已验证的本机 chained sidecar listener，不能是 provider endpoint）",
             "type": "string"
           }
         },

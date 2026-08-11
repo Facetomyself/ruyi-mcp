@@ -70,6 +70,14 @@ npm run check
 - `RUYI_MCP_PROFILE_ROOT`: absolute parent directory for disposable Firefox profiles owned by the Bridge. It defaults to `<ruyi-mcp>/browser-profiles`; residual profiles after an abnormal exit are confined there and the directory is Git-ignored.
 - `RUYI_MCP_LOCAL_HEAD`: explicit Private-mirror Git SHA for release installs without `.git`; normal checkouts read local HEAD directly.
 
+## Proxy ingress in reverse_ENV
+
+- `ruyi_new_page.proxy` configures Firefox's first hop; it is not a Cliproxy provider configuration entry point.
+- On a domestic machine, RuyiPage may receive only a verified loopback listener of a started local Cliproxy chained sidecar, for example `http://127.0.0.1:<sidecar-port>`. The sidecar pins `RuyiPage → loopback sidecar → overseas Clash node (dialer-proxy) → Cliproxy → target`.
+- The primary Clash mixed listener (for example `http://127.0.0.1:7897`) is not a Cliproxy relay by itself. Use it as that first hop only when an explicit, verified `dialer-proxy → Cliproxy` chain exists; otherwise Ruyi merely uses its ordinary Clash egress, not Cliproxy.
+- Do not pass `*.cliproxy.io:3010`, a Cliproxy provider account, or provider credentials to `ruyi_new_page`, `ruyi_set_proxy`, or fingerprint proxy fields. Keep the provider endpoint and credentials only in Git-ignored local sidecar config/runtime state, never in MCP parameters, logs, or the repository.
+- This is caller guidance, not a runtime block, and does not remove compatibility with other explicitly supplied proxies. A proxy still applies only at browser launch, so switching requires quit/relaunch.
+
 ## Firefox Runtime Selection
 
 - This control plane does not register `ruyi_trace_*` or accept `traceEnabled`. The ruyiPage in-memory BiDi trace is no longer presented as an evidence plane.
