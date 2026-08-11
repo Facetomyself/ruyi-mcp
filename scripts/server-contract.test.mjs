@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -73,11 +74,14 @@ test('createServer isolates tool handlers and cleanup per instance', async () =>
     assert.equal(bridgeA.calls.filter((call) => call.method === 'browser.status').length, 1);
     assert.equal(bridgeB.calls.filter((call) => call.method === 'browser.status').length, 1);
 
+    // The server contract runs on both Windows and Linux. Use a native
+    // absolute path rather than a Windows-only literal.
+    const downloadPath = resolve('downloads');
     const configuredDownload = await clientA.callTool({
       name: 'ruyi_set_download_behavior',
       arguments: {
         behavior: 'allow',
-        downloadPath: 'D:\\downloads',
+        downloadPath,
         userContexts: ['container-a'],
       },
     });
@@ -87,7 +91,7 @@ test('createServer isolates tool handlers and cleanup per instance', async () =>
       params: {
         pageIdx: 0,
         behavior: 'allow',
-        downloadPath: 'D:\\downloads',
+        downloadPath,
         userContexts: ['container-a'],
       },
     });
