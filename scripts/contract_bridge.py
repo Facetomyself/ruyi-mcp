@@ -44,7 +44,7 @@ POINTER_SCHEMA_PATH = REPO_ROOT / "contracts" / "evidence-pointer.v1.schema.json
 HANDOFF_FIXTURE_PATH = REPO_ROOT / "contracts" / "fixtures" / "browser-session-handoff.valid.json"
 LIVE_COOKIE_FIXTURE_PATH = REPO_ROOT / "scripts" / "fixtures" / "cookies-domainless.live-shape.json"
 HANDOFF_SCHEMA_SHA256 = "9a759a8a5a9af92ae6958a06975bbd58a0d20f67aeb87543100548f36b9ea240"
-POINTER_SCHEMA_SHA256 = "986b8965c5b41d41f7bed3d8294de2551165e739f81d1822bb6e529d081c1dbd"
+POINTER_SCHEMA_SHA256 = "8139985084559de688063578edaa262cf23200045ae24759f5aacdf828e04fe8"
 
 
 def load_bridge_module():
@@ -772,6 +772,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "human.scroll",
             "human.drag",
             "session.export",
+            "download.set_behavior",
         }
         self.assertTrue(expected_handlers.issubset(bridge._handlers))
         self.assertTrue(
@@ -781,6 +782,57 @@ class RuyiBridgeContractTests(unittest.TestCase):
             bridge.handle({"id": 1, "method": "browser.status", "params": {}}),
             {"id": 1, "result": {"alive": False}},
         )
+
+    def test_download_behavior_uses_native_bidi_and_rejects_unsafe_inputs(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeWheelPage()
+        bridge.pages[0] = page
+
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "downloads"
+            response = bridge.handle(
+                {
+                    "id": 2,
+                    "method": "download.set_behavior",
+                    "params": {
+                        "behavior": "allow",
+                        "downloadPath": str(destination),
+                        "userContexts": ["container-a"],
+                    },
+                }
+            )
+
+            self.assertNotIn("error", response)
+            self.assertTrue(destination.is_dir())
+            self.assertEqual(response["result"]["behavior"], "allowed")
+            self.assertEqual(response["result"]["downloadPath"], str(destination.resolve()))
+            self.assertEqual(
+                page.browser_driver.calls,
+                [
+                    (
+                        "browser.setDownloadBehavior",
+                        {
+                            "downloadBehavior": {
+                                "type": "allowed",
+                                "destinationFolder": str(destination.resolve()),
+                            },
+                            "userContexts": ["container-a"],
+                        },
+                    )
+                ],
+            )
+
+        for params, error in (
+            ({"behavior": "allow", "downloadPath": "relative-downloads"}, "absolute path"),
+            ({"behavior": "deny", "userContexts": [""]}, "empty IDs"),
+            ({"behavior": "open"}, "allow or deny"),
+        ):
+            with self.subTest(params=params):
+                response = bridge.handle(
+                    {"id": 3, "method": "download.set_behavior", "params": params}
+                )
+                self.assertIn("error", response)
+                self.assertIn(error, response["error"]["message"])
 
     def test_bundled_handoff_contract_matches_canonical_snapshot(self):
         schema_digest = hashlib.sha256(HANDOFF_SCHEMA_PATH.read_bytes()).hexdigest()
