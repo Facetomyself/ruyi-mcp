@@ -2,6 +2,8 @@ name: ci
 
 on:
   push:
+    branches:
+      - reverse-env/main
   pull_request:
 
 jobs:

@@ -1469,8 +1469,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     require_country="US",
                 )
 
-            # GitHub Windows runner 的 TEMP 可能是 8.3 短名(RUNNER~1),
-            # 与 resolve() 展开后的完整路径不一致,统一 resolve 后比较。
+            # GitHub Windows runner TEMP 可能是 8.3 短名(RUNNER~1),
+            # resolve() 展开为完整路径后再比较。samefile 在短名未展开时不稳定。
             self.assertEqual(Path(context.userdir).resolve(), profile.resolve())
             self.assertEqual(Path(options.profile_path).resolve(), profile.resolve())
             self.assertEqual(Path(context.fpfile_path).resolve().parent, profile.resolve())
