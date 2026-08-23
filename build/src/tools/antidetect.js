@@ -6,6 +6,7 @@
  * Note: proxy must be set at browser.launch time (ruyi_new_page params).
  */
 import { getPageIdx } from './types.js';
+import { safeProxySummary } from './security.js';
 function jsonResult(data) {
     return JSON.stringify(data, null, 2);
 }
@@ -76,7 +77,7 @@ export function registerAntiDetectTools(register, ctx) {
                             angle: {
                                 type: 'number',
                                 default: 0,
-                                description: '已弃用：ruyiPage 1.2.56 不发送 angle；Bridge 会忽略并返回明确 warning',
+                                description: '已弃用：ruyiPage 不发送 angle；Bridge 会忽略并返回明确 warning',
                             },
                         },
                     },
@@ -261,11 +262,12 @@ export function registerAntiDetectTools(register, ctx) {
             name: 'ruyi_set_proxy',
             description: '⚠ 代理必须在 ruyi_new_page 时通过 proxy 参数设置。' +
                 '浏览器启动后无法切换代理。此工具仅返回说明和当前代理状态。' +
+                '国内机器使用 Cliproxy 时只传已验证的本机 chained sidecar listener；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy，且不得直填 Cliproxy endpoint 或账密 URL。' +
                 '如需切换代理，请先 ruyi_browser_quit，再用新代理调用 ruyi_new_page。',
             inputSchema: {
                 type: 'object',
                 properties: {
-                    proxyUrl: { type: 'string', description: '代理 URL（仅供参考，不会实际切换）' },
+                    proxyUrl: { type: 'string', description: '代理 URL（仅供参考，不会实际切换；Cliproxy 场景应为已验证的本机 chained sidecar listener，不能是 provider endpoint）' },
                 },
                 required: [],
             },
@@ -275,9 +277,9 @@ export function registerAntiDetectTools(register, ctx) {
                 content: [{
                         type: 'text',
                         text: jsonResult({
-                            warning: 'Proxy must be set at ruyi_new_page time via the proxy parameter.',
-                            currentProxy: ctx.state.proxy || 'none',
-                            guidance: 'To switch proxy: ruyi_browser_quit → ruyi_new_page with new proxy parameter',
+                            warning: 'Proxy must be set at ruyi_new_page time via the proxy parameter. For Cliproxy from a domestic machine, pass a verified loopback listener of a local chained sidecar, never the provider endpoint or credentials. The main Clash mixed listener (for example http://127.0.0.1:7897) is not a Cliproxy relay unless its dialer-proxy -> Cliproxy chain is explicitly configured and verified.',
+                            currentProxy: safeProxySummary(ctx.state.proxy),
+                            guidance: 'To switch proxy: ruyi_browser_quit → ruyi_new_page with a verified local chained sidecar listener when using Cliproxy',
                         }),
                     }],
             };

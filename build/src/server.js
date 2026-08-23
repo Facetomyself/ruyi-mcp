@@ -18,6 +18,9 @@ import { registerUtilTools } from './tools/util.js';
 import { registerCookieTools } from './tools/cookie.js';
 import { registerInterceptTools } from './tools/intercept.js';
 import { registerWebSocketTools } from './tools/websocket.js';
+import { registerDownloadTools } from './tools/downloads.js';
+import { EXPERT_ONLY_TOOLS, resolveToolset } from './tools/toolset.js';
+export const SERVER_VERSION = '0.2.0-reverse-env.2';
 const serverCleanups = new WeakMap();
 /**
  * Dispose the resources owned by one server instance.
@@ -53,12 +56,19 @@ export async function createServer(bridge) {
     registerDebugTools(register, ctx);
     registerHumanTools(register, ctx);
     registerNetEnhanceTools(register, ctx);
+    registerDownloadTools(register, ctx);
     registerWebSocketTools(register, ctx);
     registerUtilTools(register, ctx);
+    const toolset = resolveToolset();
+    if (toolset === 'automation') {
+        for (const name of EXPERT_ONLY_TOOLS) {
+            toolHandlers.delete(name);
+        }
+    }
     const tools = Array.from(toolHandlers.values()).map((h) => h.tool);
     const server = new Server({
         name: 'ruyi-mcp',
-        version: '0.2.0-reverse-env.1',
+        version: SERVER_VERSION,
     }, {
         capabilities: {
             tools: {},

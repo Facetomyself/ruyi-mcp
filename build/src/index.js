@@ -7,12 +7,15 @@
  * or configure the same entry point in an MCP client.
  */
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { cleanupServer, createServer } from './server.js';
+import { cleanupServer, createServer, SERVER_VERSION } from './server.js';
 import { PythonBridge } from './bridge/python.js';
+import { resolveToolset } from './tools/toolset.js';
 async function main() {
-    console.error('[ruyi-mcp] Starting ruyi-mcp v0.2.0-reverse-env.1...');
+    const toolset = resolveToolset();
+    console.error(`[ruyi-mcp] Starting ruyi-mcp v${SERVER_VERSION}...`);
     console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
     console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
+    console.error(`[ruyi-mcp] Toolset: ${toolset} (RUYI_MCP_TOOLSET=automation|all)`);
     console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
     console.error('[ruyi-mcp] Evidence handoff: browser-session-handoff.v1');
     const bridge = new PythonBridge();

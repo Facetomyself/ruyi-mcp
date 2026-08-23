@@ -19,6 +19,8 @@ import shutil
 import ipaddress
 import math
 import random
+import signal
+import subprocess
 import time
 import tempfile
 import hashlib
@@ -292,6 +294,68 @@ def _safe_url(value: Any) -> dict:
     }
 
 
+def _declared_write_root() -> Optional[Path]:
+    """Return the caller-declared evidence/workspace root, if configured.
+
+    Fail closed: a configured-but-invalid root raises instead of silently
+    falling back to unanchored writes.
+    """
+    configured = os.environ.get("RUYI_MCP_WORKSPACE_ROOT", "").strip()
+    if not configured:
+        return None
+    root = Path(configured).expanduser()
+    raw = str(root)
+    if (
+        not root.is_absolute()
+        or raw.startswith(("\\\\", "//"))
+        or ".." in raw.replace("\\", "/").split("/")
+    ):
+        raise ValueError(
+            "RUYI_MCP_WORKSPACE_ROOT must be an absolute, non-UNC path without '..' segments"
+        )
+    return root.resolve()
+
+
+def _contained_output_path(value: Any, label: str = "outputFile", *, kind: str = "file") -> str:
+    """Validate a caller-supplied output path with shared containment rules.
+
+    Floor rules (always enforced):
+      1. absolute path only (relative paths rejected)
+      2. no '..' traversal segments
+      3. no UNC paths (\\\\host\\share or //host/share)
+      4. no root-level writes ('file' kind also rejects files whose parent is
+         a filesystem root; 'directory' kind rejects roots themselves)
+
+    Anchor rule (when RUYI_MCP_WORKSPACE_ROOT is set): the resolved path must
+    stay within the declared workspace root.
+    """
+    if kind not in {"file", "directory"}:
+        raise ValueError("kind must be 'file' or 'directory'")
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(f"{label} is required")
+    expanded = os.path.expanduser(raw).strip()
+    if not os.path.isabs(expanded):
+        raise ValueError(f"{label} must be an absolute path")
+    if expanded.startswith(("\\\\", "//")):
+        raise ValueError(f"{label} must not be a UNC path")
+    if ".." in expanded.replace("\\", "/").split("/"):
+        raise ValueError(f"{label} must not contain '..' path segments")
+
+    path_obj = Path(expanded)
+    remainder = str(path_obj)[len(path_obj.anchor):]
+    if not remainder:
+        raise ValueError(f"{label} must not target a filesystem root")
+    if kind == "file" and "/" not in remainder and "\\" not in remainder:
+        raise ValueError(f"{label} must not write a file directly at a filesystem root")
+
+    resolved = path_obj.resolve()
+    anchor = _declared_write_root()
+    if anchor is not None and not _path_is_within(resolved, anchor):
+        raise ValueError(f"{label} must stay within the declared workspace root: {anchor}")
+    return str(resolved)
+
+
 def _is_valid_cookie_domain(value: Any) -> bool:
     """Accept an ASCII DNS host or IP literal, with an optional DNS leading dot."""
     if not isinstance(value, str) or not value or value != value.strip():
@@ -440,6 +504,188 @@ def _discover_firefox_path() -> str:
 
 DEFAULT_FIREFOX_PATH = _discover_firefox_path()
 DEFAULT_PROFILE_ROOT = Path(__file__).resolve().parents[1] / "browser-profiles"
+_WINDOWS_SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return whether *pid* still exists. Never raises into callers."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        tasklist = _WINDOWS_SYSTEM32 / "tasklist.exe"
+        try:
+            completed = subprocess.run(
+                [str(tasklist), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        stdout = (completed.stdout or "").strip()
+        if not stdout or stdout.upper().startswith("INFO:"):
+            return False
+        return str(pid) in stdout
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Best-effort kill of *pid* and its children. Owned Firefox only."""
+    if not isinstance(pid, int) or pid <= 0:
+        return
+    if os.name == "nt":
+        taskkill = _WINDOWS_SYSTEM32 / "taskkill.exe"
+        try:
+            subprocess.run(
+                [str(taskkill), "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+
+
+def _firefox_pids_using_profile(profile: Path) -> list[int]:
+    """Find leftover firefox/plugin-container processes bound to *profile*."""
+    if os.name != "nt":
+        return []
+    powershell = _WINDOWS_SYSTEM32 / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if not powershell.is_file():
+        return []
+    needle = str(profile.resolve()).lower()
+    script = (
+        "$rows = Get-CimInstance Win32_Process -Filter "
+        "\"Name='firefox.exe' or Name='plugin-container.exe'\"; "
+        "foreach ($row in $rows) { if ($row.CommandLine) { "
+        "Write-Output (($row.ProcessId.ToString()) + [char]9 + $row.CommandLine) } }"
+    )
+    try:
+        completed = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pids: list[int] = []
+    for line in (completed.stdout or "").splitlines():
+        if "\t" not in line:
+            continue
+        pid_text, command = line.split("\t", 1)
+        if needle not in command.lower():
+            continue
+        try:
+            pid = int(pid_text.strip())
+        except ValueError:
+            continue
+        if pid > 0:
+            pids.append(pid)
+    return pids
+
+
+def _reap_owned_firefox(pid: Optional[int], profile: Optional[Path]) -> Optional[dict[str, Any]]:
+    """Kill leftover owned Firefox after quit. Never used for attach sessions."""
+    targets: list[int] = []
+    if isinstance(pid, int) and pid > 0:
+        targets.append(pid)
+    if profile is not None:
+        for extra in _firefox_pids_using_profile(profile):
+            if extra not in targets:
+                targets.append(extra)
+    if not targets:
+        return None
+    killed: list[int] = []
+    already_exited: list[int] = []
+    still_alive: list[int] = []
+    for target in targets:
+        if not _pid_is_alive(target):
+            already_exited.append(target)
+            continue
+        _kill_process_tree(target)
+        if _pid_is_alive(target):
+            still_alive.append(target)
+        else:
+            killed.append(target)
+    return {
+        "attempted": True,
+        "pids": targets,
+        "killed": killed,
+        "alreadyExited": already_exited,
+        "stillAlive": still_alive,
+    }
+
+
+def _coerce_fingerprint_kwargs(fp: Any, profile_path: Optional[Path]) -> dict[str, Any]:
+    """Map MCP fingerprint object onto ruyiPage 1.2.62 smart_fingerprint kwargs."""
+    if not isinstance(fp, dict) or not fp:
+        return {}
+    kwargs: dict[str, Any] = {}
+    str_keys = {
+        "proxyHost": "proxy_host",
+        "proxyUser": "proxy_user",
+        "proxyPwd": "proxy_pwd",
+        "requireCountry": "require_country",
+        "webrtcLocalIpv4": "webrtc_local_ipv4",
+        "webrtcLocalIpv6": "webrtc_local_ipv6",
+        "webrtcPublicIpv4": "webrtc_public_ipv4",
+        "webrtcPublicIpv6": "webrtc_public_ipv6",
+        "geolocationPermission": "geolocation_permission",
+    }
+    int_keys = {
+        "proxyPort": "proxy_port",
+        "firefoxVersion": "firefox_version",
+    }
+    float_keys = {
+        "geolocationLatitude": "geolocation_latitude",
+        "geolocationLongitude": "geolocation_longitude",
+        "geolocationAccuracy": "geolocation_accuracy",
+        "geolocationAltitude": "geolocation_altitude",
+        "geolocationAltitudeAccuracy": "geolocation_altitude_accuracy",
+        "geolocationHeading": "geolocation_heading",
+        "geolocationSpeed": "geolocation_speed",
+    }
+    for src, dest in str_keys.items():
+        value = fp.get(src)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            kwargs[dest] = text
+    for src, dest in int_keys.items():
+        value = fp.get(src)
+        if value is None or value == "":
+            continue
+        kwargs[dest] = int(value)
+    for src, dest in float_keys.items():
+        value = fp.get(src)
+        if value is None or value == "":
+            continue
+        kwargs[dest] = float(value)
+    if "geolocationEnabled" in fp and fp["geolocationEnabled"] is not None:
+        kwargs["geolocation_enabled"] = bool(fp["geolocationEnabled"])
+    timestamp = fp.get("geolocationTimestamp")
+    if timestamp is not None and timestamp != "":
+        kwargs["geolocation_timestamp"] = timestamp
+    if fp.get("manualGeo") is not None:
+        kwargs["manual_geo"] = fp["manualGeo"]
+    if profile_path is not None:
+        kwargs["userdir"] = str(profile_path)
+    return kwargs
+
 
 
 def _managed_profile_root() -> Path:
@@ -495,12 +741,14 @@ class RuyiBridge:
         self._private_mode: bool = False
         self._connection_address: Optional[str] = None
         self._connection_port: Optional[int] = None
+        self._owned_firefox_pid: Optional[int] = None
 
         self._handlers = {
             # Browser lifecycle
             "browser.launch":        self._launch,
             "browser.quit":          self._quit,
             "browser.status":        self._status,
+            "download.set_behavior": self._set_download_behavior,
             # Page management
             "page.navigate":         self._navigate,
             "page.new":              self._new_tab,
@@ -1057,33 +1305,21 @@ class RuyiBridge:
             opts.private_mode(True)
         if params.get("proxy"):
             opts.set_proxy(params["proxy"])
+        if not existing_only:
+            # Never inherit Windows-admin auto system-access; attach cannot add
+            # the flag after Firefox has started.
+            opts.allow_system_access(False)
+            if not params.get("privateMode"):
+                opts.set_argument("about:blank")
 
         profile_path, profile_mode = self._prepare_profile(params, existing_only)
         try:
             if profile_path is not None:
                 opts.set_profile(str(profile_path))
 
-            # Fingerprint — smart_fingerprint needs proxy info
             fp = params.get("fingerprint")
             if fp:
-                fp_kwargs = {}
-                if fp.get("proxyHost"):
-                    fp_kwargs["proxy_host"] = fp["proxyHost"]
-                if fp.get("proxyPort"):
-                    fp_kwargs["proxy_port"] = int(fp["proxyPort"])
-                if fp.get("proxyUser"):
-                    fp_kwargs["proxy_user"] = fp["proxyUser"]
-                if fp.get("proxyPwd"):
-                    fp_kwargs["proxy_pwd"] = fp["proxyPwd"]
-                if fp.get("requireCountry"):
-                    fp_kwargs["require_country"] = fp["requireCountry"]
-                if fp.get("manualGeo"):
-                    fp_kwargs["manual_geo"] = fp["manualGeo"]
-                # ruyiPage otherwise creates userdir_<timestamp>_<random> below
-                # os.getcwd(). Keep fingerprint files and profile data under the
-                # same controlled directory selected above.
-                if profile_path is not None:
-                    fp_kwargs["userdir"] = str(profile_path)
+                fp_kwargs = _coerce_fingerprint_kwargs(fp, profile_path)
                 self._fingerprint_ctx = opts.smart_fingerprint(**fp_kwargs)
 
             self.opts = opts
@@ -1096,9 +1332,15 @@ class RuyiBridge:
             self._profile_path = None
             raise
         self._attached_existing = existing_only
+        self._owned_firefox_pid = None
         browser = getattr(self.page, "_firefox", None) or getattr(
             self.page, "_browser", None
         )
+        if not existing_only:
+            process = getattr(browser, "_process", None)
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                self._owned_firefox_pid = pid
         connection = getattr(browser, "address", None) or getattr(
             browser, "_address", None
         )
@@ -1135,7 +1377,7 @@ class RuyiBridge:
 
         return {
             "pageIdx": 0,
-            "url": getattr(self.page, 'url', ''),
+            "url": _safe_url(getattr(self.page, 'url', ''))["url"],
             "title": getattr(self.page, 'title', ''),
             "pageCount": len(self.pages),
             "attached": existing_only,
@@ -1146,9 +1388,12 @@ class RuyiBridge:
         }
 
     def _quit(self, params: dict) -> dict:
+        attached = self._attached_existing
+        owned_pid = None if attached else self._owned_firefox_pid
+        owned_profile = None if attached else self._managed_profile
         if self.page:
             try:
-                if self._attached_existing:
+                if attached:
                     browser = getattr(self.page, "_firefox", None)
                     detach = getattr(browser, "_detach_on_exit", None)
                     if not callable(detach):
@@ -1193,9 +1438,16 @@ class RuyiBridge:
         self._private_mode = False
         self._connection_address = None
         self._connection_port = None
+        self._owned_firefox_pid = None
+        process_cleanup = None if attached else _reap_owned_firefox(owned_pid, owned_profile)
         cleanup = self._cleanup_managed_profile()
         self._profile_path = None
-        return {"profileCleanup": cleanup} if cleanup is not None else {}
+        result: dict[str, Any] = {}
+        if cleanup is not None:
+            result["profileCleanup"] = cleanup
+        if process_cleanup is not None:
+            result["processCleanup"] = process_cleanup
+        return result
 
     def _status(self, params: dict) -> dict:
         if not self.page:
@@ -1203,7 +1455,7 @@ class RuyiBridge:
         try:
             return {
                 "alive": True,
-                "url": getattr(self.page, 'url', ''),
+                "url": _safe_url(getattr(self.page, 'url', ''))["url"],
                 "title": getattr(self.page, 'title', ''),
                 "pageCount": len(self.pages),
                 "breakpointCount": len(self._breakpoints),
@@ -1221,6 +1473,59 @@ class RuyiBridge:
         except Exception:
             return {"alive": False}
 
+    def _set_download_behavior(self, params: dict) -> dict:
+        """Configure Firefox's native BiDi download handling for this session."""
+        behavior = str(params.get("behavior") or "").strip().lower()
+        if behavior in {"allow", "allowed"}:
+            raw_path = params.get("downloadPath")
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                raise ValueError("downloadPath is required when behavior is allow")
+            destination = Path(
+                _contained_output_path(raw_path, "downloadPath", kind="directory")
+            )
+            destination.mkdir(parents=True, exist_ok=True)
+            download_behavior = {
+                "type": "allowed",
+                "destinationFolder": str(destination),
+            }
+        elif behavior in {"deny", "denied"}:
+            destination = None
+            download_behavior = {"type": "denied"}
+        else:
+            raise ValueError("behavior must be allow or deny")
+
+        raw_user_contexts = params.get("userContexts")
+        if raw_user_contexts is None:
+            user_contexts = []
+        elif isinstance(raw_user_contexts, list):
+            user_contexts = [str(item).strip() for item in raw_user_contexts]
+        else:
+            raise ValueError("userContexts must be an array of Firefox container IDs")
+        if any(not item for item in user_contexts):
+            raise ValueError("userContexts must not contain empty IDs")
+
+        page = self._get_page(params.get("pageIdx", 0))
+        driver = self._attribute(
+            self._attribute(page, "_driver", None), "_browser_driver", None
+        )
+        run = self._attribute(driver, "run", None)
+        if not callable(run):
+            raise RuntimeError("Active ruyiPage target has no BiDi browser driver")
+
+        payload = {"downloadBehavior": download_behavior}
+        if user_contexts:
+            payload["userContexts"] = user_contexts
+        result = run("browser.setDownloadBehavior", payload)
+        response = {
+            "behavior": download_behavior["type"],
+            "userContextCount": len(user_contexts),
+        }
+        if destination is not None:
+            response["downloadPath"] = str(destination)
+        if result is not None:
+            response["result"] = _serialize(result)
+        return response
+
     # ------------------------------------------------------------------
     # Page management
     # ------------------------------------------------------------------
@@ -1230,7 +1535,7 @@ class RuyiBridge:
         timeout = params.get("timeout", 30)
         page.get(url, timeout=timeout)
         return {
-            "url": getattr(page, 'url', url),
+            "url": _safe_url(getattr(page, 'url', url))["url"],
             "title": getattr(page, 'title', ''),
         }
 
@@ -1293,7 +1598,7 @@ class RuyiBridge:
 
         result = {
             "pageIdx": idx,
-            "url": getattr(tab, 'url', url) if tab else url,
+            "url": _safe_url(getattr(tab, 'url', url) if tab else url)["url"],
         }
         if fingerprint_emulation is not None:
             result["fingerprintEmulation"] = _serialize(fingerprint_emulation)
@@ -1320,7 +1625,7 @@ class RuyiBridge:
         idx = params["pageIdx"]
         page = self._get_page(idx)
         # ruyipage auto-switches when using a tab object
-        return {"pageIdx": idx, "url": getattr(page, 'url', '')}
+        return {"pageIdx": idx, "url": _safe_url(getattr(page, 'url', ''))["url"]}
 
     def _list_tabs(self, params: dict) -> dict:
         tabs = []
@@ -1328,7 +1633,7 @@ class RuyiBridge:
             try:
                 tabs.append({
                     "pageIdx": idx,
-                    "url": getattr(page, 'url', ''),
+                    "url": _safe_url(getattr(page, 'url', ''))["url"],
                     "title": getattr(page, 'title', ''),
                 })
             except Exception:
@@ -1338,7 +1643,7 @@ class RuyiBridge:
     def _reload(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx"))
         page.refresh()
-        return {"url": getattr(page, 'url', '')}
+        return {"url": _safe_url(getattr(page, 'url', ''))["url"]}
 
     def _screenshot(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx"))
@@ -1346,13 +1651,15 @@ class RuyiBridge:
         full_page = params.get("fullPage", False)
 
         if file_path:
-            page.screenshot(file_path, full_page=full_page)
-            return {"filePath": file_path}
+            safe_path = _contained_output_path(file_path, "filePath", kind="file")
+            page.screenshot(safe_path, full_page=full_page)
+            return {"filePath": safe_path}
         else:
             # Return base64 screenshot
             import base64
             import tempfile
-            tmp = tempfile.mktemp(suffix=".png")
+            fd, tmp = tempfile.mkstemp(suffix=".png")
+            os.close(fd)
             try:
                 page.screenshot(tmp, full_page=full_page)
                 with open(tmp, "rb") as f:
@@ -1437,7 +1744,7 @@ class RuyiBridge:
     # Network
     # ------------------------------------------------------------------
     def _list_requests(self, params: dict) -> dict:
-        """Get recent network requests. Without capture, approximate via trace or JS."""
+        """List recent resource URLs via the page performance API. Not a JS/Python trace."""
         page = self._get_page(params.get("pageIdx", 0))
         try:
             # Try to get entries from the browser's performance API
@@ -1551,9 +1858,7 @@ class RuyiBridge:
         output_file = params.get("outputFile")
         if not isinstance(output_file, str) or not output_file.strip():
             raise ValueError("outputFile is required when resultMode is body")
-        if not os.path.isabs(output_file):
-            raise ValueError("outputFile must be an absolute path")
-        return os.path.abspath(output_file)
+        return _contained_output_path(output_file, "outputFile", kind="file")
 
     @staticmethod
     def _append_jsonl(output_file: str, records: list[dict]) -> None:
@@ -2002,10 +2307,18 @@ class RuyiBridge:
     def _set_proxy(self, params: dict) -> dict:
         """Note: proxy must be set BEFORE browser launch via browser.launch params.
         This is a no-op if browser is already running."""
+        try:
+            proxy_state = _safe_proxy(self._proxy_url)
+        except ValueError:
+            proxy_state = {"mode": "unknown", "credentials": "omitted"}
         return {
             "warning": "Proxy must be set at browser.launch time. "
-                       "Use the 'proxy' parameter in browser.launch.",
-            "proxy": params.get("proxyUrl", "not set"),
+                       "Use the 'proxy' parameter in browser.launch. For Cliproxy from a "
+                       "domestic machine, pass a verified loopback listener of a local chained "
+                       "sidecar, never a Cliproxy provider endpoint or credentials. The main Clash "
+                       "mixed listener (for example http://127.0.0.1:7897) is not a Cliproxy relay "
+                       "unless its dialer-proxy -> Cliproxy chain is explicitly configured and verified.",
+            "proxy": proxy_state,
         }
 
     def _set_geolocation(self, params: dict) -> dict:

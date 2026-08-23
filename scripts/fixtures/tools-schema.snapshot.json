@@ -159,7 +159,7 @@
             "type": "number"
           },
           "outputFile": {
-            "description": "resultMode=body 时必填的绝对 JSONL 文件路径；原始 body 只写该文件。",
+            "description": "resultMode=body 时必填的绝对 JSONL 文件路径（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）；原始 body 只写该文件。",
             "type": "string"
           },
           "pageIdx": {
@@ -442,7 +442,7 @@
       "name": "ruyi_emulate_useragent"
     },
     {
-      "description": "在浏览器页面中执行 JavaScript 函数并返回结果。可用于运行时采样、Hook 注入、读取页面状态。函数必须返回 JSON-safe 值。支持接收本地文件作为参数。",
+      "description": "在浏览器页面中执行 JavaScript 函数并返回 JSON-safe 结果。用于读 DOM、触发翻页或采集所需的最小页面脚本，不是源码调试器。",
       "inputSchema": {
         "properties": {
           "frameContextId": {
@@ -669,7 +669,7 @@
       "name": "ruyi_human_click"
     },
     {
-      "description": "执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。ruyiPage 1.2.56 会把按下到释放合并为单次 BiDi input.performActions，适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。",
+      "description": "执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。ruyiPage 会把按下到释放合并为单次 BiDi input.performActions，适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。",
       "inputSchema": {
         "properties": {
           "algorithm": {
@@ -801,7 +801,7 @@
       "name": "ruyi_human_input"
     },
     {
-      "description": "模拟人类鼠标移动到目标元素。支持 bezier 曲线和 windmouse 算法。需要反检测场景下的鼠标操作，这是 js-reverse-mcp 不具备的能力。",
+      "description": "模拟人类鼠标移动到目标元素。支持 bezier 曲线和 windmouse 算法。",
       "inputSchema": {
         "properties": {
           "algorithm": {
@@ -1000,7 +1000,7 @@
             "type": "number"
           },
           "outputFile": {
-            "description": "resultMode=body 时必填的绝对 JSONL 文件路径。",
+            "description": "resultMode=body 时必填的绝对 JSONL 文件路径（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）。",
             "type": "string"
           },
           "pageIdx": {
@@ -1175,7 +1175,7 @@
       "name": "ruyi_navigate_page"
     },
     {
-      "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。首次调用自动启动 Firefox 浏览器。",
+      "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。国内机器使用 Cliproxy 时，浏览器代理只能指向已验证的本机 Cliproxy chained sidecar listener，不能直连 provider endpoint。首次调用自动启动 Firefox 浏览器。",
       "inputSchema": {
         "properties": {
           "container": {
@@ -1184,22 +1184,74 @@
             "type": "boolean"
           },
           "fingerprint": {
-            "description": "智能指纹配置（smart_fingerprint）",
+            "description": "智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。",
             "properties": {
+              "firefoxVersion": {
+                "description": "生成 UA 用的 Firefox 主版本；省略则读取 RUYI_FIREFOX_PATH 可执行文件版本",
+                "type": "number"
+              },
+              "geolocationAccuracy": {
+                "description": "定位精度（米），默认 15000",
+                "type": "number"
+              },
+              "geolocationAltitude": {
+                "description": "可选海拔",
+                "type": "number"
+              },
+              "geolocationEnabled": {
+                "description": "是否写入 fpfile/BiDi 地理位置，默认 true",
+                "type": "boolean"
+              },
+              "geolocationHeading": {
+                "description": "可选朝向 0-360",
+                "type": "number"
+              },
+              "geolocationLatitude": {
+                "description": "覆盖探测到的纬度",
+                "type": "number"
+              },
+              "geolocationLongitude": {
+                "description": "覆盖探测到的经度",
+                "type": "number"
+              },
+              "geolocationPermission": {
+                "description": "prompt / granted / denied，默认 granted",
+                "type": "string"
+              },
+              "geolocationSpeed": {
+                "description": "可选速度",
+                "type": "number"
+              },
+              "manualGeo": {
+                "description": "在线 Geo 全部失败时的显式回退（ip/country_code/timezone/latitude/longitude）",
+                "type": "object"
+              },
               "proxyHost": {
+                "description": "浏览器第一跳 host；Cliproxy 场景填已验证的本机 chained sidecar host，不填 provider host。",
                 "type": "string"
               },
               "proxyPort": {
+                "description": "浏览器第一跳端口；Cliproxy 场景填 sidecar listener port，主 Clash 7897 不等于 Cliproxy relay。",
                 "type": "number"
               },
               "proxyPwd": {
+                "description": "第一跳认证；不得填入 Cliproxy provider 密码。",
                 "type": "string"
               },
               "proxyUser": {
+                "description": "第一跳认证；不得填入 Cliproxy provider 账号。",
                 "type": "string"
               },
               "requireCountry": {
                 "description": "要求代理出口国家，如 US",
+                "type": "string"
+              },
+              "webrtcLocalIpv4": {
+                "description": "可选 WebRTC 本地 IPv4",
+                "type": "string"
+              },
+              "webrtcPublicIpv4": {
+                "description": "可选 WebRTC 公网 IPv4",
                 "type": "string"
               }
             },
@@ -1220,7 +1272,7 @@
             "type": "string"
           },
           "proxy": {
-            "description": "代理地址，如 http://127.0.0.1:7890 或 socks5://host:port",
+            "description": "浏览器第一跳代理。Cliproxy 场景仅填写已验证的本机 chained sidecar loopback listener，例如 http://127.0.0.1:<sidecar-port>；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy。不得填写 *.cliproxy.io:3010 或 provider 账密 URL。",
             "type": "string"
           },
           "timeout": {
@@ -1265,7 +1317,7 @@
       "inputSchema": {
         "properties": {
           "filePath": {
-            "description": "本地保存路径（绝对路径）",
+            "description": "本地保存路径（绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）",
             "type": "string"
           },
           "pageIdx": {
@@ -1323,7 +1375,7 @@
       "name": "ruyi_search_in_sources"
     },
     {
-      "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。",
+      "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。",
       "inputSchema": {
         "oneOf": [
           {
@@ -1374,7 +1426,7 @@
       "name": "ruyi_select_page"
     },
     {
-      "description": "设置软断点（通过 preload script 注入 debugger 或 Proxy 包装）。支持 XHR/Fetch URL 断点和函数名匹配。⚠ 当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。",
+      "description": "设置软断点（通过 preload script 注入 debugger 或 Proxy 包装）。支持 XHR/Fetch URL 断点和函数名匹配。默认自动化 toolset 不暴露此工具；需要时设置 RUYI_MCP_TOOLSET=all。当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。",
       "inputSchema": {
         "properties": {
           "condition": {
@@ -1452,6 +1504,43 @@
       "name": "ruyi_set_cookies"
     },
     {
+      "description": "通过 Firefox WebDriver BiDi 配置原生下载策略。allow 会将下载直接保存到绝对目录，无需 Firefox 保存确认；deny 会阻止下载。只控制本地浏览器，不影响站点授权或访问控制。",
+      "inputSchema": {
+        "properties": {
+          "behavior": {
+            "description": "下载策略",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "type": "string"
+          },
+          "downloadPath": {
+            "description": "allow 时必填的本地绝对下载目录（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）；Bridge 会创建该目录。",
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "用于定位当前 Firefox 会话的标签页索引，默认当前活跃页",
+            "type": "number"
+          },
+          "userContexts": {
+            "description": "可选 Firefox container user context ID 列表；省略则作用于当前浏览器全部 context。",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "behavior"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_set_download_behavior"
+    },
+    {
       "description": "为所有后续请求附加额外的 HTTP Headers。用于注入认证 token、自定义 UA 等。",
       "inputSchema": {
         "properties": {
@@ -1508,7 +1597,7 @@
             "properties": {
               "angle": {
                 "default": 0,
-                "description": "已弃用：ruyiPage 1.2.56 不发送 angle；Bridge 会忽略并返回明确 warning",
+                "description": "已弃用：ruyiPage 不发送 angle；Bridge 会忽略并返回明确 warning",
                 "type": "number"
               },
               "type": {
@@ -1602,11 +1691,11 @@
       "name": "ruyi_set_fingerprint"
     },
     {
-      "description": "⚠ 代理必须在 ruyi_new_page 时通过 proxy 参数设置。浏览器启动后无法切换代理。此工具仅返回说明和当前代理状态。如需切换代理，请先 ruyi_browser_quit，再用新代理调用 ruyi_new_page。",
+      "description": "⚠ 代理必须在 ruyi_new_page 时通过 proxy 参数设置。浏览器启动后无法切换代理。此工具仅返回说明和当前代理状态。国内机器使用 Cliproxy 时只传已验证的本机 chained sidecar listener；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy，且不得直填 Cliproxy endpoint 或账密 URL。如需切换代理，请先 ruyi_browser_quit，再用新代理调用 ruyi_new_page。",
       "inputSchema": {
         "properties": {
           "proxyUrl": {
-            "description": "代理 URL（仅供参考，不会实际切换）",
+            "description": "代理 URL（仅供参考，不会实际切换；Cliproxy 场景应为已验证的本机 chained sidecar listener，不能是 provider endpoint）",
             "type": "string"
           }
         },
@@ -1620,7 +1709,7 @@
       "inputSchema": {
         "properties": {
           "filePath": {
-            "description": "保存路径（PNG）。不提供则返回 base64。",
+            "description": "保存路径（PNG，绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）。不提供则返回 base64。",
             "type": "string"
           },
           "fullPage": {

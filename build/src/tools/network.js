@@ -1,7 +1,8 @@
 /**
- * Network forensics tools: list_network_requests, capture_start, capture_stop, capture_wait.
+ * Network inspection tools: list_network_requests, capture_start, capture_stop, capture_wait.
  */
 import { getPageIdx } from './types.js';
+import { declaredWriteRoot, resolveSafeOutputPath } from './security.js';
 function jsonResult(data) {
     return JSON.stringify(data, null, 2);
 }
@@ -173,7 +174,7 @@ export function registerNetworkTools(register, ctx) {
                     },
                     outputFile: {
                         type: 'string',
-                        description: 'resultMode=body 时必填的绝对 JSONL 文件路径；原始 body 只写该文件。',
+                        description: 'resultMode=body 时必填的绝对 JSONL 文件路径（拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）；原始 body 只写该文件。',
                     },
                     maxBodyChars: {
                         type: 'number',
@@ -203,6 +204,14 @@ export function registerNetworkTools(register, ctx) {
             if (resultMode === 'body' && !outputFile) {
                 throw new Error('outputFile is required when resultMode=body');
             }
+            let safeOutputFile;
+            if (outputFile !== undefined) {
+                const pathCheck = resolveSafeOutputPath(outputFile, 'outputFile', 'file', declaredWriteRoot(args));
+                if (!pathCheck.ok) {
+                    throw new Error(`${pathCheck.errorCode}: ${pathCheck.errorMessage}`);
+                }
+                safeOutputFile = pathCheck.resolved;
+            }
             const deadline = Date.now() + timeout * 1000;
             const packets = [];
             let resolvedResultMode = resultMode;
@@ -219,7 +228,7 @@ export function registerNetworkTools(register, ctx) {
                     count: 1,
                     resultMode,
                     bodyReadTimeout,
-                    outputFile,
+                    outputFile: safeOutputFile,
                     maxBodyChars,
                 });
                 resolvedResultMode = result.resultMode ?? resolvedResultMode;

@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import test from 'node:test';
+
+process.env.RUYI_MCP_TOOLSET = 'all';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { cleanupServer, createServer } from '../build/src/server.js';
@@ -72,6 +75,28 @@ test('createServer isolates tool handlers and cleanup per instance', async () =>
     assert.equal(JSON.parse(statusB.content[0].text).bridge, 'B');
     assert.equal(bridgeA.calls.filter((call) => call.method === 'browser.status').length, 1);
     assert.equal(bridgeB.calls.filter((call) => call.method === 'browser.status').length, 1);
+
+    // The server contract runs on both Windows and Linux. Use a native
+    // absolute path rather than a Windows-only literal.
+    const downloadPath = resolve('downloads');
+    const configuredDownload = await clientA.callTool({
+      name: 'ruyi_set_download_behavior',
+      arguments: {
+        behavior: 'allow',
+        downloadPath,
+        userContexts: ['container-a'],
+      },
+    });
+    assert.notEqual(configuredDownload.isError, true);
+    assert.deepEqual(bridgeA.calls.at(-1), {
+      method: 'download.set_behavior',
+      params: {
+        pageIdx: 0,
+        behavior: 'allow',
+        downloadPath,
+        userContexts: ['container-a'],
+      },
+    });
   } finally {
     await Promise.allSettled([clientA.close(), clientB.close()]);
     await Promise.all([

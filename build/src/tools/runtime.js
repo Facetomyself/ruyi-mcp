@@ -12,9 +12,8 @@ export function registerRuntimeTools(register, ctx) {
     register({
         tool: {
             name: 'ruyi_evaluate_script',
-            description: '在浏览器页面中执行 JavaScript 函数并返回结果。' +
-                '可用于运行时采样、Hook 注入、读取页面状态。' +
-                '函数必须返回 JSON-safe 值。支持接收本地文件作为参数。',
+            description: '在浏览器页面中执行 JavaScript 函数并返回 JSON-safe 结果。' +
+                '用于读 DOM、触发翻页或采集所需的最小页面脚本，不是源码调试器。',
             inputSchema: {
                 type: 'object',
                 properties: {

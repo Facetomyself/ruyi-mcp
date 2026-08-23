@@ -1,6 +1,6 @@
 /**
  * Human behavior simulation tools: human_move, human_click, human_drag, human_scroll, human_input.
- * ruyi unique — no equivalent in js-reverse-mcp.
+ * Humanized pointer/keyboard actions for anti-detect automation.
  */
 import { RuyiContext } from '../ruyi-context.js';
 import { ToolRegistrar } from './types.js';

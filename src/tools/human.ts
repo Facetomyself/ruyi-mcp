@@ -1,6 +1,6 @@
 /**
  * Human behavior simulation tools: human_move, human_click, human_drag, human_scroll, human_input.
- * ruyi unique — no equivalent in js-reverse-mcp.
+ * Humanized pointer/keyboard actions for anti-detect automation.
  */
 
 import { RuyiContext } from '../ruyi-context.js';
@@ -20,8 +20,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
       name: 'ruyi_human_move',
       description:
         '模拟人类鼠标移动到目标元素。' +
-        '支持 bezier 曲线和 windmouse 算法。' +
-        '需要反检测场景下的鼠标操作，这是 js-reverse-mcp 不具备的能力。',
+        '支持 bezier 曲线和 windmouse 算法。',
       inputSchema: {
         type: 'object',
         properties: {
@@ -68,7 +67,7 @@ export function registerHumanTools(register: ToolRegistrar, ctx: RuyiContext): v
       name: 'ruyi_human_drag',
       description:
         '执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。' +
-        'ruyiPage 1.2.56 会把按下到释放合并为单次 BiDi input.performActions，' +
+        'ruyiPage 会把按下到释放合并为单次 BiDi input.performActions，' +
         '适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。',
       inputSchema: {
         type: 'object',

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in offline Firefox 151 runtime gate for the ruyiPage 1.2.56 contract."""
+"""Opt-in Firefox 151 runtime gate for the ruyiPage 1.2.62 contract on 151-proxy."""
 
 from __future__ import annotations
 

@@ -4,6 +4,7 @@
 import { getPageIdx } from './types.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { declaredWriteRoot, resolveSafeOutputPath } from './security.js';
 function jsonResult(data) {
     return JSON.stringify(data, null, 2);
 }
@@ -141,7 +142,10 @@ export function registerScriptTools(register, ctx) {
                 type: 'object',
                 properties: {
                     url: { type: 'string', description: '脚本 URL' },
-                    filePath: { type: 'string', description: '本地保存路径（绝对路径）' },
+                    filePath: {
+                        type: 'string',
+                        description: '本地保存路径（绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）',
+                    },
                     pageIdx: { type: 'number', default: 0 },
                 },
                 required: ['url', 'filePath'],
@@ -151,6 +155,24 @@ export function registerScriptTools(register, ctx) {
             const pageIdx = getPageIdx(args, ctx);
             const url = args.url;
             const filePath = args.filePath;
+            // Containment check before any browser fetch or filesystem write.
+            const pathCheck = resolveSafeOutputPath(filePath, 'filePath', 'file', declaredWriteRoot(args));
+            if (!pathCheck.ok) {
+                return {
+                    content: [{
+                            type: 'text',
+                            text: jsonResult({
+                                error: {
+                                    code: pathCheck.errorCode,
+                                    message: pathCheck.errorMessage,
+                                    field: 'filePath',
+                                },
+                            }),
+                        }],
+                    isError: true,
+                };
+            }
+            const safeFilePath = pathCheck.resolved;
             const script = `async () => {
         const requested = ${JSON.stringify(url)};
         const scripts = Array.from(document.querySelectorAll('script[src]')).map(s => s.src);
@@ -175,12 +197,12 @@ export function registerScriptTools(register, ctx) {
             });
             const payload = result.result;
             if (payload?.ok === true && typeof payload.source === 'string') {
-                mkdirSync(dirname(filePath), { recursive: true });
-                writeFileSync(filePath, payload.source, 'utf-8');
+                mkdirSync(dirname(safeFilePath), { recursive: true });
+                writeFileSync(safeFilePath, payload.source, 'utf-8');
                 return {
                     content: [{
                             type: 'text',
-                            text: jsonResult({ savedTo: filePath, url: payload.url, size: payload.source.length }),
+                            text: jsonResult({ savedTo: safeFilePath, url: payload.url, size: payload.source.length }),
                         }],
                 };
             }
