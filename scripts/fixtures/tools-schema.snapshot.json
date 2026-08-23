@@ -442,7 +442,7 @@
       "name": "ruyi_emulate_useragent"
     },
     {
-      "description": "在浏览器页面中执行 JavaScript 函数并返回结果。可用于运行时采样、Hook 注入、读取页面状态。函数必须返回 JSON-safe 值。支持接收本地文件作为参数。",
+      "description": "在浏览器页面中执行 JavaScript 函数并返回 JSON-safe 结果。用于读 DOM、触发翻页或采集所需的最小页面脚本，不是源码调试器。",
       "inputSchema": {
         "properties": {
           "frameContextId": {
@@ -669,7 +669,7 @@
       "name": "ruyi_human_click"
     },
     {
-      "description": "执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。ruyiPage 1.2.56 会把按下到释放合并为单次 BiDi input.performActions，适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。",
+      "description": "执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。ruyiPage 会把按下到释放合并为单次 BiDi input.performActions，适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。",
       "inputSchema": {
         "properties": {
           "algorithm": {
@@ -801,7 +801,7 @@
       "name": "ruyi_human_input"
     },
     {
-      "description": "模拟人类鼠标移动到目标元素。支持 bezier 曲线和 windmouse 算法。需要反检测场景下的鼠标操作，这是 js-reverse-mcp 不具备的能力。",
+      "description": "模拟人类鼠标移动到目标元素。支持 bezier 曲线和 windmouse 算法。",
       "inputSchema": {
         "properties": {
           "algorithm": {
@@ -1184,8 +1184,48 @@
             "type": "boolean"
           },
           "fingerprint": {
-            "description": "智能指纹配置（smart_fingerprint）",
+            "description": "智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。",
             "properties": {
+              "firefoxVersion": {
+                "description": "生成 UA 用的 Firefox 主版本；省略则读取 RUYI_FIREFOX_PATH 可执行文件版本",
+                "type": "number"
+              },
+              "geolocationAccuracy": {
+                "description": "定位精度（米），默认 15000",
+                "type": "number"
+              },
+              "geolocationAltitude": {
+                "description": "可选海拔",
+                "type": "number"
+              },
+              "geolocationEnabled": {
+                "description": "是否写入 fpfile/BiDi 地理位置，默认 true",
+                "type": "boolean"
+              },
+              "geolocationHeading": {
+                "description": "可选朝向 0-360",
+                "type": "number"
+              },
+              "geolocationLatitude": {
+                "description": "覆盖探测到的纬度",
+                "type": "number"
+              },
+              "geolocationLongitude": {
+                "description": "覆盖探测到的经度",
+                "type": "number"
+              },
+              "geolocationPermission": {
+                "description": "prompt / granted / denied，默认 granted",
+                "type": "string"
+              },
+              "geolocationSpeed": {
+                "description": "可选速度",
+                "type": "number"
+              },
+              "manualGeo": {
+                "description": "在线 Geo 全部失败时的显式回退（ip/country_code/timezone/latitude/longitude）",
+                "type": "object"
+              },
               "proxyHost": {
                 "description": "浏览器第一跳 host；Cliproxy 场景填已验证的本机 chained sidecar host，不填 provider host。",
                 "type": "string"
@@ -1204,6 +1244,14 @@
               },
               "requireCountry": {
                 "description": "要求代理出口国家，如 US",
+                "type": "string"
+              },
+              "webrtcLocalIpv4": {
+                "description": "可选 WebRTC 本地 IPv4",
+                "type": "string"
+              },
+              "webrtcPublicIpv4": {
+                "description": "可选 WebRTC 公网 IPv4",
                 "type": "string"
               }
             },
@@ -1327,7 +1375,7 @@
       "name": "ruyi_search_in_sources"
     },
     {
-      "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。",
+      "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。",
       "inputSchema": {
         "oneOf": [
           {
@@ -1378,7 +1426,7 @@
       "name": "ruyi_select_page"
     },
     {
-      "description": "设置软断点（通过 preload script 注入 debugger 或 Proxy 包装）。支持 XHR/Fetch URL 断点和函数名匹配。⚠ 当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。",
+      "description": "设置软断点（通过 preload script 注入 debugger 或 Proxy 包装）。支持 XHR/Fetch URL 断点和函数名匹配。默认自动化 toolset 不暴露此工具；需要时设置 RUYI_MCP_TOOLSET=all。当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。",
       "inputSchema": {
         "properties": {
           "condition": {
@@ -1549,7 +1597,7 @@
             "properties": {
               "angle": {
                 "default": 0,
-                "description": "已弃用：ruyiPage 1.2.56 不发送 angle；Bridge 会忽略并返回明确 warning",
+                "description": "已弃用：ruyiPage 不发送 angle；Bridge 会忽略并返回明确 warning",
                 "type": "number"
               },
               "type": {

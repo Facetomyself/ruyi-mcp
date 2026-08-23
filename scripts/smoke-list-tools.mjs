@@ -44,22 +44,42 @@ async function updateSnapshotAtomically(snapshotPath, text) {
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const snapshotPath = resolve(root, 'scripts/fixtures/tools-schema.snapshot.json');
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [resolve(root, 'build/src/index.js')],
-  cwd: root,
-  stderr: 'pipe',
-});
-let serverStderr = '';
-transport.stderr?.setEncoding('utf8');
-transport.stderr?.on('data', (chunk) => {
-  serverStderr += chunk;
-});
-const client = new Client({ name: 'ruyi-mcp-smoke', version: '1.0.0' }, { capabilities: {} });
+const EXPERT_ONLY_TOOLS = [
+  'ruyi_break_on_xhr',
+  'ruyi_get_script_source',
+  'ruyi_list_breakpoints',
+  'ruyi_list_preload_scripts',
+  'ruyi_list_scripts',
+  'ruyi_remove_breakpoint',
+  'ruyi_save_script_source',
+  'ruyi_search_in_sources',
+  'ruyi_set_breakpoint_on_text',
+];
 
-try {
-  await client.connect(transport);
-  const result = await client.listTools();
+async function listTools(toolset) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [resolve(root, 'build/src/index.js')],
+    cwd: root,
+    stderr: 'pipe',
+    env: { ...process.env, RUYI_MCP_TOOLSET: toolset },
+  });
+  let serverStderr = '';
+  transport.stderr?.setEncoding('utf8');
+  transport.stderr?.on('data', (chunk) => {
+    serverStderr += chunk;
+  });
+  const client = new Client({ name: 'ruyi-mcp-smoke', version: '1.0.0' }, { capabilities: {} });
+  try {
+    await client.connect(transport);
+    const result = await client.listTools();
+    return { result, serverStderr };
+  } finally {
+    await client.close();
+  }
+}
+
+function assertControlPlaneLogs(serverStderr) {
   assert.match(
     serverStderr,
     /\[ruyi-mcp\] Evidence handoff: browser-session-handoff\.v1/,
@@ -70,91 +90,124 @@ try {
     /\[ruyi-mcp\] Trace:/,
     'control-plane startup log must not claim Trace capability'
   );
-  const retiredTraceTools = new Set([
-    'ruyi_trace_start',
-    'ruyi_trace_stop',
-    'ruyi_trace_get_results',
-  ]);
-  const unexpectedTraceTool = result.tools.find((tool) => retiredTraceTools.has(tool.name));
-  if (unexpectedTraceTool) {
-    throw new Error(`${unexpectedTraceTool.name} must remain retired from the control plane`);
-  }
-  const humanDrag = result.tools.find((tool) => tool.name === 'ruyi_human_drag');
-  if (!humanDrag) {
-    throw new Error('ruyi_human_drag is not registered');
-  }
-  const fingerprint = result.tools.find((tool) => tool.name === 'ruyi_set_fingerprint');
-  if (!fingerprint?.inputSchema?.properties?.windowSize) {
-    throw new Error('ruyi_set_fingerprint.windowSize is not exposed');
-  }
-  if (!fingerprint?.inputSchema?.properties?.screenSize) {
-    throw new Error('ruyi_set_fingerprint.screenSize is not exposed');
-  }
-  if (!fingerprint?.inputSchema?.properties?.viewport?.properties?.devicePixelRatio) {
-    throw new Error('ruyi_set_fingerprint.viewport.devicePixelRatio is not exposed');
-  }
-  const selectFrame = result.tools.find((tool) => tool.name === 'ruyi_select_frame');
-  if (!selectFrame?.inputSchema?.properties?.selector) {
-    throw new Error('ruyi_select_frame.selector is not exposed');
-  }
-  const exportSession = result.tools.find((tool) => tool.name === 'ruyi_export_session');
-  const exportRequired = exportSession?.inputSchema?.required ?? [];
-  if (!exportRequired.includes('caseId') || !exportRequired.includes('workspaceRoot')) {
-    throw new Error('ruyi_export_session must require canonical caseId and workspaceRoot inputs');
-  }
-  if (exportSession?.inputSchema?.properties?.outputFile) {
-    throw new Error('ruyi_export_session legacy outputFile contract must remain retired');
-  }
-  if (!Array.isArray(selectFrame.inputSchema.oneOf) || selectFrame.inputSchema.oneOf.length !== 2) {
-    throw new Error('ruyi_select_frame contextId/selector exclusivity is not exposed');
-  }
-  const captureStop = result.tools.find((tool) => tool.name === 'ruyi_capture_stop');
-  const cleanupTimeout = captureStop?.inputSchema?.properties?.cleanupTimeout;
-  if (!cleanupTimeout || cleanupTimeout.minimum !== 0.1 || cleanupTimeout.maximum !== 30) {
-    throw new Error('ruyi_capture_stop.cleanupTimeout bounds are not exposed');
-  }
+}
 
-  const names = result.tools.map((tool) => tool.name);
-  if (new Set(names).size !== names.length) {
-    throw new Error('tools/list contains duplicate tool names');
+const retiredTraceTools = new Set([
+  'ruyi_trace_start',
+  'ruyi_trace_stop',
+  'ruyi_trace_get_results',
+]);
+
+const automation = await listTools('automation');
+assertControlPlaneLogs(automation.serverStderr);
+assert.match(automation.serverStderr, /\[ruyi-mcp\] Toolset: automation/);
+const automationNames = automation.result.tools.map((tool) => tool.name);
+if (new Set(automationNames).size !== automationNames.length) {
+  throw new Error('automation tools/list contains duplicate tool names');
+}
+for (const name of EXPERT_ONLY_TOOLS) {
+  if (automationNames.includes(name)) {
+    throw new Error(`${name} must stay off the default automation toolset`);
   }
+}
+for (const required of ['ruyi_new_page', 'ruyi_human_click', 'ruyi_export_session', 'ruyi_browser_quit']) {
+  if (!automationNames.includes(required)) {
+    throw new Error(`${required} must remain on the automation toolset`);
+  }
+}
 
-  const snapshot = canonicalize({
-    snapshotVersion: 1,
-    tools: [...result.tools].sort((left, right) => compareAscii(left.name, right.name)),
-  });
-  const snapshotText = serializeSnapshot(snapshot);
+const listed = await listTools('all');
+assertControlPlaneLogs(listed.serverStderr);
+assert.match(listed.serverStderr, /\[ruyi-mcp\] Toolset: all/);
+const result = listed.result;
+const unexpectedTraceTool = result.tools.find((tool) => retiredTraceTools.has(tool.name));
+if (unexpectedTraceTool) {
+  throw new Error(`${unexpectedTraceTool.name} must remain retired from the control plane`);
+}
+const humanDrag = result.tools.find((tool) => tool.name === 'ruyi_human_drag');
+if (!humanDrag) {
+  throw new Error('ruyi_human_drag is not registered');
+}
+const fingerprint = result.tools.find((tool) => tool.name === 'ruyi_set_fingerprint');
+if (!fingerprint?.inputSchema?.properties?.windowSize) {
+  throw new Error('ruyi_set_fingerprint.windowSize is not exposed');
+}
+if (!fingerprint?.inputSchema?.properties?.screenSize) {
+  throw new Error('ruyi_set_fingerprint.screenSize is not exposed');
+}
+if (!fingerprint?.inputSchema?.properties?.viewport?.properties?.devicePixelRatio) {
+  throw new Error('ruyi_set_fingerprint.viewport.devicePixelRatio is not exposed');
+}
+const newPage = result.tools.find((tool) => tool.name === 'ruyi_new_page');
+if (!newPage?.inputSchema?.properties?.fingerprint?.properties?.firefoxVersion) {
+  throw new Error('ruyi_new_page.fingerprint.firefoxVersion is not exposed');
+}
+const selectFrame = result.tools.find((tool) => tool.name === 'ruyi_select_frame');
+if (!selectFrame?.inputSchema?.properties?.selector) {
+  throw new Error('ruyi_select_frame.selector is not exposed');
+}
+const exportSession = result.tools.find((tool) => tool.name === 'ruyi_export_session');
+const exportRequired = exportSession?.inputSchema?.required ?? [];
+if (!exportRequired.includes('caseId') || !exportRequired.includes('workspaceRoot')) {
+  throw new Error('ruyi_export_session must require canonical caseId and workspaceRoot inputs');
+}
+if (exportSession?.inputSchema?.properties?.outputFile) {
+  throw new Error('ruyi_export_session legacy outputFile contract must remain retired');
+}
+if (!Array.isArray(selectFrame.inputSchema.oneOf) || selectFrame.inputSchema.oneOf.length !== 2) {
+  throw new Error('ruyi_select_frame contextId/selector exclusivity is not exposed');
+}
+const captureStop = result.tools.find((tool) => tool.name === 'ruyi_capture_stop');
+const cleanupTimeout = captureStop?.inputSchema?.properties?.cleanupTimeout;
+if (!cleanupTimeout || cleanupTimeout.minimum !== 0.1 || cleanupTimeout.maximum !== 30) {
+  throw new Error('ruyi_capture_stop.cleanupTimeout bounds are not exposed');
+}
 
-  if (updateSnapshot) {
-    await updateSnapshotAtomically(snapshotPath, snapshotText);
-    console.log(`ruyi-mcp schema snapshot updated: ${snapshotPath}`);
-  } else {
-    let expectedText;
-    try {
-      expectedText = await readFile(snapshotPath, 'utf8');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Unable to read tool schema snapshot (${message}). `
-          + 'Run npm run snapshot:tools to create it explicitly.'
-      );
-    }
+const names = result.tools.map((tool) => tool.name);
+if (new Set(names).size !== names.length) {
+  throw new Error('tools/list contains duplicate tool names');
+}
+for (const name of EXPERT_ONLY_TOOLS) {
+  if (!names.includes(name)) {
+    throw new Error(`${name} must remain available in RUYI_MCP_TOOLSET=all`);
+  }
+}
 
-    const expected = JSON.parse(expectedText);
-    const canonicalExpectedText = serializeSnapshot(canonicalize(expected));
-    if (expectedText !== canonicalExpectedText) {
-      throw new Error(
-        'Tool schema snapshot is not canonical. Run npm run snapshot:tools to rewrite it explicitly.'
-      );
-    }
-    assert.deepStrictEqual(
-      snapshot,
-      expected,
-      'Tool schema snapshot changed. Review the contract and run npm run snapshot:tools explicitly.'
+const snapshot = canonicalize({
+  snapshotVersion: 1,
+  tools: [...result.tools].sort((left, right) => compareAscii(left.name, right.name)),
+});
+const snapshotText = serializeSnapshot(snapshot);
+
+if (updateSnapshot) {
+  await updateSnapshotAtomically(snapshotPath, snapshotText);
+  console.log(`ruyi-mcp schema snapshot updated: ${snapshotPath}`);
+} else {
+  let expectedText;
+  try {
+    expectedText = await readFile(snapshotPath, 'utf8');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Unable to read tool schema snapshot (${message}). `
+        + 'Run npm run snapshot:tools to create it explicitly.'
     );
   }
 
-  console.log(`ruyi-mcp smoke OK: ${result.tools.length} tools`);
-} finally {
-  await client.close();
+  const expected = JSON.parse(expectedText);
+  const canonicalExpectedText = serializeSnapshot(canonicalize(expected));
+  if (expectedText !== canonicalExpectedText) {
+    throw new Error(
+      'Tool schema snapshot is not canonical. Run npm run snapshot:tools to rewrite it explicitly.'
+    );
+  }
+  assert.deepStrictEqual(
+    snapshot,
+    expected,
+    'Tool schema snapshot changed. Review the contract and run npm run snapshot:tools explicitly.'
+  );
 }
+
+console.log(
+  `ruyi-mcp smoke OK: automation ${automation.result.tools.length} tools, all ${result.tools.length} tools`
+);

@@ -35,7 +35,7 @@ from ruyipage._units.actions import Actions
 from ruyipage.errors import BrowserConnectError
 
 
-EXPECTED_RUYIPAGE_VERSION = "1.2.56"
+EXPECTED_RUYIPAGE_VERSION = "1.2.62"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "bridge" / "ruyi_bridge.py"
 REQUIREMENTS_PATH = REPO_ROOT / "requirements.txt"
@@ -91,6 +91,8 @@ class FakeLaunchOptions:
         self.close_on_exit_value = True
         self.profile = None
         self.fingerprint_kwargs = None
+        self.system_access = None
+        self.arguments: list[str] = []
         FakeLaunchOptions.instances.append(self)
 
     def set_browser_path(self, path):
@@ -113,8 +115,24 @@ class FakeLaunchOptions:
         self.close_on_exit_value = bool(enabled)
         return self
 
+    def headless(self, enabled=True):
+        self.headless_value = bool(enabled)
+        return self
+
+    def private_mode(self, enabled=True):
+        self.private_mode_value = bool(enabled)
+        return self
+
     def set_profile(self, profile):
         self.profile = profile
+        return self
+
+    def allow_system_access(self, on_off=True):
+        self.system_access = bool(on_off)
+        return self
+
+    def set_argument(self, arg, value=None):
+        self.arguments.append(arg if value is None else f"{arg}={value}")
         return self
 
     def smart_fingerprint(self, **kwargs):
@@ -1132,6 +1150,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     FakeLaunchOptions.instances[-1].fingerprint_kwargs["userdir"],
                     str(profile),
                 )
+                self.assertIs(FakeLaunchOptions.instances[-1].system_access, False)
+                self.assertIn("about:blank", FakeLaunchOptions.instances[-1].arguments)
 
                 quit_response = bridge.handle(
                     {"id": 12, "method": "browser.quit", "params": {}}
@@ -1143,6 +1163,106 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 {"attempted": True, "removed": True},
             )
             self.assertFalse(profile.exists())
+
+    def test_owned_launch_disables_system_access_and_skips_blank_in_private(self):
+        FakeLaunchOptions.instances = []
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = Path(tmp) / "profiles"
+            with (
+                patch.dict(
+                    BRIDGE_MODULE.os.environ,
+                    {"RUYI_MCP_PROFILE_ROOT": str(profile_root)},
+                    clear=False,
+                ),
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+            ):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                launch = bridge.handle(
+                    {
+                        "id": 21,
+                        "method": "browser.launch",
+                        "params": {
+                            "browserPath": "/contract/fake-firefox",
+                            "privateMode": True,
+                            "fingerprint": {
+                                "requireCountry": "US",
+                                "firefoxVersion": 151,
+                                "geolocationLatitude": 34.05,
+                                "geolocationLongitude": -118.24,
+                            },
+                        },
+                    }
+                )
+                self.assertNotIn("error", launch)
+                options = FakeLaunchOptions.instances[-1]
+                self.assertIs(options.system_access, False)
+                self.assertNotIn("about:blank", options.arguments)
+                self.assertEqual(options.fingerprint_kwargs["firefox_version"], 151)
+                self.assertEqual(options.fingerprint_kwargs["geolocation_latitude"], 34.05)
+                self.assertEqual(options.fingerprint_kwargs["geolocation_longitude"], -118.24)
+                bridge.handle({"id": 22, "method": "browser.quit", "params": {}})
+
+    def test_quit_reaps_owned_firefox_pid_without_touching_attach(self):
+        class FakeLaunchPageWithPid(FakeLaunchPage):
+            def __init__(self, options):
+                super().__init__(options)
+                self._firefox = SimpleNamespace(_process=SimpleNamespace(pid=4242))
+
+        FakeLaunchOptions.instances = []
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_root = Path(tmp) / "profiles"
+            with (
+                patch.dict(
+                    BRIDGE_MODULE.os.environ,
+                    {"RUYI_MCP_PROFILE_ROOT": str(profile_root)},
+                    clear=False,
+                ),
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPageWithPid),
+                patch.object(BRIDGE_MODULE, "_pid_is_alive", side_effect=[True, False]),
+                patch.object(BRIDGE_MODULE, "_kill_process_tree") as kill,
+                patch.object(BRIDGE_MODULE, "_firefox_pids_using_profile", return_value=[]),
+            ):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                launch = bridge.handle(
+                    {
+                        "id": 31,
+                        "method": "browser.launch",
+                        "params": {"browserPath": "/contract/fake-firefox"},
+                    }
+                )
+                self.assertNotIn("error", launch)
+                quit_response = bridge.handle(
+                    {"id": 32, "method": "browser.quit", "params": {}}
+                )
+
+        self.assertNotIn("error", quit_response)
+        kill.assert_called_once_with(4242)
+        self.assertEqual(quit_response["result"]["processCleanup"]["killed"], [4242])
+
+        with (
+            patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+            patch.object(BRIDGE_MODULE, "FirefoxPage", FakeAttachPage),
+            patch.object(BRIDGE_MODULE, "_kill_process_tree") as attach_kill,
+        ):
+            bridge = BRIDGE_MODULE.RuyiBridge()
+            attach = bridge.handle(
+                {
+                    "id": 33,
+                    "method": "browser.launch",
+                    "params": {
+                        "existingOnly": True,
+                        "address": "127.0.0.1",
+                        "port": 26700,
+                    },
+                }
+            )
+            self.assertNotIn("error", attach)
+            quit_attach = bridge.handle({"id": 34, "method": "browser.quit", "params": {}})
+        self.assertNotIn("error", quit_attach)
+        attach_kill.assert_not_called()
+        self.assertNotIn("processCleanup", quit_attach["result"])
 
     def test_bridge_rejects_relative_profile_path(self):
         with (
@@ -1479,6 +1599,9 @@ class RuyiBridgeContractTests(unittest.TestCase):
     def test_ruyipage_1256_window_fingerprint_and_action_contracts(self):
         smart_signature = inspect.signature(fingerprint_builder.apply_smart_fingerprint)
         self.assertFalse(smart_signature.parameters["set_window_size_on_opts"].default)
+        self.assertTrue(smart_signature.parameters["set_startup_page_on_opts"].default)
+        self.assertIn("firefox_version", smart_signature.parameters)
+        self.assertIn("geolocation_latitude", smart_signature.parameters)
         emulation_signature = inspect.signature(
             fingerprint_builder.FingerprintContext.apply_emulation
         )
@@ -1488,6 +1611,27 @@ class RuyiBridgeContractTests(unittest.TestCase):
         fpfile_source = inspect.getsource(fingerprint_builder.write_fpfile)
         self.assertNotIn('a("width:"', fpfile_source)
         self.assertNotIn('a("height:"', fpfile_source)
+
+    def test_ruyipage_1262_capture_fallback_and_system_access_api(self):
+        from ruyipage._runtime import manifest
+        from ruyipage._units import capture as capture_unit
+        from ruyipage.errors import BiDiError
+
+        self.assertTrue(callable(capture_unit._needs_global_scope_fallback))
+        privileged = BiDiError("unsupported operation", "system access is required")
+        self.assertTrue(capture_unit._needs_global_scope_fallback(privileged))
+        self.assertFalse(
+            capture_unit._needs_global_scope_fallback(
+                BiDiError("unknown error", "unrelated")
+            )
+        )
+        options = FirefoxOptions()
+        options.allow_system_access(False)
+        self.assertFalse(options.system_access_allowed)
+        self.assertTrue(hasattr(fingerprint_builder, "GeolocationProfile"))
+        # Upstream installer default is Firefox 155; local MCP still pins RUYI_FIREFOX_PATH.
+        self.assertEqual(manifest.FIREFOX_VERSION, "155.0a1")
+        self.assertEqual(manifest.RELEASE_TAG, "v1.2.58")
 
         options = FirefoxOptions().set_window_size(1366, 768)
         self.assertEqual(options.startup_window_size, (1366, 768))

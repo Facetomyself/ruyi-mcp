@@ -1,6 +1,6 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.2.0-reverse-env.1",
+  "version": "0.2.0-reverse-env.2",
   "description": "Private reverse_ENV control-plane adapter for ruyiPage browser automation and evidence handoff",
   "private": true,
   "license": "MIT",

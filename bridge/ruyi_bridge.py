@@ -19,6 +19,8 @@ import shutil
 import ipaddress
 import math
 import random
+import signal
+import subprocess
 import time
 import tempfile
 import hashlib
@@ -502,6 +504,188 @@ def _discover_firefox_path() -> str:
 
 DEFAULT_FIREFOX_PATH = _discover_firefox_path()
 DEFAULT_PROFILE_ROOT = Path(__file__).resolve().parents[1] / "browser-profiles"
+_WINDOWS_SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return whether *pid* still exists. Never raises into callers."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        tasklist = _WINDOWS_SYSTEM32 / "tasklist.exe"
+        try:
+            completed = subprocess.run(
+                [str(tasklist), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        stdout = (completed.stdout or "").strip()
+        if not stdout or stdout.upper().startswith("INFO:"):
+            return False
+        return str(pid) in stdout
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Best-effort kill of *pid* and its children. Owned Firefox only."""
+    if not isinstance(pid, int) or pid <= 0:
+        return
+    if os.name == "nt":
+        taskkill = _WINDOWS_SYSTEM32 / "taskkill.exe"
+        try:
+            subprocess.run(
+                [str(taskkill), "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+
+
+def _firefox_pids_using_profile(profile: Path) -> list[int]:
+    """Find leftover firefox/plugin-container processes bound to *profile*."""
+    if os.name != "nt":
+        return []
+    powershell = _WINDOWS_SYSTEM32 / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    if not powershell.is_file():
+        return []
+    needle = str(profile.resolve()).lower()
+    script = (
+        "$rows = Get-CimInstance Win32_Process -Filter "
+        "\"Name='firefox.exe' or Name='plugin-container.exe'\"; "
+        "foreach ($row in $rows) { if ($row.CommandLine) { "
+        "Write-Output (($row.ProcessId.ToString()) + [char]9 + $row.CommandLine) } }"
+    )
+    try:
+        completed = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    pids: list[int] = []
+    for line in (completed.stdout or "").splitlines():
+        if "\t" not in line:
+            continue
+        pid_text, command = line.split("\t", 1)
+        if needle not in command.lower():
+            continue
+        try:
+            pid = int(pid_text.strip())
+        except ValueError:
+            continue
+        if pid > 0:
+            pids.append(pid)
+    return pids
+
+
+def _reap_owned_firefox(pid: Optional[int], profile: Optional[Path]) -> Optional[dict[str, Any]]:
+    """Kill leftover owned Firefox after quit. Never used for attach sessions."""
+    targets: list[int] = []
+    if isinstance(pid, int) and pid > 0:
+        targets.append(pid)
+    if profile is not None:
+        for extra in _firefox_pids_using_profile(profile):
+            if extra not in targets:
+                targets.append(extra)
+    if not targets:
+        return None
+    killed: list[int] = []
+    already_exited: list[int] = []
+    still_alive: list[int] = []
+    for target in targets:
+        if not _pid_is_alive(target):
+            already_exited.append(target)
+            continue
+        _kill_process_tree(target)
+        if _pid_is_alive(target):
+            still_alive.append(target)
+        else:
+            killed.append(target)
+    return {
+        "attempted": True,
+        "pids": targets,
+        "killed": killed,
+        "alreadyExited": already_exited,
+        "stillAlive": still_alive,
+    }
+
+
+def _coerce_fingerprint_kwargs(fp: Any, profile_path: Optional[Path]) -> dict[str, Any]:
+    """Map MCP fingerprint object onto ruyiPage 1.2.62 smart_fingerprint kwargs."""
+    if not isinstance(fp, dict) or not fp:
+        return {}
+    kwargs: dict[str, Any] = {}
+    str_keys = {
+        "proxyHost": "proxy_host",
+        "proxyUser": "proxy_user",
+        "proxyPwd": "proxy_pwd",
+        "requireCountry": "require_country",
+        "webrtcLocalIpv4": "webrtc_local_ipv4",
+        "webrtcLocalIpv6": "webrtc_local_ipv6",
+        "webrtcPublicIpv4": "webrtc_public_ipv4",
+        "webrtcPublicIpv6": "webrtc_public_ipv6",
+        "geolocationPermission": "geolocation_permission",
+    }
+    int_keys = {
+        "proxyPort": "proxy_port",
+        "firefoxVersion": "firefox_version",
+    }
+    float_keys = {
+        "geolocationLatitude": "geolocation_latitude",
+        "geolocationLongitude": "geolocation_longitude",
+        "geolocationAccuracy": "geolocation_accuracy",
+        "geolocationAltitude": "geolocation_altitude",
+        "geolocationAltitudeAccuracy": "geolocation_altitude_accuracy",
+        "geolocationHeading": "geolocation_heading",
+        "geolocationSpeed": "geolocation_speed",
+    }
+    for src, dest in str_keys.items():
+        value = fp.get(src)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            kwargs[dest] = text
+    for src, dest in int_keys.items():
+        value = fp.get(src)
+        if value is None or value == "":
+            continue
+        kwargs[dest] = int(value)
+    for src, dest in float_keys.items():
+        value = fp.get(src)
+        if value is None or value == "":
+            continue
+        kwargs[dest] = float(value)
+    if "geolocationEnabled" in fp and fp["geolocationEnabled"] is not None:
+        kwargs["geolocation_enabled"] = bool(fp["geolocationEnabled"])
+    timestamp = fp.get("geolocationTimestamp")
+    if timestamp is not None and timestamp != "":
+        kwargs["geolocation_timestamp"] = timestamp
+    if fp.get("manualGeo") is not None:
+        kwargs["manual_geo"] = fp["manualGeo"]
+    if profile_path is not None:
+        kwargs["userdir"] = str(profile_path)
+    return kwargs
+
 
 
 def _managed_profile_root() -> Path:
@@ -557,6 +741,7 @@ class RuyiBridge:
         self._private_mode: bool = False
         self._connection_address: Optional[str] = None
         self._connection_port: Optional[int] = None
+        self._owned_firefox_pid: Optional[int] = None
 
         self._handlers = {
             # Browser lifecycle
@@ -1120,33 +1305,21 @@ class RuyiBridge:
             opts.private_mode(True)
         if params.get("proxy"):
             opts.set_proxy(params["proxy"])
+        if not existing_only:
+            # Never inherit Windows-admin auto system-access; attach cannot add
+            # the flag after Firefox has started.
+            opts.allow_system_access(False)
+            if not params.get("privateMode"):
+                opts.set_argument("about:blank")
 
         profile_path, profile_mode = self._prepare_profile(params, existing_only)
         try:
             if profile_path is not None:
                 opts.set_profile(str(profile_path))
 
-            # Fingerprint — smart_fingerprint needs proxy info
             fp = params.get("fingerprint")
             if fp:
-                fp_kwargs = {}
-                if fp.get("proxyHost"):
-                    fp_kwargs["proxy_host"] = fp["proxyHost"]
-                if fp.get("proxyPort"):
-                    fp_kwargs["proxy_port"] = int(fp["proxyPort"])
-                if fp.get("proxyUser"):
-                    fp_kwargs["proxy_user"] = fp["proxyUser"]
-                if fp.get("proxyPwd"):
-                    fp_kwargs["proxy_pwd"] = fp["proxyPwd"]
-                if fp.get("requireCountry"):
-                    fp_kwargs["require_country"] = fp["requireCountry"]
-                if fp.get("manualGeo"):
-                    fp_kwargs["manual_geo"] = fp["manualGeo"]
-                # ruyiPage otherwise creates userdir_<timestamp>_<random> below
-                # os.getcwd(). Keep fingerprint files and profile data under the
-                # same controlled directory selected above.
-                if profile_path is not None:
-                    fp_kwargs["userdir"] = str(profile_path)
+                fp_kwargs = _coerce_fingerprint_kwargs(fp, profile_path)
                 self._fingerprint_ctx = opts.smart_fingerprint(**fp_kwargs)
 
             self.opts = opts
@@ -1159,9 +1332,15 @@ class RuyiBridge:
             self._profile_path = None
             raise
         self._attached_existing = existing_only
+        self._owned_firefox_pid = None
         browser = getattr(self.page, "_firefox", None) or getattr(
             self.page, "_browser", None
         )
+        if not existing_only:
+            process = getattr(browser, "_process", None)
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int) and pid > 0:
+                self._owned_firefox_pid = pid
         connection = getattr(browser, "address", None) or getattr(
             browser, "_address", None
         )
@@ -1209,9 +1388,12 @@ class RuyiBridge:
         }
 
     def _quit(self, params: dict) -> dict:
+        attached = self._attached_existing
+        owned_pid = None if attached else self._owned_firefox_pid
+        owned_profile = None if attached else self._managed_profile
         if self.page:
             try:
-                if self._attached_existing:
+                if attached:
                     browser = getattr(self.page, "_firefox", None)
                     detach = getattr(browser, "_detach_on_exit", None)
                     if not callable(detach):
@@ -1256,9 +1438,16 @@ class RuyiBridge:
         self._private_mode = False
         self._connection_address = None
         self._connection_port = None
+        self._owned_firefox_pid = None
+        process_cleanup = None if attached else _reap_owned_firefox(owned_pid, owned_profile)
         cleanup = self._cleanup_managed_profile()
         self._profile_path = None
-        return {"profileCleanup": cleanup} if cleanup is not None else {}
+        result: dict[str, Any] = {}
+        if cleanup is not None:
+            result["profileCleanup"] = cleanup
+        if process_cleanup is not None:
+            result["processCleanup"] = process_cleanup
+        return result
 
     def _status(self, params: dict) -> dict:
         if not self.page:
@@ -1555,7 +1744,7 @@ class RuyiBridge:
     # Network
     # ------------------------------------------------------------------
     def _list_requests(self, params: dict) -> dict:
-        """Get recent network requests. Without capture, approximate via trace or JS."""
+        """List recent resource URLs via the page performance API. Not a JS/Python trace."""
         page = self._get_page(params.get("pageIdx", 0))
         try:
             # Try to get entries from the browser's performance API

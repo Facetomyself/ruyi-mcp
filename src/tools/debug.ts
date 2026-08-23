@@ -26,7 +26,8 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
       description:
         '设置软断点（通过 preload script 注入 debugger 或 Proxy 包装）。' +
         '支持 XHR/Fetch URL 断点和函数名匹配。' +
-        '⚠ 当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。',
+        '默认自动化 toolset 不暴露此工具；需要时设置 RUYI_MCP_TOOLSET=all。' +
+        '当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。',
       inputSchema: {
         type: 'object',
         properties: {

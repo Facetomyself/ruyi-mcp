@@ -82,13 +82,25 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
           container: { type: 'boolean', description: '浏览器已启动时是否创建 container tab，默认 false', default: false },
           fingerprint: {
             type: 'object',
-            description: '智能指纹配置（smart_fingerprint）',
+            description: '智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。',
             properties: {
               proxyHost: { type: 'string', description: '浏览器第一跳 host；Cliproxy 场景填已验证的本机 chained sidecar host，不填 provider host。' },
               proxyPort: { type: 'number', description: '浏览器第一跳端口；Cliproxy 场景填 sidecar listener port，主 Clash 7897 不等于 Cliproxy relay。' },
               proxyUser: { type: 'string', description: '第一跳认证；不得填入 Cliproxy provider 账号。' },
               proxyPwd: { type: 'string', description: '第一跳认证；不得填入 Cliproxy provider 密码。' },
               requireCountry: { type: 'string', description: '要求代理出口国家，如 US' },
+              firefoxVersion: { type: 'number', description: '生成 UA 用的 Firefox 主版本；省略则读取 RUYI_FIREFOX_PATH 可执行文件版本' },
+              geolocationEnabled: { type: 'boolean', description: '是否写入 fpfile/BiDi 地理位置，默认 true' },
+              geolocationLatitude: { type: 'number', description: '覆盖探测到的纬度' },
+              geolocationLongitude: { type: 'number', description: '覆盖探测到的经度' },
+              geolocationAccuracy: { type: 'number', description: '定位精度（米），默认 15000' },
+              geolocationAltitude: { type: 'number', description: '可选海拔' },
+              geolocationHeading: { type: 'number', description: '可选朝向 0-360' },
+              geolocationSpeed: { type: 'number', description: '可选速度' },
+              geolocationPermission: { type: 'string', description: 'prompt / granted / denied，默认 granted' },
+              webrtcLocalIpv4: { type: 'string', description: '可选 WebRTC 本地 IPv4' },
+              webrtcPublicIpv4: { type: 'string', description: '可选 WebRTC 公网 IPv4' },
+              manualGeo: { type: 'object', description: '在线 Geo 全部失败时的显式回退（ip/country_code/timezone/latitude/longitude）' },
             },
           },
         },
@@ -320,7 +332,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
       name: 'ruyi_select_frame',
       description:
         '选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；' +
-        '也可传 selector，由 ruyiPage 1.2.56 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。' +
+        '也可传 selector，由 ruyiPage 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。' +
         '返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。',
       inputSchema: {
         type: 'object',

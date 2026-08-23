@@ -1,5 +1,5 @@
 /**
- * Network forensics tools: list_network_requests, capture_start, capture_stop, capture_wait.
+ * Network inspection tools: list_network_requests, capture_start, capture_stop, capture_wait.
  */
 import { getPageIdx } from './types.js';
 import { declaredWriteRoot, resolveSafeOutputPath } from './security.js';

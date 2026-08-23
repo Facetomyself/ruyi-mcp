@@ -77,7 +77,7 @@ export function registerAntiDetectTools(register, ctx) {
                             angle: {
                                 type: 'number',
                                 default: 0,
-                                description: '已弃用：ruyiPage 1.2.56 不发送 angle；Bridge 会忽略并返回明确 warning',
+                                description: '已弃用：ruyiPage 不发送 angle；Bridge 会忽略并返回明确 warning',
                             },
                         },
                     },
