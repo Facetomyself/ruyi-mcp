@@ -1,10 +1,8 @@
 /**
- * Debug tools: set_breakpoint_on_text, break_on_xhr, list_breakpoints, remove_breakpoint.
+ * Native Firefox debugger tools via page.debugger (DevTools RDP).
  *
- * Note: Full CDP-style debugging (step, pause, get_paused_info) is not available
- * via WebDriver BiDi in the current Firefox. Instead we use soft breakpoints:
- * preload scripts that inject debugger; statements or Proxy wrappers around
- * XMLHttpRequest/Fetch.
+ * Breakpoints are planted by the debugger itself at source URL/line.
+ * Preload `debugger;` injection is not used.
  */
 import { RuyiContext } from '../ruyi-context.js';
 import { ToolRegistrar } from './types.js';

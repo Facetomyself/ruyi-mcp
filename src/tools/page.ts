@@ -3,6 +3,7 @@
  */
 
 import { RuyiContext } from '../ruyi-context.js';
+import { debuggerEnabledByDefault } from './toolset.js';
 import { ToolDef, ToolHandler, ToolRegistrar, getPageIdx } from './types.js';
 
 function jsonResult(data: unknown): string {
@@ -80,6 +81,16 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
             description: '外部持久 Firefox profile 的绝对路径（可选）；默认在 RUYI_MCP_PROFILE_ROOT 创建并在正常退出时回收受控临时 profile',
           },
           container: { type: 'boolean', description: '浏览器已启动时是否创建 container tab，默认 false', default: false },
+          enableDebugger: {
+            type: 'boolean',
+            description:
+              '启动 Firefox DevTools RDP（--start-debugger-server）供 page.debugger 下断点。' +
+              '必须在 launch 时打开，启动后无法补开。debug/all toolset 默认 true，automation 默认 false。',
+          },
+          debuggerPort: {
+            type: 'number',
+            description: 'RDP 端口。新启动默认随机本机端口；attach 且 enableDebugger 时必填。',
+          },
           fingerprint: {
             type: 'object',
             description: '智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。',
@@ -123,7 +134,13 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
 
       // First call launches the browser, then navigates the initial page.
       if (!ctx.state.browserLaunched) {
-        await ctx.launch(args as Record<string, unknown>);
+        const enableDebugger = args.enableDebugger === undefined
+          ? debuggerEnabledByDefault()
+          : Boolean(args.enableDebugger);
+        await ctx.launch({
+          ...(args as Record<string, unknown>),
+          enableDebugger,
+        });
         const result = await ctx.bridgeInstance.call('page.navigate', {
           pageIdx: ctx.getActivePageIdx(),
           url,
@@ -137,7 +154,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
         };
       }
 
-      const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'profilePath', 'fingerprint'];
+      const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'profilePath', 'fingerprint', 'enableDebugger', 'debuggerPort'];
       const conflictingArgs = launchOnlyArgs.filter((key) => args[key] !== undefined);
       if (conflictingArgs.length > 0) {
         throw new Error(

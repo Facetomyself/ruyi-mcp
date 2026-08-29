@@ -28,7 +28,7 @@ import { registerWebSocketTools } from './tools/websocket.js';
 import { registerDownloadTools } from './tools/downloads.js';
 import { EXPERT_ONLY_TOOLS, resolveToolset } from './tools/toolset.js';
 
-export const SERVER_VERSION = '0.2.0-reverse-env.2';
+export const SERVER_VERSION = '0.3.0-reverse-env.1';
 
 // ---------------------------------------------------------------------------
 // Tool registry

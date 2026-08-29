@@ -51,9 +51,23 @@ export function registerScriptTools(register, ctx) {
             }));
         }`;
             }
+            try {
+                const debugSources = await ctx.bridgeInstance.call('debug.sources', {
+                    pageIdx,
+                    filter,
+                });
+                if (Array.isArray(debugSources.sources)) {
+                    return {
+                        content: [{ type: 'text', text: jsonResult({ ...debugSources, via: 'debugger' }) }],
+                    };
+                }
+            }
+            catch {
+                // debugger not started: fall back to DOM script[src]
+            }
             const result = await ctx.bridgeInstance.call('script.evaluate', { pageIdx, script });
             return {
-                content: [{ type: 'text', text: jsonResult(result) }],
+                content: [{ type: 'text', text: jsonResult({ ...result, via: 'dom' }) }],
             };
         }),
     });
@@ -119,6 +133,23 @@ export function registerScriptTools(register, ctx) {
           return { ok: false, url: resolved, error: e && e.message ? e.message : String(e) };
         }
       }`;
+            try {
+                const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+                    pageIdx,
+                    url,
+                    startLine,
+                    endLine,
+                    maxChars: length,
+                });
+                if (debugSource.ok === true) {
+                    return {
+                        content: [{ type: 'text', text: jsonResult({ ...debugSource, via: 'debugger' }) }],
+                    };
+                }
+            }
+            catch {
+                // debugger not started: fall back to fetch
+            }
             const result = await ctx.bridgeInstance.call('script.evaluate', {
                 pageIdx,
                 script,
@@ -173,6 +204,31 @@ export function registerScriptTools(register, ctx) {
                 };
             }
             const safeFilePath = pathCheck.resolved;
+            try {
+                const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+                    pageIdx,
+                    url,
+                    maxChars: 2_000_000,
+                });
+                if (debugSource.ok === true && typeof debugSource.source === 'string') {
+                    mkdirSync(dirname(safeFilePath), { recursive: true });
+                    writeFileSync(safeFilePath, debugSource.source, 'utf-8');
+                    return {
+                        content: [{
+                                type: 'text',
+                                text: jsonResult({
+                                    savedTo: safeFilePath,
+                                    url: debugSource.url,
+                                    size: debugSource.source.length,
+                                    via: 'debugger',
+                                }),
+                            }],
+                    };
+                }
+            }
+            catch {
+                // debugger not started
+            }
             const script = `async () => {
         const requested = ${JSON.stringify(url)};
         const scripts = Array.from(document.querySelectorAll('script[src]')).map(s => s.src);
@@ -239,6 +295,25 @@ export function registerScriptTools(register, ctx) {
             const caseSensitive = args.caseSensitive;
             const urlFilter = args.urlFilter || '';
             const maxResults = args.maxResults ?? 30;
+            if (!isRegex) {
+                try {
+                    const debugSearch = await ctx.bridgeInstance.call('debug.search', {
+                        pageIdx,
+                        query,
+                        urlFilter,
+                        caseSensitive,
+                        maxMatches: maxResults,
+                    });
+                    if (Array.isArray(debugSearch.matches)) {
+                        return {
+                            content: [{ type: 'text', text: jsonResult({ ...debugSearch, via: 'debugger' }) }],
+                        };
+                    }
+                }
+                catch {
+                    // debugger not started
+                }
+            }
             // Search in all inline scripts and fetch-able external scripts
             const script = `async () => {
         const query = ${JSON.stringify(query)};

@@ -46,6 +46,20 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const snapshotPath = resolve(root, 'scripts/fixtures/tools-schema.snapshot.json');
 const EXPERT_ONLY_TOOLS = [
   'ruyi_break_on_xhr',
+  'ruyi_debug_disable',
+  'ruyi_debug_enable',
+  'ruyi_debug_expand_object',
+  'ruyi_debug_get_frames',
+  'ruyi_debug_get_paused_info',
+  'ruyi_debug_get_scopes',
+  'ruyi_debug_list_sources',
+  'ruyi_debug_pause',
+  'ruyi_debug_pause_on_exception',
+  'ruyi_debug_resume',
+  'ruyi_debug_set_breakpoint',
+  'ruyi_debug_status',
+  'ruyi_debug_step',
+  'ruyi_debug_wait_paused',
   'ruyi_get_script_source',
   'ruyi_list_breakpoints',
   'ruyi_list_preload_scripts',
@@ -85,6 +99,16 @@ function assertControlPlaneLogs(serverStderr) {
     /\[ruyi-mcp\] Evidence handoff: browser-session-handoff\.v1/,
     'startup log must identify the canonical evidence handoff contract'
   );
+  assert.match(
+    serverStderr,
+    /firefox-debugger/,
+    'startup log must advertise the native Firefox debugger plane'
+  );
+  assert.match(
+    serverStderr,
+    /Debugger observations are not RuyiTrace browser facts/,
+    'startup log must refuse to equate debugger observations with RuyiTrace'
+  );
   assert.doesNotMatch(
     serverStderr,
     /\[ruyi-mcp\] Trace:/,
@@ -113,6 +137,16 @@ for (const name of EXPERT_ONLY_TOOLS) {
 for (const required of ['ruyi_new_page', 'ruyi_human_click', 'ruyi_export_session', 'ruyi_browser_quit']) {
   if (!automationNames.includes(required)) {
     throw new Error(`${required} must remain on the automation toolset`);
+  }
+}
+
+const debugListed = await listTools('debug');
+assertControlPlaneLogs(debugListed.serverStderr);
+assert.match(debugListed.serverStderr, /\[ruyi-mcp\] Toolset: debug/);
+const debugNames = debugListed.result.tools.map((tool) => tool.name);
+for (const name of EXPERT_ONLY_TOOLS) {
+  if (!debugNames.includes(name)) {
+    throw new Error(`${name} must be available in RUYI_MCP_TOOLSET=debug`);
   }
 }
 
@@ -209,5 +243,5 @@ if (updateSnapshot) {
 }
 
 console.log(
-  `ruyi-mcp smoke OK: automation ${automation.result.tools.length} tools, all ${result.tools.length} tools`
+  `ruyi-mcp smoke OK: automation ${automation.result.tools.length} tools, debug ${debugListed.result.tools.length} tools, all ${result.tools.length} tools`
 );

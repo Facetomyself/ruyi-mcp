@@ -29,7 +29,7 @@
       "name": "ruyi_attach_browser"
     },
     {
-      "description": "在 XHR/Fetch 请求 URL 匹配时触发断点（注入 debugger）。等价于 ruyi_set_breakpoint_on_text with XHR wrapper.",
+      "description": "在已加载源码中搜索 URL 片段并下原生断点。Firefox RDP 没有 XHR instrumentation；找不到则返回 xhr-breakpoint-unresolved，不会注入 debugger;。",
       "inputSchema": {
         "properties": {
           "pageIdx": {
@@ -37,7 +37,7 @@
             "type": "number"
           },
           "url": {
-            "description": "URL 匹配片段（子串匹配）",
+            "description": "URL 匹配片段",
             "type": "string"
           }
         },
@@ -216,6 +216,283 @@
         "type": "object"
       },
       "name": "ruyi_close_page"
+    },
+    {
+      "description": "断开 debugger RDP 通道。若当前已暂停则先 resume，避免页面卡死。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_disable"
+    },
+    {
+      "description": "连接 Firefox DevTools RDP 并 attach 当前标签页的 thread actor。必须在 ruyi_new_page 时传入 enableDebugger=true（启动 --start-debugger-server）。debug toolset 默认会在 launch 时打开。",
+      "inputSchema": {
+        "properties": {
+          "autoResumeAfter": {
+            "description": "暂停看门狗秒数，超时自动 resume，避免 JS 永久卡住。默认 60；0 表示关闭。",
+            "type": "number"
+          },
+          "debuggerPort": {
+            "description": "已有 RDP 端口；attach 会话必填",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_enable"
+    },
+    {
+      "description": "按 actor 展开暂停现场中的对象，突破 preview 上限。只能在暂停时调用。",
+      "inputSchema": {
+        "properties": {
+          "actor": {
+            "description": "RemoteObject actor id",
+            "type": "string"
+          },
+          "depth": {
+            "default": 1,
+            "type": "number"
+          },
+          "maxItems": {
+            "default": 80,
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "actor"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_expand_object"
+    },
+    {
+      "description": "读取当前调用栈。只能在暂停状态下调用。",
+      "inputSchema": {
+        "properties": {
+          "count": {
+            "default": 50,
+            "description": "最多帧数，默认 50",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_get_frames"
+    },
+    {
+      "description": "读取当前暂停快照与有界调用栈。未暂停时 paused=false。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_get_paused_info"
+    },
+    {
+      "description": "读取某一帧的作用域变量（默认到函数边界，不含全局）。对象以 remoteObject actor 返回，用 ruyi_debug_expand_object 展开。只能在暂停时调用。",
+      "inputSchema": {
+        "properties": {
+          "frameActor": {
+            "description": "frame actor；默认当前暂停帧",
+            "type": "string"
+          },
+          "includeParents": {
+            "default": false,
+            "description": "包含闭包与全局",
+            "type": "boolean"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_get_scopes"
+    },
+    {
+      "description": "列出 JS 引擎已加载的源（含内联 script、blob、eval）。这是 debugger 源表，不是 DOM script[src]。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "urlContains": {
+            "description": "只返回 URL 含该子串的源",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_list_sources"
+    },
+    {
+      "description": "立即暂停 JS 执行。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_pause"
+    },
+    {
+      "description": "异常抛出时自动暂停。默认忽略会被 catch 接住的异常。",
+      "inputSchema": {
+        "properties": {
+          "enabled": {
+            "default": true,
+            "type": "boolean"
+          },
+          "ignoreCaught": {
+            "default": true,
+            "type": "boolean"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_pause_on_exception"
+    },
+    {
+      "description": "从当前暂停恢复执行。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_resume"
+    },
+    {
+      "description": "在指定源 URL 的指定行下原生断点（debugger 自己下端点）。行号从 1 开始；省略 column 时自动取该行第一个可断点列。condition 为真才暂停；条件抛异常仍会暂停（why=breakpointConditionThrown）。",
+      "inputSchema": {
+        "properties": {
+          "column": {
+            "description": "列号；省略则自动解析",
+            "type": "number"
+          },
+          "condition": {
+            "description": "条件表达式，在断点所在帧求值",
+            "type": "string"
+          },
+          "line": {
+            "description": "行号，从 1 开始",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "url": {
+            "description": "源 URL，需与 ruyi_debug_list_sources 一致，可用后缀匹配",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "line"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_set_breakpoint"
+    },
+    {
+      "description": "查询 debugger 是否已启动、是否暂停、以及当前暂停快照。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_status"
+    },
+    {
+      "description": "单步：over 跳过、into 进入、out 跳出。只能在暂停状态下调用。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "type": {
+            "default": "over",
+            "enum": [
+              "over",
+              "into",
+              "out"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_step"
+    },
+    {
+      "description": "等待下一次暂停。触发断点的 BiDi/点击必须放在其他调用里，暂停期间不要 run_js。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "timeout": {
+            "default": 30,
+            "description": "秒，默认 30",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_wait_paused"
     },
     {
       "description": "删除 cookies。不传 name 则清除所有 cookies。",
@@ -1028,7 +1305,7 @@
       "name": "ruyi_intercept_wait"
     },
     {
-      "description": "列出当前所有活跃的软断点。",
+      "description": "列出当前 debugger 原生断点。",
       "inputSchema": {
         "properties": {},
         "required": [],
@@ -1183,6 +1460,14 @@
             "description": "浏览器已启动时是否创建 container tab，默认 false",
             "type": "boolean"
           },
+          "debuggerPort": {
+            "description": "RDP 端口。新启动默认随机本机端口；attach 且 enableDebugger 时必填。",
+            "type": "number"
+          },
+          "enableDebugger": {
+            "description": "启动 Firefox DevTools RDP（--start-debugger-server）供 page.debugger 下断点。必须在 launch 时打开，启动后无法补开。debug/all toolset 默认 true，automation 默认 false。",
+            "type": "boolean"
+          },
           "fingerprint": {
             "description": "智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。",
             "properties": {
@@ -1293,11 +1578,11 @@
       "name": "ruyi_new_page"
     },
     {
-      "description": "移除指定软断点。",
+      "description": "移除指定原生断点。",
       "inputSchema": {
         "properties": {
           "breakpointId": {
-            "description": "断点 ID（来自 ruyi_list_breakpoints）",
+            "description": "断点 ID",
             "type": "string"
           },
           "pageIdx": {
@@ -1426,11 +1711,11 @@
       "name": "ruyi_select_page"
     },
     {
-      "description": "设置软断点（通过 preload script 注入 debugger 或 Proxy 包装）。支持 XHR/Fetch URL 断点和函数名匹配。默认自动化 toolset 不暴露此工具；需要时设置 RUYI_MCP_TOOLSET=all。当前 BiDi 不支持完整的 CDP 式断点调试，此工具注入 debugger; 语句作为替代。",
+      "description": "在已加载源码中搜索文本并下原生断点。不再注入 debugger;。默认自动化 toolset 不暴露此工具。",
       "inputSchema": {
         "properties": {
           "condition": {
-            "description": "断点条件（暂不支持，保留参数兼容性）",
+            "description": "断点条件表达式",
             "type": "string"
           },
           "pageIdx": {
@@ -1438,11 +1723,11 @@
             "type": "number"
           },
           "text": {
-            "description": "要匹配的代码文本、URL 片段或函数名。",
+            "description": "要匹配的源码文本",
             "type": "string"
           },
           "urlFilter": {
-            "description": "仅在 URL 匹配的脚本中注入",
+            "description": "仅搜索 URL 含该子串的源",
             "type": "string"
           }
         },

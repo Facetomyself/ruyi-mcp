@@ -15,11 +15,14 @@ export interface PageInfo {
 export interface BreakpointInfo {
   breakpointId: string;
   text: string;
-  mode?: 'text' | 'xhr';
+  mode?: 'text' | 'xhr' | 'location';
   pattern?: string;
   urlFilter?: string;
   condition?: string;
-  type: 'soft';
+  type: 'native' | 'soft';
+  url?: string;
+  line?: number;
+  column?: number;
 }
 
 export interface SessionState {

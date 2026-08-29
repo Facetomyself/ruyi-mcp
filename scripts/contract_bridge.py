@@ -35,7 +35,7 @@ from ruyipage._units.actions import Actions
 from ruyipage.errors import BrowserConnectError
 
 
-EXPECTED_RUYIPAGE_VERSION = "1.2.62"
+EXPECTED_RUYIPAGE_VERSION = "1.2.65"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BRIDGE_PATH = REPO_ROOT / "bridge" / "ruyi_bridge.py"
 REQUIREMENTS_PATH = REPO_ROOT / "requirements.txt"
@@ -92,6 +92,8 @@ class FakeLaunchOptions:
         self.profile = None
         self.fingerprint_kwargs = None
         self.system_access = None
+        self.debugger_enabled = False
+        self.debugger_port = None
         self.arguments: list[str] = []
         FakeLaunchOptions.instances.append(self)
 
@@ -135,9 +137,130 @@ class FakeLaunchOptions:
         self.arguments.append(arg if value is None else f"{arg}={value}")
         return self
 
+    def enable_debugger(self, on_off=True, port=None):
+        self.debugger_enabled = bool(on_off)
+        self.debugger_port = port
+        if on_off:
+            self.arguments.append("--start-debugger-server")
+        return self
+
     def smart_fingerprint(self, **kwargs):
         self.fingerprint_kwargs = kwargs
         return None
+
+
+class FakeDebugger:
+    def __init__(self):
+        self.started = False
+        self.paused = False
+        self.paused_state = None
+        self.breakpoints = []
+        self.start_calls = []
+        self._sources = [
+            SimpleNamespace(
+                actor="source1",
+                url="http://fixture.invalid/app.js",
+                introduction_type="scriptElement",
+                is_black_boxed=False,
+            )
+        ]
+        self._source_text = "function targetFn(x) {\n  var y = x + 1;\n  return y * 2;\n}\n"
+        self._native_breakpoints = []
+
+    def start(self, port=None, host="127.0.0.1", timeout=20, auto_resume_after=None):
+        self.started = True
+        self.start_calls.append(
+            {
+                "port": port,
+                "host": host,
+                "timeout": timeout,
+                "auto_resume_after": auto_resume_after,
+            }
+        )
+        return self
+
+    def stop(self):
+        self.started = False
+        self.paused = False
+        self.paused_state = None
+        return self
+
+    def sources(self, url_contains=None):
+        if url_contains:
+            return [item for item in self._sources if url_contains in (item.url or "")]
+        return list(self._sources)
+
+    def source_text(self, url_or_source):
+        return self._source_text
+
+    def set_breakpoint(self, url, line, column=None, condition=None):
+        native = SimpleNamespace(
+            url=url, line=int(line), column=column if column is not None else 0, condition=condition
+        )
+        self._native_breakpoints.append(native)
+        self.breakpoints.append(native)
+        return native
+
+    def remove_breakpoint(self, breakpoint_):
+        self.breakpoints = [item for item in self.breakpoints if item is not breakpoint_]
+        return self
+
+    def wait_paused(self, timeout=30):
+        frame = SimpleNamespace(
+            actor="frame1",
+            display_name="targetFn",
+            type="call",
+            url="http://fixture.invalid/app.js",
+            line=2,
+            column=10,
+            oldest=False,
+        )
+        state = SimpleNamespace(
+            why="breakpoint",
+            message=None,
+            exception=None,
+            frame=frame,
+            pause_actor="pause1",
+            url=frame.url,
+            line=frame.line,
+            is_exception=False,
+            condition_failed=False,
+        )
+        self.paused = True
+        self.paused_state = state
+        return state
+
+    def pause(self):
+        self.paused = True
+        return self
+
+    def resume(self):
+        self.paused = False
+        self.paused_state = None
+        return self
+
+    def step_over(self):
+        return self.resume()
+
+    def step_into(self):
+        return self.resume()
+
+    def step_out(self):
+        return self.resume()
+
+    def frames(self, count=50):
+        if self.paused_state is None:
+            raise RuntimeError("只能在暂停状态下读取调用栈")
+        return [self.paused_state.frame]
+
+    def scope(self, frame=None, include_parents=False):
+        return {"x": 41, "y": None}
+
+    def expand(self, obj, depth=1, max_items=100):
+        return {"ok": True, "actor": obj}
+
+    def pause_on_exceptions(self, enabled=True, ignore_caught=True):
+        return self
 
 
 class FakeLaunchPage:
@@ -147,12 +270,15 @@ class FakeLaunchPage:
     def __init__(self, options):
         self.options = options
         self.quit_calls = 0
+        self.debugger = FakeDebugger()
 
     def get_tabs(self):
         return []
 
     def quit(self):
         self.quit_calls += 1
+        if self.debugger.started:
+            self.debugger.stop()
 
 
 class FailingLaunchPage:
@@ -791,6 +917,10 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "human.drag",
             "session.export",
             "download.set_behavior",
+            "debug.enable",
+            "debug.set_breakpoint",
+            "debug.wait_paused",
+            "debug.scope",
         }
         self.assertTrue(expected_handlers.issubset(bridge._handlers))
         self.assertTrue(
@@ -1628,6 +1758,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
         options = FirefoxOptions()
         options.allow_system_access(False)
         self.assertFalse(options.system_access_allowed)
+        self.assertTrue(callable(options.enable_debugger))
+        self.assertTrue(isinstance(FirefoxBase.debugger, property))
         self.assertTrue(hasattr(fingerprint_builder, "GeolocationProfile"))
         # Upstream installer default is Firefox 155; local MCP still pins RUYI_FIREFOX_PATH.
         self.assertEqual(manifest.FIREFOX_VERSION, "155.0a1")
@@ -2622,6 +2754,100 @@ class RuyiBridgeContractTests(unittest.TestCase):
         response = json.loads(stdout.getvalue())
         self.assertEqual(response, {"id": 99, "result": {"shutdown": True}})
         self.assertIn("[ruyi_bridge] Shutdown complete", stderr.getvalue())
+
+    def test_launch_enable_debugger_starts_rdp_and_native_breakpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    BRIDGE_MODULE.os.environ,
+                    {"RUYI_MCP_PROFILE_ROOT": str(Path(tmp) / "profiles")},
+                    clear=False,
+                ),
+                patch.object(BRIDGE_MODULE, "FirefoxOptions", FakeLaunchOptions),
+                patch.object(BRIDGE_MODULE, "FirefoxPage", FakeLaunchPage),
+                patch.object(BRIDGE_MODULE, "_allocate_loopback_port", lambda: 60123),
+            ):
+                bridge = BRIDGE_MODULE.RuyiBridge()
+                launch = bridge.handle(
+                    {
+                        "id": 40,
+                        "method": "browser.launch",
+                        "params": {
+                            "browserPath": "/contract/fake-firefox",
+                            "enableDebugger": True,
+                        },
+                    }
+                )
+                self.assertNotIn("error", launch, launch)
+                self.assertTrue(launch["result"]["debuggerEnabled"])
+                self.assertEqual(launch["result"]["debuggerPort"], 60123)
+                self.assertTrue(launch["result"]["debuggerStarted"])
+                options = FakeLaunchOptions.instances[-1]
+                self.assertTrue(options.debugger_enabled)
+                self.assertEqual(options.debugger_port, 60123)
+                self.assertIn("--start-debugger-server", options.arguments)
+                self.assertTrue(bridge.page.debugger.started)
+                self.assertEqual(
+                    bridge.page.debugger.start_calls[-1]["auto_resume_after"], 60
+                )
+
+                planted = bridge.handle(
+                    {
+                        "id": 41,
+                        "method": "debug.set_breakpoint_on_text",
+                        "params": {"pageIdx": 0, "text": "var y = x + 1"},
+                    }
+                )
+                self.assertNotIn("error", planted, planted)
+                self.assertEqual(planted["result"]["type"], "native")
+                self.assertEqual(planted["result"]["line"], 2)
+                self.assertNotIn("debugger;", json.dumps(planted))
+
+                paused = bridge.handle(
+                    {
+                        "id": 42,
+                        "method": "debug.wait_paused",
+                        "params": {"pageIdx": 0, "timeout": 1},
+                    }
+                )
+                self.assertNotIn("error", paused, paused)
+                self.assertTrue(paused["result"]["paused"])
+                self.assertEqual(paused["result"]["state"]["why"], "breakpoint")
+                self.assertEqual(paused["result"]["state"]["line"], 2)
+
+                scope = bridge.handle(
+                    {"id": 43, "method": "debug.scope", "params": {"pageIdx": 0}}
+                )
+                self.assertNotIn("error", scope, scope)
+                self.assertEqual(scope["result"]["scope"]["x"], 41)
+
+                xhr = bridge.handle(
+                    {
+                        "id": 44,
+                        "method": "debug.break_on_xhr",
+                        "params": {"pageIdx": 0, "url": "/missing-endpoint"},
+                    }
+                )
+                self.assertNotIn("error", xhr, xhr)
+                self.assertEqual(xhr["result"]["error"], "xhr-breakpoint-unresolved")
+
+                listed = bridge.handle(
+                    {"id": 45, "method": "debug.list_breakpoints", "params": {}}
+                )
+                self.assertEqual(listed["result"]["breakpoints"][0]["type"], "native")
+
+                bridge.handle({"id": 46, "method": "browser.quit", "params": {}})
+
+    def test_debug_enable_without_launch_flag_fails_closed(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeLaunchPage(FakeLaunchOptions())
+        bridge.page = page
+        bridge.pages[0] = page
+        response = bridge.handle(
+            {"id": 47, "method": "debug.enable", "params": {"pageIdx": 0}}
+        )
+        self.assertIn("error", response)
+        self.assertIn("enableDebugger=true", response["error"]["message"])
 
 
 if __name__ == "__main__":

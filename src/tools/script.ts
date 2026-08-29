@@ -59,10 +59,24 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
         }`;
       }
 
+      try {
+        const debugSources = await ctx.bridgeInstance.call('debug.sources', {
+          pageIdx,
+          filter,
+        }) as Record<string, unknown>;
+        if (Array.isArray(debugSources.sources)) {
+          return {
+            content: [{ type: 'text', text: jsonResult({ ...debugSources, via: 'debugger' }) }],
+          };
+        }
+      } catch {
+        // debugger not started: fall back to DOM script[src]
+      }
+
       const result = await ctx.bridgeInstance.call('script.evaluate', { pageIdx, script }) as Record<string, unknown>;
 
       return {
-        content: [{ type: 'text', text: jsonResult(result) }],
+        content: [{ type: 'text', text: jsonResult({ ...result, via: 'dom' }) }],
       };
     }) as ToolHandler,
   });
@@ -132,6 +146,23 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
         }
       }`;
 
+      try {
+        const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+          pageIdx,
+          url,
+          startLine,
+          endLine,
+          maxChars: length,
+        }) as Record<string, unknown>;
+        if (debugSource.ok === true) {
+          return {
+            content: [{ type: 'text', text: jsonResult({ ...debugSource, via: 'debugger' }) }],
+          };
+        }
+      } catch {
+        // debugger not started: fall back to fetch
+      }
+
       const result = await ctx.bridgeInstance.call('script.evaluate', {
         pageIdx,
         script,
@@ -190,6 +221,31 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
         };
       }
       const safeFilePath = pathCheck.resolved as string;
+
+      try {
+        const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+          pageIdx,
+          url,
+          maxChars: 2_000_000,
+        }) as Record<string, unknown>;
+        if (debugSource.ok === true && typeof debugSource.source === 'string') {
+          mkdirSync(dirname(safeFilePath), { recursive: true });
+          writeFileSync(safeFilePath, debugSource.source, 'utf-8');
+          return {
+            content: [{
+              type: 'text',
+              text: jsonResult({
+                savedTo: safeFilePath,
+                url: debugSource.url,
+                size: debugSource.source.length,
+                via: 'debugger',
+              }),
+            }],
+          };
+        }
+      } catch {
+        // debugger not started
+      }
 
       const script = `async () => {
         const requested = ${JSON.stringify(url)};
@@ -261,6 +317,25 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
       const caseSensitive = args.caseSensitive as boolean;
       const urlFilter = args.urlFilter as string || '';
       const maxResults = (args.maxResults as number | undefined) ?? 30;
+
+      if (!isRegex) {
+        try {
+          const debugSearch = await ctx.bridgeInstance.call('debug.search', {
+            pageIdx,
+            query,
+            urlFilter,
+            caseSensitive,
+            maxMatches: maxResults,
+          }) as Record<string, unknown>;
+          if (Array.isArray(debugSearch.matches)) {
+            return {
+              content: [{ type: 'text', text: jsonResult({ ...debugSearch, via: 'debugger' }) }],
+            };
+          }
+        } catch {
+          // debugger not started
+        }
+      }
 
       // Search in all inline scripts and fetch-able external scripts
       const script = `async () => {

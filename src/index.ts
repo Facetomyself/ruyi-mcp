@@ -17,9 +17,10 @@ async function main(): Promise<void> {
   console.error(`[ruyi-mcp] Starting ruyi-mcp v${SERVER_VERSION}...`);
   console.error('[ruyi-mcp] Browser: Firefox runtime managed by ruyiPage');
   console.error('[ruyi-mcp] Protocol: WebDriver BiDi');
-  console.error(`[ruyi-mcp] Toolset: ${toolset} (RUYI_MCP_TOOLSET=automation|all)`);
-  console.error('[ruyi-mcp] Capabilities: automation, network inspection, fingerprint analysis, human-like interaction');
+  console.error(`[ruyi-mcp] Toolset: ${toolset} (RUYI_MCP_TOOLSET=automation|debug|all)`);
+  console.error('[ruyi-mcp] Capabilities: automation, firefox-debugger, network inspection, fingerprint analysis, human-like interaction');
   console.error('[ruyi-mcp] Evidence handoff: browser-session-handoff.v1');
+  console.error('[ruyi-mcp] Debugger observations are not RuyiTrace browser facts');
 
   const bridge = new PythonBridge();
   let server: Awaited<ReturnType<typeof createServer>> | null = null;

@@ -3,7 +3,7 @@
 [简体中文](README.md) | [English](README_EN.md)
 
 [![CI](https://github.com/Facetomyself/ruyi-mcp-reverse-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Facetomyself/ruyi-mcp-reverse-env/actions/workflows/ci.yml)
-[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.62-blue)](https://pypi.org/project/ruyiPage/1.2.62/)
+[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.65-blue)](https://pypi.org/project/ruyiPage/1.2.65/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 This repository is the Private reverse_ENV integration mirror based on Public [`Facetomyself/ruyi-mcp`](https://github.com/Facetomyself/ruyi-mcp) commit `788d7af28dd9ec4e91d79470cd30030aac3f8aba`. It provides Firefox / WebDriver BiDi browser control, runtime inspection, fingerprint analysis, network interception, human-like interaction, and evidence handoff for reverse_ENV. The Public repository remains read-only and never receives local implementation branches.
@@ -12,7 +12,7 @@ This project is independently maintained by the community. It is not an official
 
 ## Highlights
 
-- Default automation toolset is about 48 MCP tools covering page lifecycle, humanized input, fingerprint/proxy, network observation, cookies, DOM, frames, interception, WebSockets, native downloads, and session handoff. Source/soft-breakpoint tools appear only with `RUYI_MCP_TOOLSET=all` (full 57-tool surface).
+- Default automation toolset covers page lifecycle, humanized input, fingerprint/proxy, network observation, cookies, DOM, frames, interception, WebSockets, native downloads, and session handoff. Native debugger/source tools appear only with `RUYI_MCP_TOOLSET=debug` or `all`. The debugger plants breakpoints itself over Firefox DevTools RDP; it does not inject `debugger;`. Debugger observations are not RuyiTrace facts.
 - The control plane no longer pretends to be a trace plane: `ruyi_trace_*`, `traceEnabled`, and Bridge trace state are removed. The independent Private `ruyitrace-mcp` owns RuyiTrace evidence capture.
 - The startup log identifies only `Evidence handoff: browser-session-handoff.v1`; ruyiPage BiDi observation must not be presented as a Trace evidence plane.
 - `ruyi_export_session` emits a Cookie-only canonical `browser-session-handoff.v1` by default. Raw cookies are written only under the project `evidence/web/handoff/<handoffId>/`; the response contains `evidence-pointer.v1`, a redacted proxy endpoint, and verifiable browser/source metadata.
@@ -33,12 +33,13 @@ This project is independently maintained by the community. It is not an official
 
 - Node.js 20 or later.
 - Python 3.10 or later; CI currently verifies Python 3.13.
-- `ruyiPage==1.2.62` and reverse_ENV's locked `151-proxy` Firefox. Do not run `python -m ruyipage install` over that runtime; the upstream installer now targets Firefox 155.
+- `ruyiPage==1.2.65` and reverse_ENV's locked `151-proxy` Firefox. Do not run `python -m ruyipage install` over that runtime; the upstream installer still targets Firefox 155.
 
 ## Compatibility
 
 | ruyi-mcp | ruyiPage | Node.js | Python | Verified environment |
 |----------|----------|---------|--------|----------------------|
+| `0.3.0-reverse-env.1` | `1.2.65` | `>=20` | `>=3.10` | native `page.debugger` RDP + 151-proxy debugger gate + debug toolset + 1.2.65 wheel lock |
 | `0.2.0-reverse-env.2` | `1.2.62` | `>=20` | `>=3.10` | 1.2.62 launch/fingerprint/capture-fallback contracts + default automation toolset + owned Firefox reap + 57-tool `all` snapshot |
 | `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 49 Bridge contracts + canonical 57-tool snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
 | `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + complete 59-tool schema snapshot + lifecycle gates + same-origin/cross-origin Firefox frame runtime gate |
@@ -70,7 +71,7 @@ npm run check
 - `RUYI_FIREFOX_PATH`: Firefox executable path used for new launches. If unset, the Bridge checks only the Windows ruyiPage browser cache and `PATH`; it never falls back to a RuyiTrace runtime. `ruyi_attach_browser` only attaches to an existing BiDi endpoint and does not require a local browser path.
 - `RUYI_MCP_PROFILE_ROOT`: absolute parent directory for disposable Firefox profiles owned by the Bridge. It defaults to `<ruyi-mcp>/browser-profiles`; residual profiles after an abnormal exit are confined there and the directory is Git-ignored.
 - `RUYI_MCP_LOCAL_HEAD`: explicit Private-mirror Git SHA for release installs without `.git`; normal checkouts read local HEAD directly.
-- `RUYI_MCP_TOOLSET`: default `automation` (hides soft-breakpoint/source tools). `all` / `expert` / `full` expose the complete 57-tool surface.
+- `RUYI_MCP_TOOLSET`: default `automation` (hides debugger/source tools, does not start RDP). `debug` / `all` / `expert` / `full` expose the native debugger; `debug`/`all` default `ruyi_new_page.enableDebugger=true`.
 
 ## Proxy ingress in reverse_ENV
 
@@ -83,7 +84,7 @@ npm run check
 ## Firefox Runtime Selection
 
 - This control plane does not register `ruyi_trace_*` or accept `traceEnabled`. The ruyiPage in-memory BiDi trace is no longer presented as an evidence plane.
-- The ruyiPage `1.2.62` installer defaults to Firefox 155 (release `v1.2.58`). This control plane still uses the locally locked `151-proxy`. Never infer credentialed HTTP/SOCKS5 capability from the Firefox version string. Firefox 155 is a parallel candidate, not the default.
+- The ruyiPage `1.2.65` installer defaults to Firefox 155 (release `v1.2.58`). This control plane and debugger still use the locally locked `151-proxy` (debugger gate passed 2026-08-29). Never infer credentialed HTTP/SOCKS5 capability from the Firefox version string. Firefox 155 is a parallel candidate, not the default. Native debugger requires `enableDebugger=true` at launch. Debugger observations are not RuyiTrace facts.
 - New owned sessions force `allow_system_access(False)` and use `about:blank` unless `privateMode` is set, so an elevated Windows token cannot silently add `--remote-allow-system-access`.
 - `ruyi_browser_quit` reaps leftover `firefox.exe` / `plugin-container.exe` for MCP-owned processes by PID and managed profile; attach sessions never kill the external browser.
 - The [`Ruyi Trace v2.5`](https://github.com/LoseNine/Firefox-FingerPrint-Analyzer/releases/tag/v2.5) asset contains app `2.5.5` and Firefox `151.0a1` (BuildID `20260718144531`) for the independent C++ DOMTrace evidence plane only. It is not distributed by this repository and must not be configured as `RUYI_FIREFOX_PATH`; reverse_ENV manages it through a Private runtime lock and `ruyitrace-mcp`.

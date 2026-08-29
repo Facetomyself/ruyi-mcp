@@ -3,18 +3,19 @@
 [简体中文](README.md) | [English](README_EN.md)
 
 [![CI](https://github.com/Facetomyself/ruyi-mcp-reverse-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Facetomyself/ruyi-mcp-reverse-env/actions/workflows/ci.yml)
-[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.62-blue)](https://pypi.org/project/ruyiPage/1.2.62/)
+[![ruyiPage](https://img.shields.io/badge/ruyiPage-1.2.65-blue)](https://pypi.org/project/ruyiPage/1.2.65/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-本仓库是 reverse_ENV 的 Private integration mirror，基于 Public [`Facetomyself/ruyi-mcp`](https://github.com/Facetomyself/ruyi-mcp) 的 `788d7af28dd9ec4e91d79470cd30030aac3f8aba`。它将 Firefox / WebDriver BiDi 浏览器控制、运行时观察、指纹分析、网络拦截、人类行为模拟与 evidence handoff 提供给 reverse_ENV；Public 仓库保持只读，不承载本地实现分支。
+本仓库是 reverse_ENV 的 Private integration mirror，基于 Public [`Facetomyself/ruyi-mcp`](https://github.com/Facetomyself/ruyi-mcp) 的 `788d7af28dd9ec4e91d79470cd30030aac3f8aba`。它将 Firefox / WebDriver BiDi 浏览器控制、原生 JS debugger（DevTools RDP）、指纹分析、网络拦截、人类行为模拟与 evidence handoff 提供给 reverse_ENV；Public 仓库保持只读，不承载本地实现分支。
 
 本项目由社区独立维护，是非官方集成，不代表 ruyiPage 官方项目。
 
 ## 核心能力
 
-- 默认自动化 toolset 约 48 个 MCP 工具，覆盖页面生命周期、拟人交互、指纹/代理、网络观察、Cookie、DOM、Frame、拦截、WebSocket、原生下载与 Session handoff。源码/软断点工具只在 `RUYI_MCP_TOOLSET=all` 时出现（完整 57 个）。
-- 控制面不再伪装 Trace 能力：`ruyi_trace_*`、`traceEnabled` 和 Bridge Trace 状态均已删除；RuyiTrace 证据采集只由独立 Private `ruyitrace-mcp` 承担。
-- 启动日志只声明 `Evidence handoff: browser-session-handoff.v1`，不得把 ruyiPage 的 BiDi 观察能力表述为 Trace 证据面。
+- 默认自动化 toolset 覆盖页面生命周期、拟人交互、指纹/代理、网络观察、Cookie、DOM、Frame、拦截、WebSocket、原生下载与 Session handoff。原生 debugger / 源码工具只在 `RUYI_MCP_TOOLSET=debug` 或 `all` 时出现。
+- `page.debugger` 走 Firefox DevTools RDP（`--start-debugger-server`），由 debugger 自己在源 URL/行下端点：断点、条件断点、单步、调用栈、作用域、读源码、异常暂停。禁止 preload 注入 `debugger;`。
+- debugger pause/scope 是观察，不是 RuyiTrace browser fact。`ruyi_trace_*`、`traceEnabled` 和 Bridge Trace 状态均已删除；C++ DOMTrace 只由独立 Private `ruyitrace-mcp` 承担。
+- 启动日志声明 `Evidence handoff: browser-session-handoff.v1` 与 `firefox-debugger`；不得把 BiDi 观察或 debugger 暂停表述为 Trace 证据面。
 - `ruyi_export_session` 默认输出 Cookie-only 的 canonical `browser-session-handoff.v1`。Cookie 原值只写入项目 `evidence/web/handoff/<handoffId>/`，响应只包含 `evidence-pointer.v1`、脱敏代理端点和可验证的 browser/source 元数据。
 - `ruyi_human_drag` 提供原子的拟人拖拽动作链；`ruyi_human_scroll` 使用单方向原生 wheel 小步滚动；`ruyi_human_click` 每次点击前释放陈旧 source，并使用“拟人轨迹 + 带最终坐标的短 click pulse”派发可信 down/up/click。
 - `ruyi_set_fingerprint` 将 outer window、viewport 与 screen 分成显式参数，不再伪造 Firefox 原生窗口几何。
@@ -33,12 +34,13 @@
 
 - Node.js 20 或更高版本。
 - Python 3.10 或更高版本；当前已在 Python 3.13 上验证。
-- `ruyiPage==1.2.62`，以及由 reverse_ENV 锁定的 `151-proxy` Firefox；不要运行 `python -m ruyipage install` 覆盖该 runtime（上游安装器已改指向 Firefox 155）。
+- `ruyiPage==1.2.65`，以及由 reverse_ENV 锁定的 `151-proxy` Firefox；不要运行 `python -m ruyipage install` 覆盖该 runtime（上游安装器仍指向 Firefox 155）。
 
 ## 兼容性
 
 | ruyi-mcp | ruyiPage | Node.js | Python | 验证环境 |
 |----------|----------|---------|--------|----------|
+| `0.3.0-reverse-env.1` | `1.2.65` | `>=20` | `>=3.10` | native `page.debugger` RDP + 151-proxy debugger gate + debug toolset + 1.2.65 wheel lock |
 | `0.2.0-reverse-env.2` | `1.2.62` | `>=20` | `>=3.10` | 1.2.62 启动/指纹/capture fallback 合同 + 默认 automation toolset + owned Firefox reap + 57-tool `all` snapshot |
 | `0.2.0-reverse-env.1` | `1.2.56` | `>=20` | `>=3.10` | 49 Bridge contracts + 57 tools canonical snapshot + `browser-session-handoff.v1` fixture/parity + lifecycle gates |
 | `v0.1.8` | `1.2.56` | `>=20` | `>=3.10` | 48 Bridge contracts + 59 tools 完整 schema snapshot + lifecycle gates + 同源/跨域 Firefox frame runtime gate |
@@ -51,7 +53,7 @@
 
 仓库对 `ruyiPage` 使用精确版本锁定。升级兼容版本前会重新执行 Bridge contract、TypeScript build、当前完整 tool schema snapshot、Session handoff contract、Server/Bridge lifecycle 与 Firefox runtime gates。
 
-最新来源项目 release、commit、issue、PR、wheel parity 与升级决策见 [`docs/upstream-audit-2026-08-23.md`](docs/upstream-audit-2026-08-23.md)；1.2.56 适配见 [`2026-07-30` 审计](docs/upstream-audit-2026-07-30.md)；Firefox 151 与 Ruyi Trace 2.5.5 见 [`2026-07-27` 审计](docs/upstream-audit-2026-07-27.md)；MCP SDK 安全更新见 [`docs/dependency-security-2026-07-28.md`](docs/dependency-security-2026-07-28.md)。
+最新来源项目 release、commit、issue、PR、wheel parity 与升级决策见 [`docs/upstream-audit-2026-08-29.md`](docs/upstream-audit-2026-08-29.md)；1.2.62 适配见 [`2026-08-23` 审计](docs/upstream-audit-2026-08-23.md)；1.2.56 适配见 [`2026-07-30` 审计](docs/upstream-audit-2026-07-30.md)；MCP SDK 安全更新见 [`docs/dependency-security-2026-07-28.md`](docs/dependency-security-2026-07-28.md)。
 
 ## 安装
 
@@ -70,7 +72,7 @@ npm run check
 - `RUYI_FIREFOX_PATH`：新建浏览器时使用的 Firefox 可执行文件路径。未设置时，Bridge 只检查 Windows RuyiPage 浏览器缓存和 `PATH`，绝不回退到 RuyiTrace runtime；`ruyi_attach_browser` 只接管现有 BiDi 端口，不要求本地 browser path。
 - `RUYI_MCP_PROFILE_ROOT`：Bridge 自动创建的 disposable Firefox profile 根目录。必须是绝对路径；未设置时默认为 `<ruyi-mcp>/browser-profiles`。异常退出留下的残留也只会位于此处，且该目录被 Git 忽略。
 - `RUYI_MCP_LOCAL_HEAD`：仅供无 `.git` 的 release 安装显式提供 Private mirror Git SHA；普通 checkout 会直接读取本地 HEAD。
-- `RUYI_MCP_TOOLSET`：默认 `automation`（隐藏软断点/源码工具）。`all` / `expert` / `full` 暴露完整 57 个工具。
+- `RUYI_MCP_TOOLSET`：默认 `automation`（隐藏 debugger/源码工具，不启动 RDP）。`debug` / `all` / `expert` / `full` 暴露原生 debugger；`debug`/`all` 下 `ruyi_new_page` 默认 `enableDebugger=true`。
 
 ## 代理接入（reverse_ENV）
 
@@ -83,7 +85,8 @@ npm run check
 ## Firefox runtime 选择
 
 - 本控制面不注册 `ruyi_trace_*`，也不接受 `traceEnabled`。RuyiPage 内存 BiDi Trace 不再冒充证据平面。
-- ruyiPage `1.2.62` 的安装器默认下载 Firefox 155（release `v1.2.58`）。reverse_ENV 控制面仍使用本地锁定的 `151-proxy`。credentialed HTTP / SOCKS5 proxy 不得拿 Firefox 版本号推断；155 只作并列候选，默认不切换。
+- ruyiPage `1.2.65` 的安装器默认下载 Firefox 155（release `v1.2.58`）。reverse_ENV 控制面与 debugger 仍使用本地锁定的 `151-proxy`（2026-08-29 debugger gate 已过）。credentialed HTTP / SOCKS5 proxy 不得拿 Firefox 版本号推断；155 只作并列候选，默认不切换。
+- 原生 debugger 必须在 launch 时 `enableDebugger=true`，写入 `--start-debugger-server` 与 loopback RDP 端口。暂停期间不要调用 `run_js` / 点击；看门狗默认 60 秒自动 resume。debugger 观察写入 `evidence/web/ruyi-debug/`，不得标成 ruyitrace。
 - 新建会话显式 `allow_system_access(False)`，非 private 启动页为 `about:blank`，避免 Windows 提权会话自动加上 `--remote-allow-system-access`。
 - `ruyi_browser_quit` 对 MCP 自己启动的 Firefox 会按 PID/profile 回收残留 `firefox.exe` / `plugin-container.exe`；attach 会话永不杀外部进程。
 - [`Ruyi Trace v2.5`](https://github.com/LoseNine/Firefox-FingerPrint-Analyzer/releases/tag/v2.5) 的资产实际为 app `2.5.5` + Firefox `151.0a1`（BuildID `20260718144531`），只用于独立 C++ DOMTrace 证据平面。它不随本仓库分发，也不得设置为 `RUYI_FIREFOX_PATH`；reverse_ENV 通过 Private runtime lock 与 `ruyitrace-mcp` 单独管理。

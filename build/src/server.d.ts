@@ -3,7 +3,7 @@
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { PythonBridge } from './bridge/python.js';
-export declare const SERVER_VERSION = "0.2.0-reverse-env.2";
+export declare const SERVER_VERSION = "0.3.0-reverse-env.1";
 /**
  * Dispose the resources owned by one server instance.
  *
