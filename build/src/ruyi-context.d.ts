@@ -12,12 +12,14 @@ export interface PageInfo {
 export interface BreakpointInfo {
     breakpointId: string;
     text: string;
-    mode?: 'text' | 'xhr' | 'location';
+    mode?: 'text' | 'xhr' | 'xhr-native' | 'location';
     pattern?: string;
     urlFilter?: string;
     condition?: string;
     type: 'native' | 'soft';
+    pageIdx?: number;
     url?: string;
+    sourceActor?: string;
     line?: number;
     column?: number;
 }
@@ -47,6 +49,7 @@ export declare class RuyiContext {
     addBreakpoint(bp: BreakpointInfo): void;
     removeBreakpoint(breakpointId: string): void;
     getBreakpoints(): BreakpointInfo[];
+    clearBreakpoints(pageIdx?: number): void;
     setCaptureActive(active: boolean, pattern?: string): void;
     reset(): void;
 }

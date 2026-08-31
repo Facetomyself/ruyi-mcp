@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Facetomyself/ruyi-mcp-reverse-env/contracts/debugger-observation.v1.schema.json",
+  "title": "ruyi-mcp debugger observation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "recordedAt", "action", "payload"],
+  "properties": {
+    "schema": {"const": "ruyi-debug-observation.v1"},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "action": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{1,79}$"},
+    "payload": {}
+  }
+}

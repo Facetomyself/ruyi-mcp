@@ -90,6 +90,26 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
           debuggerPort: {
             type: 'number',
             description: 'RDP 端口。新启动默认随机本机端口；attach 且 enableDebugger 时必填。',
+            minimum: 1,
+            maximum: 65535,
+          },
+          debuggerAutoResumeAfter: {
+            type: 'number',
+            description: '暂停看门狗秒数，默认 60；0 表示关闭。',
+            minimum: 0,
+            maximum: 3600,
+          },
+          debugEvidenceRoot: {
+            type: 'string',
+            description: '可选项目 workspace 绝对路径；启用后将 debugger 观察写入 evidence/web/ruyi-debug/<runId>/。',
+          },
+          debugCaseId: {
+            type: 'string',
+            description: 'debug evidence 的 caseId；省略时取 debugEvidenceRoot 目录名。',
+          },
+          debugRunId: {
+            type: 'string',
+            description: 'debug evidence runId；省略时由 Bridge 生成。',
           },
           fingerprint: {
             type: 'object',
@@ -141,20 +161,57 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
           ...(args as Record<string, unknown>),
           enableDebugger,
         });
-        const result = await ctx.bridgeInstance.call('page.navigate', {
-          pageIdx: ctx.getActivePageIdx(),
-          url,
-          timeout,
-        }) as Record<string, unknown>;
+        let result: Record<string, unknown>;
+        let debuggerResult: Record<string, unknown> | undefined;
+        try {
+          result = await ctx.bridgeInstance.call('page.navigate', {
+            pageIdx: ctx.getActivePageIdx(),
+            url,
+            timeout,
+          }) as Record<string, unknown>;
+
+          // Firefox invalidates the initial RDP thread actor during
+          // navigation. The bridge enables the server at launch, but attaches
+          // the debugger only after the first document is ready.
+          if (enableDebugger) {
+            debuggerResult = await ctx.bridgeInstance.call('debug.enable', {
+              pageIdx: ctx.getActivePageIdx(),
+              autoResumeAfter: args.debuggerAutoResumeAfter,
+            }) as Record<string, unknown>;
+          }
+        } catch (error) {
+          await ctx.quit().catch(() => {});
+          throw error;
+        }
 
         await ctx.refreshPages();
 
         return {
-          content: [{ type: 'text', text: jsonResult({ created: true, launched: true, ...result }) }],
+          content: [{
+            type: 'text',
+            text: jsonResult({
+              created: true,
+              launched: true,
+              ...result,
+              ...(debuggerResult ? { debugger: debuggerResult } : {}),
+            }),
+          }],
         };
       }
 
-      const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'profilePath', 'fingerprint', 'enableDebugger', 'debuggerPort'];
+      const launchOnlyArgs = [
+        'proxy',
+        'headless',
+        'privateMode',
+        'profilePath',
+        'fingerprint',
+        'enableDebugger',
+        'debuggerPort',
+        'debuggerAutoResumeAfter',
+        'debugEvidenceRoot',
+        'debugCaseId',
+        'debugRunId',
+      ];
       const conflictingArgs = launchOnlyArgs.filter((key) => args[key] !== undefined);
       if (conflictingArgs.length > 0) {
         throw new Error(

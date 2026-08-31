@@ -57,8 +57,20 @@ export function registerScriptTools(register, ctx) {
                     filter,
                 });
                 if (Array.isArray(debugSources.sources)) {
+                    const scripts = debugSources.sources.map((source) => ({
+                        src: source && typeof source === 'object' && 'url' in source
+                            ? source.url ?? ''
+                            : '',
+                        sourceActor: source && typeof source === 'object' && 'actor' in source
+                            ? source.actor
+                            : undefined,
+                        type: 'javascript',
+                    }));
                     return {
-                        content: [{ type: 'text', text: jsonResult({ ...debugSources, via: 'debugger' }) }],
+                        content: [{
+                                type: 'text',
+                                text: jsonResult({ ...debugSources, scripts, result: scripts, via: 'debugger' }),
+                            }],
                     };
                 }
             }
@@ -82,22 +94,44 @@ export function registerScriptTools(register, ctx) {
                 type: 'object',
                 properties: {
                     url: { type: 'string', description: '脚本 URL（精确匹配优先，然后子串匹配）' },
+                    sourceActor: { type: 'string', description: '无 URL 的 eval/blob/inline source actor' },
                     pageIdx: { type: 'number', default: 0 },
-                    startLine: { type: 'number', description: '起始行号（1-based）' },
-                    endLine: { type: 'number', description: '结束行号（1-based）' },
-                    offset: { type: 'number', description: '字符偏移（0-based，用于单行压缩文件）' },
-                    length: { type: 'number', description: '返回字符数（配合 offset 使用），默认 1000', default: 1000 },
+                    startLine: { type: 'number', description: '起始行号（1-based）', minimum: 1 },
+                    endLine: { type: 'number', description: '结束行号（1-based）', minimum: 1 },
+                    offset: { type: 'number', description: '字符偏移（0-based，用于单行压缩文件）', minimum: 0 },
+                    length: { type: 'number', description: '返回字符数（配合 offset 使用），默认 1000', default: 1000, minimum: 0, maximum: 8000000 },
                 },
-                required: ['url'],
+                required: [],
+                oneOf: [{ required: ['url'] }, { required: ['sourceActor'] }],
             },
         },
         handler: (async (args) => {
             const pageIdx = getPageIdx(args, ctx);
-            const url = args.url;
+            const url = typeof args.url === 'string' ? args.url.trim() : '';
+            const sourceActor = typeof args.sourceActor === 'string' ? args.sourceActor.trim() : '';
+            if (Boolean(url) === Boolean(sourceActor)) {
+                throw new Error('Exactly one of url or sourceActor is required');
+            }
             const startLine = args.startLine;
             const endLine = args.endLine;
             const offset = args.offset;
             const length = args.length ?? 1000;
+            const lengthProvided = args.length !== undefined;
+            if (offset !== undefined && (!Number.isInteger(offset) || offset < 0)) {
+                throw new Error('offset must be a non-negative integer');
+            }
+            if (!Number.isInteger(length) || length < 0 || length > 8_000_000) {
+                throw new Error('length must be an integer between 0 and 8000000');
+            }
+            if (startLine !== undefined && (!Number.isInteger(startLine) || startLine < 1)) {
+                throw new Error('startLine must be a positive integer');
+            }
+            if (endLine !== undefined && (!Number.isInteger(endLine) || endLine < 1)) {
+                throw new Error('endLine must be a positive integer');
+            }
+            if (startLine !== undefined && endLine !== undefined && endLine < startLine) {
+                throw new Error('endLine must be >= startLine');
+            }
             const script = `async () => {
         const requested = ${JSON.stringify(url)};
         const scripts = Array.from(document.querySelectorAll('script[src]')).map(s => s.src);
@@ -137,18 +171,32 @@ export function registerScriptTools(register, ctx) {
                 const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
                     pageIdx,
                     url,
+                    sourceActor,
                     startLine,
                     endLine,
-                    maxChars: length,
+                    offset,
+                    maxChars: offset !== undefined || lengthProvided ? length : 50000,
                 });
                 if (debugSource.ok === true) {
                     return {
-                        content: [{ type: 'text', text: jsonResult({ ...debugSource, via: 'debugger' }) }],
+                        content: [{
+                                type: 'text',
+                                text: jsonResult({ ...debugSource, via: 'debugger' }),
+                            }],
                     };
                 }
             }
             catch {
                 // debugger not started: fall back to fetch
+            }
+            if (!url) {
+                return {
+                    content: [{
+                            type: 'text',
+                            text: jsonResult({ error: 'sourceActor requires an active debugger' }),
+                        }],
+                    isError: true,
+                };
             }
             const result = await ctx.bridgeInstance.call('script.evaluate', {
                 pageIdx,
@@ -172,20 +220,26 @@ export function registerScriptTools(register, ctx) {
             inputSchema: {
                 type: 'object',
                 properties: {
-                    url: { type: 'string', description: '脚本 URL' },
+                    url: { type: 'string', description: '脚本 URL（与 sourceActor 二选一）' },
+                    sourceActor: { type: 'string', description: '无 URL 的 eval/blob/inline source actor' },
                     filePath: {
                         type: 'string',
                         description: '本地保存路径（绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）',
                     },
                     pageIdx: { type: 'number', default: 0 },
                 },
-                required: ['url', 'filePath'],
+                required: ['filePath'],
+                oneOf: [{ required: ['url', 'filePath'] }, { required: ['sourceActor', 'filePath'] }],
             },
         },
         handler: (async (args) => {
             const pageIdx = getPageIdx(args, ctx);
-            const url = args.url;
+            const url = typeof args.url === 'string' ? args.url.trim() : '';
+            const sourceActor = typeof args.sourceActor === 'string' ? args.sourceActor.trim() : '';
             const filePath = args.filePath;
+            if (Boolean(url) === Boolean(sourceActor)) {
+                throw new Error('Exactly one of url or sourceActor is required');
+            }
             // Containment check before any browser fetch or filesystem write.
             const pathCheck = resolveSafeOutputPath(filePath, 'filePath', 'file', declaredWriteRoot(args));
             if (!pathCheck.ok) {
@@ -208,9 +262,25 @@ export function registerScriptTools(register, ctx) {
                 const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
                     pageIdx,
                     url,
+                    sourceActor,
                     maxChars: 2_000_000,
                 });
                 if (debugSource.ok === true && typeof debugSource.source === 'string') {
+                    if (debugSource.truncated === true) {
+                        return {
+                            content: [{
+                                    type: 'text',
+                                    text: jsonResult({
+                                        error: 'source-truncated',
+                                        totalLength: debugSource.totalLength,
+                                        maxChars: 2_000_000,
+                                        url: debugSource.url,
+                                        sourceActor: debugSource.sourceActor,
+                                    }),
+                                }],
+                            isError: true,
+                        };
+                    }
                     mkdirSync(dirname(safeFilePath), { recursive: true });
                     writeFileSync(safeFilePath, debugSource.source, 'utf-8');
                     return {
@@ -219,6 +289,7 @@ export function registerScriptTools(register, ctx) {
                                 text: jsonResult({
                                     savedTo: safeFilePath,
                                     url: debugSource.url,
+                                    sourceActor: debugSource.sourceActor,
                                     size: debugSource.source.length,
                                     via: 'debugger',
                                 }),
@@ -228,6 +299,15 @@ export function registerScriptTools(register, ctx) {
             }
             catch {
                 // debugger not started
+            }
+            if (!url) {
+                return {
+                    content: [{
+                            type: 'text',
+                            text: jsonResult({ error: 'sourceActor requires an active debugger' }),
+                        }],
+                    isError: true,
+                };
             }
             const script = `async () => {
         const requested = ${JSON.stringify(url)};
@@ -305,8 +385,32 @@ export function registerScriptTools(register, ctx) {
                         maxMatches: maxResults,
                     });
                     if (Array.isArray(debugSearch.matches)) {
+                        const results = debugSearch.matches.map((match) => ({
+                            src: match && typeof match === 'object' && 'url' in match
+                                ? match.url ?? ''
+                                : '',
+                            sourceActor: match && typeof match === 'object' && 'sourceActor' in match
+                                ? match.sourceActor
+                                : undefined,
+                            kind: 'debugger',
+                            line: match && typeof match === 'object' && 'line' in match
+                                ? match.line
+                                : undefined,
+                            preview: match && typeof match === 'object' && 'preview' in match
+                                ? match.preview
+                                : '',
+                        }));
                         return {
-                            content: [{ type: 'text', text: jsonResult({ ...debugSearch, via: 'debugger' }) }],
+                            content: [{
+                                    type: 'text',
+                                    text: jsonResult({
+                                        ...debugSearch,
+                                        results,
+                                        skipped: [],
+                                        searchedExternal: 0,
+                                        via: 'debugger',
+                                    }),
+                                }],
                         };
                     }
                 }

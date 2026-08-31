@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Facetomyself/ruyi-mcp-reverse-env/contracts/debugger-pointer.v1.schema.json",
+  "title": "ruyi-mcp debugger evidence pointer v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "caseId",
+    "plane",
+    "runId",
+    "artifactId",
+    "path",
+    "sha256",
+    "bytes",
+    "mediaType",
+    "recordCount",
+    "sensitivity",
+    "redaction"
+  ],
+  "properties": {
+    "schema": {"const": "ruyi-debug-pointer.v1"},
+    "caseId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,79}$"},
+    "plane": {"const": "ruyi-debug"},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,95}$"},
+    "artifactId": {"const": "debug-observations"},
+    "path": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^evidence/web/ruyi-debug/[a-z0-9][a-z0-9_-]{0,95}/observations\\.jsonl$"
+    },
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "bytes": {"type": "integer", "minimum": 1},
+    "mediaType": {"const": "application/jsonl"},
+    "recordCount": {"type": "integer", "minimum": 1},
+    "sensitivity": {"const": "private-redacted"},
+    "redaction": {"const": "allowlist-summary"}
+  }
+}

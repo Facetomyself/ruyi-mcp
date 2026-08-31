@@ -79,6 +79,26 @@ export function registerPageTools(register, ctx) {
                     debuggerPort: {
                         type: 'number',
                         description: 'RDP 端口。新启动默认随机本机端口；attach 且 enableDebugger 时必填。',
+                        minimum: 1,
+                        maximum: 65535,
+                    },
+                    debuggerAutoResumeAfter: {
+                        type: 'number',
+                        description: '暂停看门狗秒数，默认 60；0 表示关闭。',
+                        minimum: 0,
+                        maximum: 3600,
+                    },
+                    debugEvidenceRoot: {
+                        type: 'string',
+                        description: '可选项目 workspace 绝对路径；启用后将 debugger 观察写入 evidence/web/ruyi-debug/<runId>/。',
+                    },
+                    debugCaseId: {
+                        type: 'string',
+                        description: 'debug evidence 的 caseId；省略时取 debugEvidenceRoot 目录名。',
+                    },
+                    debugRunId: {
+                        type: 'string',
+                        description: 'debug evidence runId；省略时由 Bridge 生成。',
                     },
                     fingerprint: {
                         type: 'object',
@@ -128,17 +148,54 @@ export function registerPageTools(register, ctx) {
                     ...args,
                     enableDebugger,
                 });
-                const result = await ctx.bridgeInstance.call('page.navigate', {
-                    pageIdx: ctx.getActivePageIdx(),
-                    url,
-                    timeout,
-                });
+                let result;
+                let debuggerResult;
+                try {
+                    result = await ctx.bridgeInstance.call('page.navigate', {
+                        pageIdx: ctx.getActivePageIdx(),
+                        url,
+                        timeout,
+                    });
+                    // Firefox invalidates the initial RDP thread actor during
+                    // navigation. The bridge enables the server at launch, but attaches
+                    // the debugger only after the first document is ready.
+                    if (enableDebugger) {
+                        debuggerResult = await ctx.bridgeInstance.call('debug.enable', {
+                            pageIdx: ctx.getActivePageIdx(),
+                            autoResumeAfter: args.debuggerAutoResumeAfter,
+                        });
+                    }
+                }
+                catch (error) {
+                    await ctx.quit().catch(() => { });
+                    throw error;
+                }
                 await ctx.refreshPages();
                 return {
-                    content: [{ type: 'text', text: jsonResult({ created: true, launched: true, ...result }) }],
+                    content: [{
+                            type: 'text',
+                            text: jsonResult({
+                                created: true,
+                                launched: true,
+                                ...result,
+                                ...(debuggerResult ? { debugger: debuggerResult } : {}),
+                            }),
+                        }],
                 };
             }
-            const launchOnlyArgs = ['proxy', 'headless', 'privateMode', 'profilePath', 'fingerprint', 'enableDebugger', 'debuggerPort'];
+            const launchOnlyArgs = [
+                'proxy',
+                'headless',
+                'privateMode',
+                'profilePath',
+                'fingerprint',
+                'enableDebugger',
+                'debuggerPort',
+                'debuggerAutoResumeAfter',
+                'debugEvidenceRoot',
+                'debugCaseId',
+                'debugRunId',
+            ];
             const conflictingArgs = launchOnlyArgs.filter((key) => args[key] !== undefined);
             if (conflictingArgs.length > 0) {
                 throw new Error(`Browser is already launched; ${conflictingArgs.join(', ')} only apply at launch time. ` +

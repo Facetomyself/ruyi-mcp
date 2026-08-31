@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Opt-in Firefox 151 runtime gate for ruyiPage 1.2.65 page.debugger."""
+"""Direct Firefox 151 gate for ruyiPage 1.2.68 page.debugger.
+
+The production MCP path is covered separately by runtime_mcp_debugger.mjs;
+this script remains useful for isolating the upstream RDP adapter.
+"""
 
 from __future__ import annotations
 
@@ -97,9 +101,14 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
             )
             bp = dbg.set_breakpoint(url, line)
 
+            trigger_error: list[BaseException] = []
+
             def fire():
-                time.sleep(0.2)
-                page.run_js("targetFn(41)")
+                try:
+                    time.sleep(0.2)
+                    result["value"] = page.run_js("targetFn(41)")
+                except Exception as exc:  # surface worker failures in the gate
+                    trigger_error.append(exc)
 
             worker = threading.Thread(target=fire, daemon=True)
             worker.start()
@@ -116,12 +125,16 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
             assert after is not None, "step_over did not pause"
             dbg.resume()
             worker.join(timeout=5)
+            assert not worker.is_alive(), "trigger worker did not finish after resume"
+            assert not trigger_error, trigger_error[0]
+            assert result.get("value") == 84, result
             result.update(
                 {
                     "ok": True,
                     "breakpoint": {"url": bp.url, "line": bp.line, "column": bp.column},
                     "paused": {"why": state.why, "line": state.line},
                     "scopeX": scope.get("x"),
+                    "triggerResult": result.get("value"),
                     "stepOverLine": after.line,
                 }
             )
@@ -143,11 +156,13 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    reverse_env_root = Path(__file__).resolve().parents[3]
+    default_firefox = reverse_env_root / "tools" / "ruyipage" / "runtimes" / "151-proxy" / "firefox" / "firefox.exe"
     parser.add_argument(
         "--firefox",
         default=os.environ.get(
             "RUYI_FIREFOX_PATH",
-            r"D:\reverse_ENV\tools\ruyipage\runtimes\151-proxy\firefox\firefox.exe",
+            str(default_firefox),
         ),
     )
     parser.add_argument("--headless", action="store_true")

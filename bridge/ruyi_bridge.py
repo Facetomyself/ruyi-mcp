@@ -27,6 +27,7 @@ import tempfile
 import hashlib
 import re
 import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -47,6 +48,10 @@ try:
     from ruyipage import FirefoxPage, FirefoxOptions, Settings
     from ruyipage import NoneElement
     from ruyipage.errors import DebuggerError
+    try:
+        from ruyipage._units.debugger import Breakpoint as RuyiBreakpoint
+    except ImportError:
+        RuyiBreakpoint = None  # type: ignore
     RUYIPAGE_AVAILABLE = True
 except ImportError:
     RUYIPAGE_AVAILABLE = False
@@ -55,6 +60,7 @@ except ImportError:
     Settings = None  # type: ignore
     NoneElement = None  # type: ignore
     DebuggerError = RuntimeError  # type: ignore
+    RuyiBreakpoint = None  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +74,13 @@ def _serialize(obj: Any, depth: int = 0) -> Any:
         return None
     if isinstance(obj, bool):
         return obj
-    if isinstance(obj, (int, float)):
+    if isinstance(obj, float):
+        if math.isnan(obj):
+            return "NaN"
+        if math.isinf(obj):
+            return "Infinity" if obj > 0 else "-Infinity"
+        return obj
+    if isinstance(obj, int):
         return obj
     if isinstance(obj, str):
         return obj
@@ -103,11 +115,54 @@ def _allocate_loopback_port() -> int:
     return port
 
 
+_MISSING = object()
+
+
+def _normalize_debugger_port(value: Any) -> Optional[int]:
+    """Validate an RDP port before it reaches Firefox or a socket client."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("debuggerPort must be an integer between 1 and 65535")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("debuggerPort must be an integer between 1 and 65535")
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("debuggerPort must be an integer between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("debuggerPort must be an integer between 1 and 65535")
+    return port
+
+
+def _normalize_auto_resume_after(value: Any, *, default: Optional[float] = 60) -> Optional[float]:
+    """Normalize the watchdog value while preserving an explicit zero/false."""
+    if value is _MISSING:
+        return default
+    if value is None or value is False:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("autoResumeAfter must be a finite number >= 0")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("autoResumeAfter must be a finite number >= 0") from exc
+    if not math.isfinite(seconds) or seconds < 0 or seconds > 3600:
+        raise ValueError("autoResumeAfter must be a finite number between 0 and 3600")
+    return None if seconds == 0 else seconds
+
+
 def _debugger_value(value: Any, depth: int = 0) -> Any:
     """JSON-safe debugger values. RemoteObject keeps actor for expand()."""
     if depth > 4:
         return "<max depth exceeded>"
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "NaN"
+        if math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
         return value
     class_name = type(value).__name__
     if class_name == "RemoteObject":
@@ -126,6 +181,59 @@ def _debugger_value(value: Any, depth: int = 0) -> Any:
     if isinstance(value, (list, tuple)):
         return [_debugger_value(item, depth + 1) for item in value[:80]]
     return str(value)[:1000]
+
+
+_DEBUG_SECRET_KEY_RE = re.compile(
+    r"(?:token|cookie|secret|password|passwd|authorization|credential|session|api[-_]?key|jwt)",
+    re.IGNORECASE,
+)
+
+
+def _redact_debug_value(value: Any, *, key: str = "", depth: int = 0) -> Any:
+    """Create a bounded, redacted copy suitable for debugger evidence."""
+    if depth > 6:
+        return "<max depth exceeded>"
+    if key and _DEBUG_SECRET_KEY_RE.search(key):
+        return "<redacted>"
+    if type(value).__name__ == "RemoteObject":
+        return {
+            "type": "remoteObject",
+            "className": getattr(value, "class_name", "Object"),
+            "actor": getattr(value, "actor", None),
+            "truncated": bool(getattr(value, "truncated", False)),
+            "preview": _redact_debug_value(
+                getattr(value, "value", None), depth=depth + 1
+            ),
+        }
+    if isinstance(value, str):
+        if key.lower() in {"source", "sourcetext", "body", "requestbody", "responsebody"}:
+            return {"sha256": _sha256_text(value), "length": len(value)}
+        # URLs are reduced to origin/path and query keys; arbitrary source
+        # strings are hashed rather than copied into shared evidence.
+        if re.match(r"^[a-z][a-z0-9+.-]*://", value, re.IGNORECASE):
+            return _safe_url(value)
+        value = re.sub(
+            r"(?i)(bearer\s+|basic\s+)[^\s,;]+",
+            r"\1<redacted>",
+            value,
+        )
+        if len(value) > 512:
+            return {"sha256": _sha256_text(value), "length": len(value)}
+        return value
+    if isinstance(value, float):
+        if math.isnan(value):
+            return "NaN"
+        if math.isinf(value):
+            return "Infinity" if value > 0 else "-Infinity"
+        return value
+    if isinstance(value, dict):
+        return {
+            str(k): _redact_debug_value(v, key=str(k), depth=depth + 1)
+            for k, v in list(value.items())[:100]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_debug_value(v, depth=depth + 1) for v in value[:100]]
+    return _debugger_value(value, depth)
 
 
 def _paused_to_dict(state: Any) -> dict[str, Any]:
@@ -158,9 +266,11 @@ def _frame_to_dict(frame: Any) -> dict[str, Any]:
 
 
 def _source_to_dict(source: Any) -> dict[str, Any]:
+    actor = getattr(source, "actor", "")
     return {
         "url": getattr(source, "url", "") or "",
-        "actor": getattr(source, "actor", ""),
+        "actor": actor,
+        "sourceActor": actor,
         "introductionType": getattr(source, "introduction_type", None),
         "blackBoxed": bool(getattr(source, "is_black_boxed", False)),
     }
@@ -185,7 +295,21 @@ _HEADER_ALLOWLIST = frozenset({
     "last-modified",
 })
 
-
+# Browser calls that may block while the JavaScript thread is paused are
+# dispatched on a daemon worker.  The main JSON-RPC reader must remain free to
+# accept debugger control commands (resume/step/scope) while such a call is
+# waiting for a paused page.
+_ASYNC_METHODS = frozenset({
+    "script.evaluate",
+    "debug.wait_paused",
+    "dom.click",
+    "dom.input",
+    "human.click",
+    "human.drag",
+    "human.input",
+    "human.move",
+    "human.scroll",
+})
 class FrameTargetError(ValueError):
     """A requested frame is absent from the selected page's current tree."""
 
@@ -313,7 +437,13 @@ def _safe_proxy(value: Any) -> dict:
 
 def _write_json_atomic(path: Path, payload: Any) -> tuple[int, str]:
     raw = (
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        ) + "\n"
     ).encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
@@ -592,6 +722,8 @@ def _pid_is_alive(pid: int) -> bool:
                 [str(tasklist), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
                 check=False,
             )
@@ -619,6 +751,8 @@ def _kill_process_tree(pid: int) -> None:
                 [str(taskkill), "/PID", str(pid), "/T", "/F"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=15,
                 check=False,
             )
@@ -650,6 +784,8 @@ def _firefox_pids_using_profile(profile: Path) -> list[int]:
             [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=8,
             check=False,
         )
@@ -817,10 +953,25 @@ class RuyiBridge:
         self._connection_port: Optional[int] = None
         self._owned_firefox_pid: Optional[int] = None
         self._debugger_enabled: bool = False
+        # Whether Firefox was launched/configured with an RDP server.  This is
+        # distinct from _debugger_enabled, which represents the current MCP
+        # client connection and can be toggled by debug.disable.
+        self._debugger_server_enabled: bool = False
         self._debugger_port: Optional[int] = None
         self._debugger_auto_resume_after: Optional[float] = 60
         self._native_breakpoints: list[dict[str, Any]] = []
         self._next_breakpoint_id: int = 1
+        self._debugger_lock = threading.RLock()
+        self._rpc_write_lock = threading.Lock()
+        self._worker_lock = threading.Lock()
+        self._workers: set[threading.Thread] = set()
+        self._shutdown_requested = False
+        self._debug_evidence_root: Optional[Path] = None
+        self._debug_evidence_case_id: Optional[str] = None
+        self._debug_evidence_run_id: Optional[str] = None
+        self._debug_evidence_path: Optional[Path] = None
+        self._debug_evidence_lock = threading.Lock()
+        self._debug_evidence_count = 0
 
         self._handlers = {
             # Browser lifecycle
@@ -1346,6 +1497,163 @@ class RuyiBridge:
         data = traceback.format_exc() if exc_info else None
         return {"id": req_id, "error": {"code": code, "message": message, "data": data}}
 
+    def _write_rpc_response(self, response: dict) -> None:
+        """Write one JSON-RPC response without ever emitting NaN/Infinity."""
+        try:
+            encoded = json.dumps(response, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            # A debugger value or an upstream object must never poison the
+            # line-oriented protocol.  _serialize also normalizes non-finite
+            # floats and caps recursive/container expansion.
+            encoded = json.dumps(
+                _serialize(response), ensure_ascii=False, allow_nan=False
+            )
+        with self._rpc_write_lock:
+            try:
+                sys.stdout.write(encoded + "\n")
+                sys.stdout.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                self._shutdown_requested = True
+
+    def _run_async_request(self, request: dict) -> None:
+        """Execute a potentially blocking request and emit its response."""
+        try:
+            response = self.handle(request)
+            if request.get("id") is not None:
+                self._write_rpc_response(response)
+        except Exception as exc:
+            req_id = request.get("id")
+            if req_id is not None:
+                self._write_rpc_response(
+                    self._err(req_id, -32000, str(exc), exc_info=True)
+                )
+        finally:
+            with self._worker_lock:
+                self._workers.discard(threading.current_thread())
+
+    def _dispatch_async(self, request: dict) -> None:
+        worker = threading.Thread(
+            target=self._run_async_request,
+            args=(request,),
+            name="ruyi-mcp-rpc-worker",
+            daemon=True,
+        )
+        with self._worker_lock:
+            self._workers.add(worker)
+        worker.start()
+
+    def _join_workers(self, timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + max(timeout, 0.0)
+        while True:
+            with self._worker_lock:
+                workers = [worker for worker in self._workers if worker is not threading.current_thread()]
+            if not workers:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            for worker in workers:
+                worker.join(timeout=min(remaining, 0.25))
+
+    def _configure_debug_evidence(self, params: dict) -> None:
+        """Configure optional redacted debugger evidence for this browser run."""
+        raw_root = params.get("debugEvidenceRoot")
+        if raw_root is None:
+            raw_root = os.environ.get("RUYI_MCP_DEBUG_EVIDENCE_ROOT", "").strip()
+        if not raw_root:
+            self._debug_evidence_root = None
+            self._debug_evidence_case_id = None
+            self._debug_evidence_run_id = None
+            self._debug_evidence_path = None
+            self._debug_evidence_count = 0
+            return
+        root = Path(str(raw_root)).expanduser()
+        if not root.is_absolute() or str(root).startswith(("\\\\", "//")):
+            raise ValueError("debugEvidenceRoot must be an absolute non-UNC path")
+        root = root.resolve()
+        if not root.is_dir():
+            raise ValueError("debugEvidenceRoot must be an existing project directory")
+        repository_root = Path(__file__).resolve().parents[1]
+        if _path_is_within(root, repository_root) or _path_is_within(repository_root, root):
+            raise ValueError("debugEvidenceRoot must be an external project workspace")
+        case_id = str(
+            params.get("debugCaseId")
+            or os.environ.get("RUYI_MCP_DEBUG_CASE_ID", "")
+            or root.name
+        ).strip().lower()
+        if not _CASE_ID_PATTERN.fullmatch(case_id):
+            raise ValueError("debugCaseId must match ^[a-z0-9][a-z0-9._-]{1,79}$")
+        run_id = str(params.get("debugRunId") or "").strip().lower()
+        if not run_id:
+            run_id = (
+                f"debug_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_"
+                f"{uuid.uuid4().hex[:10]}"
+            )
+        if not _HANDOFF_ID_PATTERN.fullmatch(run_id):
+            raise ValueError("debugRunId must match ^[a-z0-9][a-z0-9_-]{0,95}$")
+        evidence_dir = (root / "evidence" / "web" / "ruyi-debug" / run_id).resolve()
+        if not _path_is_within(evidence_dir, root):
+            raise RuntimeError("debug evidence path escaped project root")
+        evidence_path = evidence_dir / "observations.jsonl"
+        if evidence_path.exists():
+            raise ValueError(
+                f"debug evidence runId already exists: {run_id}; choose a new runId"
+            )
+        self._debug_evidence_root = root
+        self._debug_evidence_case_id = case_id
+        self._debug_evidence_run_id = run_id
+        self._debug_evidence_path = evidence_path
+        self._debug_evidence_count = 0
+
+    def _debug_evidence_pointer(self) -> Optional[dict[str, Any]]:
+        path = self._debug_evidence_path
+        root = self._debug_evidence_root
+        case_id = self._debug_evidence_case_id
+        run_id = self._debug_evidence_run_id
+        if path is None or root is None or not case_id or not run_id or not path.is_file():
+            return None
+        raw_bytes = path.read_bytes()
+        return {
+            "schema": "ruyi-debug-pointer.v1",
+            "caseId": case_id,
+            "plane": "ruyi-debug",
+            "runId": run_id,
+            "artifactId": "debug-observations",
+            "path": path.relative_to(root).as_posix(),
+            "sha256": hashlib.sha256(raw_bytes).hexdigest(),
+            "bytes": len(raw_bytes),
+            "mediaType": "application/jsonl",
+            "recordCount": self._debug_evidence_count,
+            "sensitivity": "private-redacted",
+            "redaction": "allowlist-summary",
+        }
+
+    def _record_debug_observation(self, action: str, payload: Any) -> Optional[dict[str, Any]]:
+        path = self._debug_evidence_path
+        if path is None:
+            return None
+        record = {
+            "schema": "ruyi-debug-observation.v1",
+            "recordedAt": _utc_timestamp(),
+            "action": str(action)[:80],
+            "payload": _redact_debug_value(payload),
+        }
+        raw = (json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+        with self._debug_evidence_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("ab") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            self._debug_evidence_count += 1
+            return self._debug_evidence_pointer()
+
+    def _with_debug_evidence(self, action: str, result: dict[str, Any]) -> dict[str, Any]:
+        pointer = self._record_debug_observation(action, result)
+        if pointer is not None:
+            return {**result, "evidence": pointer}
+        return result
+
     # ------------------------------------------------------------------
     # Browser lifecycle
     # ------------------------------------------------------------------
@@ -1361,6 +1669,18 @@ class RuyiBridge:
         self._connection_address = None
         self._connection_port = None
         self._browser_path = None
+        self._debugger_enabled = False
+        self._debugger_server_enabled = False
+        self._debugger_port = None
+        with self._debugger_lock:
+            self._native_breakpoints = []
+        self._debug_evidence_root = None
+        self._debug_evidence_case_id = None
+        self._debug_evidence_run_id = None
+        self._debug_evidence_path = None
+        self._debug_evidence_count = 0
+        self._debugger_auto_resume_after = 60
+        self._configure_debug_evidence(params)
 
         existing_only = bool(params.get("existingOnly"))
         opts = FirefoxOptions()
@@ -1409,8 +1729,10 @@ class RuyiBridge:
                 opts.set_argument("about:blank")
 
         enable_debugger = bool(params.get("enableDebugger"))
-        debugger_port = params.get("debuggerPort")
-        auto_resume_after = params.get("debuggerAutoResumeAfter", 60)
+        debugger_port = _normalize_debugger_port(params.get("debuggerPort"))
+        auto_resume_after = _normalize_auto_resume_after(
+            params.get("debuggerAutoResumeAfter", _MISSING)
+        )
         if enable_debugger:
             if existing_only and debugger_port is None:
                 raise ValueError(
@@ -1421,13 +1743,16 @@ class RuyiBridge:
                 debugger_port = _allocate_loopback_port()
             opts.enable_debugger(True, port=int(debugger_port))
             self._debugger_enabled = True
+            self._debugger_server_enabled = True
             self._debugger_port = int(debugger_port)
-            self._debugger_auto_resume_after = (
-                None if auto_resume_after in (None, False) else float(auto_resume_after)
-            )
+            self._debugger_auto_resume_after = auto_resume_after
         else:
             self._debugger_enabled = False
-            self._debugger_port = int(debugger_port) if debugger_port else None
+            self._debugger_server_enabled = False
+            # A port supplied while the server is disabled must not be trusted
+            # as evidence that this Firefox owns an RDP endpoint.  Attached
+            # sessions can provide their RDP port explicitly to debug.enable.
+            self._debugger_port = None
             self._debugger_auto_resume_after = 60
 
         profile_path, profile_mode = self._prepare_profile(params, existing_only)
@@ -1478,7 +1803,12 @@ class RuyiBridge:
             self._fingerprint_ctx.apply_emulation(self.page)
 
         debugger_started = False
-        if self._debugger_enabled:
+        # For a newly launched browser, defer the RDP attach until the caller
+        # has completed its first navigation. Firefox 151/155 invalidates the
+        # initial RDP thread actor during that navigation; attaching here makes
+        # every subsequent sources/breakpoint request time out. Attach-only
+        # sessions do not navigate and can be connected immediately.
+        if self._debugger_enabled and existing_only:
             try:
                 self._start_page_debugger(self.page)
                 debugger_started = True
@@ -1491,6 +1821,7 @@ class RuyiBridge:
                 self.opts = None
                 self._fingerprint_ctx = None
                 self._debugger_enabled = False
+                self._debugger_server_enabled = False
                 self._debugger_port = None
                 self._cleanup_managed_profile()
                 self._profile_path = None
@@ -1502,7 +1833,8 @@ class RuyiBridge:
         self._next_page_idx += 1
         self._capture_stats = {}
         self._intercept_modes = {}
-        self._native_breakpoints = []
+        with self._debugger_lock:
+            self._native_breakpoints = []
         self._next_breakpoint_id = 1
 
         # Also index other open tabs
@@ -1535,7 +1867,12 @@ class RuyiBridge:
         owned_profile = None if attached else self._managed_profile
         if self.page:
             try:
-                self._stop_page_debugger(self.page)
+                # Every tab may own an RDP connection. Stop all of them before
+                # detaching/closing so paused threads and reader sockets do not
+                # outlive the bridge.
+                self._stop_all_page_debuggers(suppress_errors=True)
+                if not self.pages:
+                    self._stop_page_debugger(self.page, suppress_errors=True)
                 if attached:
                     browser = getattr(self.page, "_firefox", None)
                     detach = getattr(browser, "_detach_on_exit", None)
@@ -1583,9 +1920,16 @@ class RuyiBridge:
         self._connection_port = None
         self._owned_firefox_pid = None
         self._debugger_enabled = False
+        self._debugger_server_enabled = False
         self._debugger_port = None
-        self._native_breakpoints = []
+        with self._debugger_lock:
+            self._native_breakpoints = []
         self._next_breakpoint_id = 1
+        self._debug_evidence_root = None
+        self._debug_evidence_case_id = None
+        self._debug_evidence_run_id = None
+        self._debug_evidence_path = None
+        self._debug_evidence_count = 0
         process_cleanup = None if attached else _reap_owned_firefox(owned_pid, owned_profile)
         cleanup = self._cleanup_managed_profile()
         self._profile_path = None
@@ -1600,16 +1944,22 @@ class RuyiBridge:
         if not self.page:
             return {"alive": False}
         try:
+            page_idx = self._debug_page_idx(params)
+            status_page = self._get_page(page_idx)
             return {
                 "alive": True,
-                "url": _safe_url(getattr(self.page, 'url', ''))["url"],
-                "title": getattr(self.page, 'title', ''),
+                "url": _safe_url(getattr(status_page, 'url', ''))["url"],
+                "title": getattr(status_page, 'title', ''),
                 "pageCount": len(self.pages),
-                "breakpointCount": len(self._native_breakpoints),
+                "breakpointCount": sum(
+                    1 for item in self._public_breakpoints()
+                    if item.get("pageIdx") == page_idx
+                ),
                 "preloadScriptCount": len(self._preload_scripts),
                 "debuggerEnabled": self._debugger_enabled,
+                "debuggerServerEnabled": self._debugger_server_enabled,
                 "debuggerPort": self._debugger_port,
-                "debuggerStarted": self._debugger_is_started(self.page),
+                "debuggerStarted": self._debugger_is_started(status_page),
                 "profileMode": (
                     "managed"
                     if self._managed_profile is not None
@@ -1755,13 +2105,19 @@ class RuyiBridge:
         return result
 
     def _close_tab(self, params: dict) -> dict:
-        idx = params.get("pageIdx", 0)
+        idx = self._debug_page_idx(params)
         if idx == 0:
             raise ValueError("Cannot close main tab (pageIdx=0). Use browser.quit instead.")
         if idx not in self.pages:
             raise ValueError(f"Invalid pageIdx: {idx}")
 
         page = self.pages.pop(idx)
+        self._stop_page_debugger(page, suppress_errors=True)
+        with self._debugger_lock:
+            self._native_breakpoints = [
+                item for item in self._native_breakpoints
+                if item.get("pageIdx") != idx
+            ]
         self._capture_stats.pop(self._normalize_page_idx(idx), None)
         self._intercept_modes.pop(self._normalize_page_idx(idx), None)
         try:
@@ -3037,140 +3393,414 @@ class RuyiBridge:
     # Debug (Firefox DevTools RDP via page.debugger)
     # ------------------------------------------------------------------
     def _debugger_is_started(self, page: Any) -> bool:
-        dbg = getattr(page, "debugger", None)
-        return bool(dbg is not None and getattr(dbg, "started", False))
+        try:
+            dbg = getattr(page, "debugger", None)
+            return bool(dbg is not None and getattr(dbg, "started", False))
+        except Exception:
+            return False
 
     def _start_page_debugger(self, page: Any) -> Any:
-        dbg = getattr(page, "debugger", None)
-        if dbg is None:
-            raise RuntimeError("page.debugger is not available on this ruyiPage build")
-        if not getattr(dbg, "started", False):
-            dbg.start(
-                port=self._debugger_port,
-                auto_resume_after=self._debugger_auto_resume_after,
-            )
-        return dbg
+        with self._debugger_lock:
+            dbg = getattr(page, "debugger", None)
+            if dbg is None:
+                raise RuntimeError("page.debugger is not available on this ruyiPage build")
+            if not getattr(dbg, "started", False):
+                if self._debugger_port is None:
+                    raise RuntimeError("debugger RDP port is not configured")
+                dbg.start(
+                    port=self._debugger_port,
+                    auto_resume_after=self._debugger_auto_resume_after,
+                )
+            return dbg
 
-    def _stop_page_debugger(self, page: Any) -> None:
+    def _stop_page_debugger(self, page: Any, *, suppress_errors: bool = False) -> None:
         dbg = getattr(page, "debugger", None)
         if dbg is None or not getattr(dbg, "started", False):
             return
         try:
-            dbg.stop()
+            with self._debugger_lock:
+                dbg.stop()
         except Exception:
-            pass
+            if not suppress_errors:
+                raise
+
+    def _stop_all_page_debuggers(self, *, suppress_errors: bool = False) -> None:
+        first_error: Optional[Exception] = None
+        for page in list(self.pages.values()):
+            try:
+                self._stop_page_debugger(page, suppress_errors=suppress_errors)
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None and not suppress_errors:
+            raise first_error
+
+    def _debug_page_idx(self, params: dict, default: int = 0) -> int:
+        raw = params.get("pageIdx", default)
+        if raw is None:
+            raw = default
+        if isinstance(raw, bool):
+            raise ValueError("pageIdx must be a non-negative integer")
+        if isinstance(raw, float) and not raw.is_integer():
+            raise ValueError("pageIdx must be a non-negative integer")
+        try:
+            page_idx = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("pageIdx must be a non-negative integer") from exc
+        if page_idx < 0:
+            raise ValueError("pageIdx must be a non-negative integer")
+        return page_idx
 
     def _require_debugger(self, params: dict) -> Any:
-        page = self._get_page(params.get("pageIdx", 0))
+        page = self._get_page(self._debug_page_idx(params))
         if not self._debugger_is_started(page):
-            if not self._debugger_enabled:
+            if not self._debugger_server_enabled:
                 raise RuntimeError(
                     "debugger RDP server was not started. Relaunch with enableDebugger=true "
                     "on ruyi_new_page (requires --start-debugger-server at Firefox launch)."
                 )
             return self._start_page_debugger(page)
-        return page.debugger
+        return getattr(page, "debugger")
 
-    def _record_breakpoint(self, native: Any, *, mode: str, text: str = "", pattern: str = "") -> dict[str, Any]:
-        breakpoint_id = str(self._next_breakpoint_id)
-        self._next_breakpoint_id += 1
-        info = {
-            "breakpointId": breakpoint_id,
-            "url": getattr(native, "url", "") or "",
-            "line": getattr(native, "line", None),
-            "column": getattr(native, "column", None),
-            "condition": getattr(native, "condition", None),
-            "mode": mode,
-            "text": text,
-            "pattern": pattern,
-            "type": "native",
-            "native": native,
-        }
-        self._native_breakpoints.append(info)
-        return {key: value for key, value in info.items() if key != "native"}
+    def _debug_call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Serialize debugger calls so shared RDP state cannot interleave."""
+        with self._debugger_lock:
+            return fn(*args, **kwargs)
+
+    def _resolve_debug_source(
+        self, dbg: Any, *, url: Any = None, source_actor: Any = None
+    ) -> tuple[Any, str]:
+        actor = str(source_actor or "").strip()
+        source_url = str(url or "").strip()
+        if actor:
+            for source in self._debug_call(dbg.sources) or []:
+                if str(getattr(source, "actor", "")) == actor:
+                    return source, str(getattr(source, "url", "") or "")
+            raise RuntimeError(f"unknown sourceActor {actor}")
+        if not source_url:
+            raise ValueError("url or sourceActor is required")
+        return None, source_url
+
+    def _set_native_breakpoint(
+        self,
+        dbg: Any,
+        *,
+        url: Any = None,
+        source_actor: Any = None,
+        line: Any,
+        column: Any = None,
+        condition: Any = None,
+    ) -> Any:
+        """Set a breakpoint, preserving an explicit source actor when needed."""
+        source, source_url = self._resolve_debug_source(
+            dbg, url=url, source_actor=source_actor
+        )
+        if source is None:
+            return self._debug_call(
+                dbg.set_breakpoint,
+                source_url,
+                int(line),
+                column=None if column is None else int(column),
+                condition=str(condition) if condition else None,
+            )
+
+        # ruyiPage's public set_breakpoint accepts a URL, while eval/blob and
+        # duplicate inline sources require the actor as a second location key.
+        connection = getattr(dbg, "connection", None)
+        thread_actor = getattr(dbg, "thread_actor", None)
+        if connection is None or not thread_actor:
+            # Compatibility with lightweight fakes and older adapters that do
+            # not expose the raw RDP connection.  URL-addressable sources can
+            # still use the public API; actor-only sources fail closed below.
+            if source_url:
+                return self._debug_call(
+                    dbg.set_breakpoint,
+                    source_url,
+                    int(line),
+                    column=None if column is None else int(column),
+                    condition=str(condition) if condition else None,
+                )
+            raise RuntimeError("ruyiPage debugger cannot address sourceActor directly")
+        line_number = int(line)
+        if line_number < 1:
+            raise ValueError("line must be >= 1")
+        if column is None:
+            locate = getattr(dbg, "_breakpoint_positions", None)
+            positions = self._debug_call(locate, source) if callable(locate) else {}
+            columns = positions.get(str(line_number)) if isinstance(positions, dict) else None
+            if not columns:
+                raise RuntimeError(f"source line {line_number} is not breakable")
+            column_number = int(sorted(columns)[0])
+        else:
+            column_number = int(column)
+            if column_number < 0:
+                raise ValueError("column must be >= 0")
+        options = {"condition": str(condition)} if condition else {}
+        self._debug_call(
+            connection.request,
+            thread_actor,
+            "setBreakpoint",
+            location={
+                "sourceUrl": source_url,
+                "sourceId": str(getattr(source, "actor", "")),
+                "line": line_number,
+                "column": column_number,
+            },
+            options=options,
+        )
+        if RuyiBreakpoint is None:
+            return type("Breakpoint", (), {
+                "url": source_url,
+                "line": line_number,
+                "column": column_number,
+                "source_actor": str(getattr(source, "actor", "")),
+                "condition": str(condition) if condition else None,
+            })()
+        native = RuyiBreakpoint(
+            source_url,
+            line_number,
+            column_number,
+            str(getattr(source, "actor", "")),
+            str(condition) if condition else None,
+        )
+        private_breakpoints = getattr(dbg, "_breakpoints", None)
+        if isinstance(private_breakpoints, list):
+            private_breakpoints.append(native)
+        return native
+
+    def _record_breakpoint(
+        self,
+        native: Any,
+        *,
+        page_idx: int,
+        mode: str,
+        text: str = "",
+        pattern: str = "",
+    ) -> dict[str, Any]:
+        with self._debugger_lock:
+            breakpoint_id = str(self._next_breakpoint_id)
+            self._next_breakpoint_id += 1
+            info = {
+                "breakpointId": breakpoint_id,
+                "pageIdx": page_idx,
+                "url": getattr(native, "url", "") or "",
+                "sourceActor": getattr(native, "source_actor", "") or "",
+                "line": getattr(native, "line", None),
+                "column": getattr(native, "column", None),
+                "condition": getattr(native, "condition", None),
+                "mode": mode,
+                "text": text,
+                "pattern": pattern,
+                "type": "native",
+                "native": native,
+            }
+            self._native_breakpoints.append(info)
+            return {key: value for key, value in info.items() if key != "native"}
 
     def _public_breakpoints(self) -> list[dict[str, Any]]:
-        return [
-            {key: value for key, value in item.items() if key != "native"}
-            for item in self._native_breakpoints
-        ]
+        with self._debugger_lock:
+            return [
+                {key: value for key, value in item.items() if key != "native"}
+                for item in self._native_breakpoints
+            ]
 
     def _debug_enable(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
-        if params.get("autoResumeAfter") is not None:
-            value = params.get("autoResumeAfter")
-            self._debugger_auto_resume_after = None if value in (None, False) else float(value)
-        if params.get("debuggerPort") is not None:
-            self._debugger_port = int(params["debuggerPort"])
-        if not self._debugger_enabled and self._debugger_port is None:
+        page_idx = self._debug_page_idx(params)
+        page = self._get_page(page_idx)
+        server_enabled_before = self._debugger_server_enabled
+        requested_auto_resume = _MISSING
+        if "autoResumeAfter" in params:
+            requested_auto_resume = _normalize_auto_resume_after(
+                params.get("autoResumeAfter")
+            )
+        supplied_port = None
+        if "debuggerPort" in params:
+            supplied_port = _normalize_debugger_port(params.get("debuggerPort"))
+        if self._debugger_server_enabled and supplied_port is not None:
+            if self._debugger_port not in (None, supplied_port):
+                raise RuntimeError(
+                    "debugger server is configured on a different port; relaunch or attach with the configured port"
+                )
+        elif not self._debugger_server_enabled and not self._attached_existing:
             raise RuntimeError(
                 "debugger RDP server was not started. Relaunch with enableDebugger=true."
             )
+        if supplied_port is not None:
+            self._debugger_port = supplied_port
+        if requested_auto_resume is not _MISSING:
+            self._debugger_auto_resume_after = requested_auto_resume
+        if not self._debugger_server_enabled:
+            # An attached browser may have been started with its own RDP
+            # server; it is allowed to provide that port explicitly.  An owned
+            # browser without enableDebugger=true must fail closed.
+            if not self._attached_existing or self._debugger_port is None:
+                raise RuntimeError(
+                    "debugger RDP server was not started. Relaunch with enableDebugger=true."
+                )
+            self._debugger_server_enabled = True
+        if self._debugger_port is None:
+            raise RuntimeError(
+                "debugger RDP port is not configured"
+            )
         self._debugger_enabled = True
-        dbg = self._start_page_debugger(page)
+        try:
+            dbg = self._start_page_debugger(page)
+        except Exception:
+            self._debugger_enabled = False
+            if not server_enabled_before:
+                # An attach caller supplied a candidate RDP port, but the
+                # endpoint did not accept the connection. Do not retain a
+                # false capability bit for a later debugger call.
+                self._debugger_server_enabled = False
+            raise
+        # page.debugger reads this private value when arming the watchdog;
+        # update it for an already-connected session as well.
+        if hasattr(dbg, "_auto_resume_after"):
+            dbg._auto_resume_after = self._debugger_auto_resume_after
+            if getattr(dbg, "paused", False):
+                if self._debugger_auto_resume_after and hasattr(dbg, "_arm_watchdog"):
+                    dbg._arm_watchdog()
+                elif hasattr(dbg, "_disarm_watchdog"):
+                    # ruyiPage's _arm_watchdog() returns early for None/0 and
+                    # deliberately does not cancel an already armed timer.
+                    # Explicitly disarm when a caller turns the watchdog off.
+                    dbg._disarm_watchdog()
         sources = []
         try:
-            sources = [_source_to_dict(item) for item in (dbg.sources() or [])]
-        except Exception:
-            pass
-        return {
+            sources = [_source_to_dict(item) for item in (self._debug_call(dbg.sources) or [])]
+        except Exception as exc:
+            self._stop_page_debugger(page, suppress_errors=True)
+            self._debugger_enabled = False
+            raise RuntimeError(f"debugger connected but source enumeration failed: {exc}") from exc
+        return self._with_debug_evidence("debug.enable", {
             "started": True,
+            "serverEnabled": self._debugger_server_enabled,
             "port": self._debugger_port,
             "paused": bool(getattr(dbg, "paused", False)),
             "sourceCount": len(sources),
-        }
+        })
 
     def _debug_disable(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
-        self._stop_page_debugger(page)
-        return {"started": False, "paused": False}
+        # The RDP channel is a bridge-wide capability. Stop every connected
+        # page so native breakpoint objects cannot survive with stale actors.
+        errors: list[str] = []
+        try:
+            self._stop_all_page_debuggers(suppress_errors=False)
+        except Exception as exc:
+            errors.append(str(exc))
+            self._stop_all_page_debuggers(suppress_errors=True)
+        if self.page is not None and not self.pages:
+            try:
+                self._stop_page_debugger(self.page, suppress_errors=False)
+            except Exception as exc:
+                errors.append(str(exc))
+        self._debugger_enabled = False
+        with self._debugger_lock:
+            for item in self._native_breakpoints:
+                item.pop("native", None)
+            self._native_breakpoints = []
+        result: dict[str, Any] = {
+            "started": False,
+            "paused": False,
+            "breakpointCount": 0,
+        }
+        if errors:
+            result["warnings"] = errors[:5]
+        return self._with_debug_evidence("debug.disable", result)
 
     def _debug_status(self, params: dict) -> dict:
-        page = self._get_page(params.get("pageIdx", 0))
+        page_idx = self._debug_page_idx(params)
+        page = self._get_page(page_idx)
         dbg = getattr(page, "debugger", None)
         started = bool(dbg is not None and getattr(dbg, "started", False))
         paused = bool(started and getattr(dbg, "paused", False))
         state = getattr(dbg, "paused_state", None) if started else None
-        return {
+        return self._with_debug_evidence("debug.status", {
             "enabled": self._debugger_enabled,
+            "serverEnabled": self._debugger_server_enabled,
             "started": started,
             "port": self._debugger_port,
             "paused": paused,
             "pausedState": _paused_to_dict(state) if state is not None else None,
-            "breakpointCount": len(self._native_breakpoints),
-        }
+            "breakpointCount": sum(
+                1 for item in self._public_breakpoints()
+                if item.get("pageIdx") == page_idx
+            ),
+        })
 
     def _debug_sources(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
         url_contains = str(params.get("urlContains") or params.get("filter") or "").strip() or None
-        sources = dbg.sources(url_contains=url_contains) if url_contains else dbg.sources()
-        return {"sources": [_source_to_dict(item) for item in (sources or [])]}
+        sources = self._debug_call(
+            dbg.sources, url_contains=url_contains
+        ) if url_contains else self._debug_call(dbg.sources)
+        source_actor = str(params.get("sourceActor") or "").strip()
+        if source_actor:
+            sources = [
+                source for source in sources or []
+                if str(getattr(source, "actor", "") or "") == source_actor
+            ]
+        return self._with_debug_evidence(
+            "debug.sources",
+            {"sources": [_source_to_dict(item) for item in (sources or [])]},
+        )
 
     def _debug_source_text(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
-        url = str(params.get("url") or "").strip()
-        if not url:
-            raise ValueError("url is required")
-        text = dbg.source_text(url)
+        source_actor = str(params.get("sourceActor") or "").strip()
+        source_url = str(params.get("url") or "").strip()
+        if source_actor and source_url:
+            raise ValueError("url and sourceActor are mutually exclusive")
+        source, source_url = self._resolve_debug_source(
+            dbg, url=source_url, source_actor=source_actor
+        )
+        text = self._debug_call(
+            dbg.source_text, source if source is not None else source_url
+        )
         if not isinstance(text, str):
             raise RuntimeError("debugger source_text did not return a string")
+        total_length = len(text)
+        offset = params.get("offset")
+        max_chars_raw = params.get("maxChars", 16384)
+        try:
+            max_chars = int(max_chars_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("maxChars must be an integer between 0 and 8000000") from exc
+        if not 0 <= max_chars <= 8_000_000:
+            raise ValueError("maxChars must be an integer between 0 and 8000000")
+
+        if offset is not None:
+            try:
+                offset_value = int(offset)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("offset must be a non-negative integer") from exc
+            if offset_value < 0:
+                raise ValueError("offset must be a non-negative integer")
+            text = text[offset_value:]
         start_line = params.get("startLine")
         end_line = params.get("endLine")
-        if start_line is not None or end_line is not None:
+        if offset is None and (start_line is not None or end_line is not None):
             lines = text.splitlines()
-            start = max(int(start_line or 1) - 1, 0)
-            end = min(int(end_line or (start + 200)), len(lines))
+            start_value = int(start_line or 1)
+            if start_value < 1:
+                raise ValueError("startLine must be >= 1")
+            start = start_value - 1
+            end_value = int(end_line or (start_value + 199))
+            if end_value < start_value:
+                raise ValueError("endLine must be >= startLine")
+            end = min(end_value, len(lines))
             text = "\n".join(lines[start:end])
-        max_chars = int(params.get("maxChars") or 16384)
-        total = len(text)
-        truncated = total > max_chars
-        return {
+        selected_length = len(text)
+        truncated = selected_length > max_chars
+        return self._with_debug_evidence("debug.source_text", {
             "ok": True,
-            "url": url,
-            "totalLength": total,
+            "url": source_url,
+            "sourceActor": str(getattr(source, "actor", "") or source_actor),
+            "totalLength": total_length,
+            "selectedLength": selected_length,
             "truncated": truncated,
             "source": text[:max_chars] if truncated else text,
-        }
+        })
 
     def _debug_search(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
@@ -3180,12 +3810,19 @@ class RuyiBridge:
         url_contains = str(params.get("urlContains") or params.get("urlFilter") or "").strip() or None
         case_sensitive = bool(params.get("caseSensitive"))
         needle = query if case_sensitive else query.lower()
-        max_matches = min(int(params.get("maxMatches") or 20), 50)
-        sources = dbg.sources(url_contains=url_contains) if url_contains else dbg.sources()
+        try:
+            max_matches = int(params.get("maxMatches", 20))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("maxMatches must be an integer between 1 and 200") from exc
+        if not 1 <= max_matches <= 200:
+            raise ValueError("maxMatches must be an integer between 1 and 200")
+        sources = self._debug_call(
+            dbg.sources, url_contains=url_contains
+        ) if url_contains else self._debug_call(dbg.sources)
         matches: list[dict[str, Any]] = []
         for source in sources or []:
             try:
-                body = dbg.source_text(source)
+                body = self._debug_call(dbg.source_text, source)
             except Exception:
                 continue
             if not isinstance(body, str):
@@ -3198,39 +3835,62 @@ class RuyiBridge:
                 matches.append(
                     {
                         "url": getattr(source, "url", "") or "",
+                        "sourceActor": getattr(source, "actor", "") or "",
                         "line": line_no,
                         "column": column,
                         "preview": line[:240],
                     }
                 )
                 if len(matches) >= max_matches:
-                    return {"matches": matches, "truncated": True}
-        return {"matches": matches, "truncated": False}
+                    return self._with_debug_evidence(
+                        "debug.search", {"matches": matches, "truncated": True}
+                    )
+        return self._with_debug_evidence(
+            "debug.search", {"matches": matches, "truncated": False}
+        )
 
     def _debug_set_breakpoint(self, params: dict) -> dict:
-        dbg = self._require_debugger(params)
+        page_idx = self._debug_page_idx(params)
+        dbg = self._require_debugger({**params, "pageIdx": page_idx})
         url = str(params.get("url") or "").strip()
+        source_actor = str(params.get("sourceActor") or "").strip()
         line = params.get("line")
-        if not url or line is None:
-            raise ValueError("url and line are required")
-        native = dbg.set_breakpoint(
-            url,
-            int(line),
+        if url and source_actor:
+            raise ValueError("url and sourceActor are mutually exclusive")
+        if (not url and not source_actor) or line is None:
+            raise ValueError("url or sourceActor, and line, are required")
+        native = self._set_native_breakpoint(
+            dbg,
+            url=url,
+            source_actor=source_actor,
+            line=line,
             column=params.get("column"),
             condition=params.get("condition") or None,
         )
-        return self._record_breakpoint(native, mode="location")
+        return self._with_debug_evidence(
+            "debug.set_breakpoint",
+            self._record_breakpoint(native, page_idx=page_idx, mode="location"),
+        )
 
     def _debug_set_breakpoint_on_text(self, params: dict) -> dict:
-        dbg = self._require_debugger(params)
+        page_idx = self._debug_page_idx(params)
+        dbg = self._require_debugger({**params, "pageIdx": page_idx})
         text = str(params.get("text") or "")
         if not text:
             raise ValueError("text is required")
         url_filter = str(params.get("urlFilter") or "").strip() or None
-        sources = dbg.sources(url_contains=url_filter) if url_filter else dbg.sources()
+        source_actor_filter = str(params.get("sourceActor") or "").strip() or None
+        sources = self._debug_call(
+            dbg.sources, url_contains=url_filter
+        ) if url_filter else self._debug_call(dbg.sources)
+        if source_actor_filter:
+            sources = [
+                source for source in sources or []
+                if str(getattr(source, "actor", "") or "") == source_actor_filter
+            ]
         for source in sources or []:
             try:
-                body = dbg.source_text(source)
+                body = self._debug_call(dbg.source_text, source)
             except Exception:
                 continue
             if not isinstance(body, str):
@@ -3238,13 +3898,22 @@ class RuyiBridge:
             for line_no, line in enumerate(body.splitlines(), 1):
                 if text not in line:
                     continue
-                native = dbg.set_breakpoint(
-                    getattr(source, "url", "") or "",
-                    line_no,
+                native = self._set_native_breakpoint(
+                    dbg,
+                    url=getattr(source, "url", "") or None,
+                    source_actor=getattr(source, "actor", "") or None,
+                    line=line_no,
                     condition=params.get("condition") or None,
                 )
-                return self._record_breakpoint(
-                    native, mode="text", text=text, pattern=url_filter or ""
+                return self._with_debug_evidence(
+                    "debug.set_breakpoint_on_text",
+                    self._record_breakpoint(
+                        native,
+                        page_idx=page_idx,
+                        mode="text",
+                        text=text,
+                        pattern=url_filter or "",
+                    ),
                 )
         raise RuntimeError(
             f"no loaded source contained {text!r}"
@@ -3252,20 +3921,63 @@ class RuyiBridge:
         )
 
     def _debug_break_on_xhr(self, params: dict) -> dict:
-        """Plant native breakpoints on source lines that mention the URL fragment.
-
-        Firefox RDP has no XHR instrumentation breakpoint. Searching the
-        executing source is the honest equivalent; it does not inject debugger;.
-        """
-        dbg = self._require_debugger(params)
+        """Set a native XHR breakpoint, with an explicit legacy fallback."""
+        page_idx = self._debug_page_idx(params)
+        dbg = self._require_debugger({**params, "pageIdx": page_idx})
         pattern = str(params.get("url") or params.get("pattern") or params.get("text") or "")
         if not pattern:
             raise ValueError("url is required")
-        sources = dbg.sources()
+        method = str(params.get("method") or "ANY").strip().upper() or "ANY"
+        native_xhr = getattr(dbg, "set_xhr_breakpoint", None)
+        if callable(native_xhr):
+            applied = self._debug_call(native_xhr, pattern, method)
+            if not applied:
+                return self._with_debug_evidence(
+                    "debug.break_on_xhr",
+                    {
+                        "ok": False,
+                        "reason": "xhr-breakpoint-rejected",
+                        "heuristic": False,
+                        "verifiedRequestBreakpoint": False,
+                        "pattern": pattern,
+                        "method": method,
+                    },
+                )
+            native = type(
+                "XhrBreakpoint",
+                (),
+                {
+                    "url": pattern,
+                    "line": None,
+                    "column": None,
+                    "source_actor": "",
+                    "condition": None,
+                    "xhr_path": pattern,
+                    "xhr_method": method,
+                },
+            )()
+            item = self._record_breakpoint(
+                native,
+                page_idx=page_idx,
+                mode="xhr-native",
+                text=f"xhr:{pattern}",
+                pattern=pattern,
+            )
+            return self._with_debug_evidence(
+                "debug.break_on_xhr",
+                {
+                    "ok": True,
+                    "heuristic": False,
+                    "verifiedRequestBreakpoint": True,
+                    "breakpoints": [item],
+                    "method": method,
+                },
+            )
+        sources = self._debug_call(dbg.sources)
         planted: list[dict[str, Any]] = []
         for source in sources or []:
             try:
-                body = dbg.source_text(source)
+                body = self._debug_call(dbg.source_text, source)
             except Exception:
                 continue
             if not isinstance(body, str) or pattern not in body:
@@ -3273,125 +3985,222 @@ class RuyiBridge:
             for line_no, line in enumerate(body.splitlines(), 1):
                 if pattern not in line:
                     continue
-                native = dbg.set_breakpoint(getattr(source, "url", "") or "", line_no)
+                native = self._set_native_breakpoint(
+                    dbg,
+                    url=getattr(source, "url", "") or None,
+                    source_actor=getattr(source, "actor", "") or None,
+                    line=line_no,
+                )
                 planted.append(
                     self._record_breakpoint(
-                        native, mode="xhr", text=f"xhr:{pattern}", pattern=pattern
+                        native,
+                        page_idx=page_idx,
+                        mode="xhr",
+                        text=f"xhr:{pattern}",
+                        pattern=pattern,
                     )
                 )
         if not planted:
-            return {
-                "ok": False,
-                "error": "xhr-breakpoint-unresolved",
-                "pattern": pattern,
-                "hint": "no loaded source mentioned this URL; use ruyi_debug_set_breakpoint_on_text on the issuer",
-            }
-        return {"ok": True, "breakpoints": planted}
+            return self._with_debug_evidence(
+                "debug.break_on_xhr",
+                {
+                    "ok": False,
+                    "reason": "xhr-breakpoint-unresolved",
+                    "heuristic": True,
+                    "verifiedRequestBreakpoint": False,
+                    "pattern": pattern,
+                    "hint": "no loaded source mentioned this URL; use ruyi_debug_set_breakpoint_on_text on the issuer",
+                },
+            )
+        return self._with_debug_evidence(
+            "debug.break_on_xhr",
+            {
+                "ok": True,
+                "heuristic": True,
+                "verifiedRequestBreakpoint": False,
+                "breakpoints": planted,
+                "method": method,
+            },
+        )
 
     def _debug_remove_breakpoint(self, params: dict) -> dict:
-        dbg = self._require_debugger(params)
         breakpoint_id = str(params.get("breakpointId") or "")
-        match = next(
-            (item for item in self._native_breakpoints if item["breakpointId"] == breakpoint_id),
-            None,
-        )
+        with self._debugger_lock:
+            match = next(
+                (
+                    item for item in self._native_breakpoints
+                    if item["breakpointId"] == breakpoint_id
+                ),
+                None,
+            )
         if match is None:
             raise RuntimeError(f"unknown breakpointId {breakpoint_id}")
+        owner_page_idx = int(match.get("pageIdx", 0))
+        requested_page = params.get("pageIdx")
+        if requested_page is not None and self._debug_page_idx(params) != owner_page_idx:
+            raise RuntimeError(
+                f"breakpoint {breakpoint_id} belongs to pageIdx {owner_page_idx}"
+            )
+        dbg = self._require_debugger({**params, "pageIdx": owner_page_idx})
         native = match.get("native")
-        if native is not None:
-            dbg.remove_breakpoint(native)
-        self._native_breakpoints = [
-            item for item in self._native_breakpoints if item["breakpointId"] != breakpoint_id
-        ]
-        return {"removed": breakpoint_id}
+        if match.get("mode") == "xhr-native":
+            remove_xhr = getattr(dbg, "remove_xhr_breakpoint", None)
+            if not callable(remove_xhr):
+                raise RuntimeError("active debugger cannot remove native XHR breakpoint")
+            removed = self._debug_call(
+                remove_xhr,
+                getattr(native, "xhr_path", ""),
+                getattr(native, "xhr_method", "ANY"),
+            )
+            if removed is False:
+                raise RuntimeError("native XHR breakpoint removal was rejected")
+        elif native is not None:
+            self._debug_call(dbg.remove_breakpoint, native)
+        with self._debugger_lock:
+            self._native_breakpoints = [
+                item for item in self._native_breakpoints
+                if item["breakpointId"] != breakpoint_id
+            ]
+        return self._with_debug_evidence(
+            "debug.remove_breakpoint", {"removed": breakpoint_id}
+        )
 
     def _debug_list_breakpoints(self, params: dict) -> dict:
-        return {"breakpoints": self._public_breakpoints()}
+        raw_page = params.get("pageIdx")
+        if raw_page is None:
+            return self._with_debug_evidence(
+                "debug.list_breakpoints", {"breakpoints": self._public_breakpoints()}
+            )
+        page_idx = self._debug_page_idx(params)
+        return self._with_debug_evidence("debug.list_breakpoints", {
+            "pageIdx": page_idx,
+            "breakpoints": [
+                item for item in self._public_breakpoints()
+                if item.get("pageIdx") == page_idx
+            ],
+        })
 
     def _debug_wait_paused(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
-        timeout = float(params.get("timeout") or 30)
+        raw_timeout = params.get("timeout", 30)
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("timeout must be a finite number between 0 and 120") from exc
+        if not math.isfinite(timeout) or not 0 <= timeout <= 120:
+            raise ValueError("timeout must be a finite number between 0 and 120")
         state = dbg.wait_paused(timeout=timeout)
         if state is None:
-            return {"paused": False, "timedOut": True}
-        return {"paused": True, "timedOut": False, "state": _paused_to_dict(state)}
+            return self._with_debug_evidence(
+                "debug.wait_paused", {"paused": False, "timedOut": True}
+            )
+        return self._with_debug_evidence(
+            "debug.wait_paused",
+            {"paused": True, "timedOut": False, "state": _paused_to_dict(state)},
+        )
 
     def _debug_get_paused_info(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
         state = getattr(dbg, "paused_state", None)
         if state is None:
-            return {"paused": False}
+            return self._with_debug_evidence(
+                "debug.get_paused_info", {"paused": False}
+            )
         frames = []
         try:
-            frames = [_frame_to_dict(item) for item in (dbg.frames(count=20) or [])]
+            frames = [_frame_to_dict(item) for item in (
+                self._debug_call(dbg.frames, count=20) or []
+            )]
         except Exception:
             if getattr(state, "frame", None) is not None:
                 frames = [_frame_to_dict(state.frame)]
-        return {
+        return self._with_debug_evidence("debug.get_paused_info", {
             "paused": True,
             "state": _paused_to_dict(state),
             "frames": frames,
-        }
+        })
 
     def _debug_pause(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
-        dbg.pause()
-        return {"paused": True}
+        self._debug_call(dbg.pause)
+        return self._with_debug_evidence("debug.pause", {"paused": True})
 
     def _debug_resume(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
-        dbg.resume()
-        return {"paused": False}
+        self._debug_call(dbg.resume)
+        return self._with_debug_evidence("debug.resume", {"paused": False})
 
     def _debug_step(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
         step_type = str(params.get("type") or params.get("step") or "over").strip().lower()
         if step_type in {"over", "next"}:
-            dbg.step_over()
+            self._debug_call(dbg.step_over)
             resolved = "over"
         elif step_type in {"into", "in", "step"}:
-            dbg.step_into()
+            self._debug_call(dbg.step_into)
             resolved = "into"
         elif step_type in {"out", "finish"}:
-            dbg.step_out()
+            self._debug_call(dbg.step_out)
             resolved = "out"
         else:
             raise ValueError("type must be over, into, or out")
-        return {"step": resolved, "paused": bool(getattr(dbg, "paused", False))}
+        return self._with_debug_evidence(
+            "debug.step",
+            {"step": resolved, "paused": bool(getattr(dbg, "paused", False))},
+        )
 
     def _debug_frames(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
-        count = min(int(params.get("count") or 50), 80)
-        frames = dbg.frames(count=count)
-        return {"frames": [_frame_to_dict(item) for item in (frames or [])]}
+        count = int(params.get("count", 50))
+        if not 1 <= count <= 80:
+            raise ValueError("count must be an integer between 1 and 80")
+        frames = self._debug_call(dbg.frames, count=count)
+        return self._with_debug_evidence(
+            "debug.frames", {"frames": [_frame_to_dict(item) for item in (frames or [])]}
+        )
 
     def _debug_scope(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
         frame = params.get("frameActor") or params.get("frame")
         include_parents = bool(params.get("includeParents"))
-        scope = dbg.scope(frame=frame, include_parents=include_parents)
+        scope = self._debug_call(
+            dbg.scope, frame=frame, include_parents=include_parents
+        )
         serialized = _debugger_value(scope)
-        return {
+        return self._with_debug_evidence("debug.scope", {
             "scope": serialized,
             "keyCount": len(scope) if isinstance(scope, dict) else None,
-        }
+        })
 
     def _debug_expand(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
         actor = params.get("actor") or params.get("object")
         if not actor:
             raise ValueError("actor is required")
-        depth = min(int(params.get("depth") or 1), 3)
-        max_items = min(int(params.get("maxItems") or 80), 200)
-        expanded = dbg.expand(actor, depth=depth, max_items=max_items)
-        return {"value": _debugger_value(expanded)}
+        depth = int(params.get("depth", 1))
+        max_items = int(params.get("maxItems", 80))
+        if not 1 <= depth <= 3:
+            raise ValueError("depth must be an integer between 1 and 3")
+        if not 1 <= max_items <= 200:
+            raise ValueError("maxItems must be an integer between 1 and 200")
+        expanded = self._debug_call(
+            dbg.expand, actor, depth=depth, max_items=max_items
+        )
+        return self._with_debug_evidence(
+            "debug.expand", {"value": _debugger_value(expanded)}
+        )
 
     def _debug_pause_on_exceptions(self, params: dict) -> dict:
         dbg = self._require_debugger(params)
         enabled = bool(params.get("enabled", True))
         ignore_caught = bool(params.get("ignoreCaught", True))
-        dbg.pause_on_exceptions(enabled=enabled, ignore_caught=ignore_caught)
-        return {"enabled": enabled, "ignoreCaught": ignore_caught}
+        self._debug_call(
+            dbg.pause_on_exceptions, enabled=enabled, ignore_caught=ignore_caught
+        )
+        return self._with_debug_evidence(
+            "debug.pause_on_exceptions",
+            {"enabled": enabled, "ignoreCaught": ignore_caught},
+        )
 
     # ------------------------------------------------------------------
     # Frame
@@ -3771,6 +4580,8 @@ class RuyiBridge:
 
         try:
             for line in sys.stdin:
+                if self._shutdown_requested:
+                    break
                 line = line.strip()
                 if not line:
                     continue
@@ -3786,20 +4597,25 @@ class RuyiBridge:
                 # finally path so explicit shutdown, stdin EOF, and read/write
                 # failures all preserve the same browser ownership contract.
                 if request.get("method") == "__shutdown__":
+                    self._shutdown_requested = True
                     if request.get("id") is not None:
-                        response = self._ok(request.get("id"), {"shutdown": True})
-                        sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-                        sys.stdout.flush()
+                        self._write_rpc_response(
+                            self._ok(request.get("id"), {"shutdown": True})
+                        )
                     break
+
+                if request.get("id") is not None and request.get("method") in _ASYNC_METHODS:
+                    self._dispatch_async(request)
+                    continue
 
                 response = self.handle(request)
 
                 # Don't write response for notifications
                 if request.get("id") is not None:
-                    sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-                    sys.stdout.flush()
+                    self._write_rpc_response(response)
         finally:
             self._quit({})
+            self._join_workers()
             sys.stderr.write("[ruyi_bridge] Shutdown complete\n")
             sys.stderr.flush()
 

@@ -30,7 +30,9 @@ function recordBreakpoint(ctx: RuyiContext, result: Record<string, unknown>, fal
     urlFilter: (result.url as string | undefined) ?? fallback.urlFilter,
     condition: (result.condition as string | undefined) ?? fallback.condition,
     type: 'native',
+    pageIdx: (result.pageIdx as number | undefined) ?? fallback.pageIdx,
     url: result.url as string | undefined,
+    sourceActor: result.sourceActor as string | undefined,
     line: result.line as number | undefined,
     column: result.column as number | undefined,
   });
@@ -49,10 +51,17 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
         type: 'object',
         properties: {
           pageIdx: { type: 'number', default: 0 },
-          debuggerPort: { type: 'number', description: '已有 RDP 端口；attach 会话必填' },
+          debuggerPort: {
+            type: 'number',
+            description: '已有 RDP 端口；attach 会话必填',
+            minimum: 1,
+            maximum: 65535,
+          },
           autoResumeAfter: {
             type: 'number',
             description: '暂停看门狗秒数，超时自动 resume，避免 JS 永久卡住。默认 60；0 表示关闭。',
+            minimum: 0,
+            maximum: 3600,
           },
         },
         required: [],
@@ -62,7 +71,7 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
       const result = await ctx.bridgeInstance.call('debug.enable', {
         pageIdx: getPageIdx(args, ctx),
         debuggerPort: args.debuggerPort,
-        autoResumeAfter: args.autoResumeAfter === 0 ? null : args.autoResumeAfter,
+        autoResumeAfter: args.autoResumeAfter,
       });
       return { content: [{ type: 'text', text: jsonResult(result) }] };
     }) as ToolHandler,
@@ -71,7 +80,7 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
   register({
     tool: {
       name: 'ruyi_debug_disable',
-      description: '断开 debugger RDP 通道。若当前已暂停则先 resume，避免页面卡死。',
+      description: '断开所有页面的 debugger RDP 通道并清理 native 断点。若当前已暂停则先 resume，避免页面卡死。',
       inputSchema: {
         type: 'object',
         properties: { pageIdx: { type: 'number', default: 0 } },
@@ -82,6 +91,7 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
       const result = await ctx.bridgeInstance.call('debug.disable', {
         pageIdx: getPageIdx(args, ctx),
       });
+      ctx.clearBreakpoints();
       return { content: [{ type: 'text', text: jsonResult(result) }] };
     }) as ToolHandler,
   });
@@ -130,30 +140,38 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
     tool: {
       name: 'ruyi_debug_set_breakpoint',
       description:
-        '在指定源 URL 的指定行下原生断点（debugger 自己下端点）。' +
+        '在指定源 URL 或 sourceActor 的指定行下原生断点（debugger 自己下端点）。' +
         '行号从 1 开始；省略 column 时自动取该行第一个可断点列。' +
         'condition 为真才暂停；条件抛异常仍会暂停（why=breakpointConditionThrown）。',
       inputSchema: {
         type: 'object',
         properties: {
           url: { type: 'string', description: '源 URL，需与 ruyi_debug_list_sources 一致，可用后缀匹配' },
-          line: { type: 'number', description: '行号，从 1 开始' },
-          column: { type: 'number', description: '列号；省略则自动解析' },
+          sourceActor: { type: 'string', description: '无 URL 的 eval/blob/inline source actor（与 url 二选一）' },
+          line: { type: 'number', description: '行号，从 1 开始', minimum: 1 },
+          column: { type: 'number', description: '列号；省略则自动解析', minimum: 0 },
           condition: { type: 'string', description: '条件表达式，在断点所在帧求值' },
           pageIdx: { type: 'number', default: 0 },
         },
-        required: ['url', 'line'],
+        required: ['line'],
+        oneOf: [{ required: ['url', 'line'] }, { required: ['sourceActor', 'line'] }],
       },
     },
     handler: (async (args) => {
+      const url = typeof args.url === 'string' ? args.url.trim() : '';
+      const sourceActor = typeof args.sourceActor === 'string' ? args.sourceActor.trim() : '';
+      if (Boolean(url) === Boolean(sourceActor)) {
+        throw new Error('Exactly one of url or sourceActor is required');
+      }
       const result = asRecord(await ctx.bridgeInstance.call('debug.set_breakpoint', {
         pageIdx: getPageIdx(args, ctx),
-        url: args.url,
+        url: url || undefined,
+        sourceActor: sourceActor || undefined,
         line: args.line,
         column: args.column,
         condition: args.condition,
       }));
-      recordBreakpoint(ctx, result, { mode: 'location', urlFilter: args.url as string });
+      recordBreakpoint(ctx, result, { mode: 'location', urlFilter: url || undefined });
       return { content: [{ type: 'text', text: jsonResult(result) }] };
     }) as ToolHandler,
   });
@@ -169,6 +187,7 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
         properties: {
           text: { type: 'string', description: '要匹配的源码文本' },
           urlFilter: { type: 'string', description: '仅搜索 URL 含该子串的源' },
+          sourceActor: { type: 'string', description: '仅搜索指定 source actor（适用于 eval/blob/inline）' },
           pageIdx: { type: 'number', default: 0 },
           condition: { type: 'string', description: '断点条件表达式' },
         },
@@ -180,6 +199,7 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
         pageIdx: getPageIdx(args, ctx),
         text: args.text,
         urlFilter: args.urlFilter,
+        sourceActor: args.sourceActor,
         condition: args.condition,
       }));
       recordBreakpoint(ctx, result, { mode: 'text', text: args.text as string });
@@ -191,12 +211,13 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
     tool: {
       name: 'ruyi_break_on_xhr',
       description:
-        '在已加载源码中搜索 URL 片段并下原生断点。Firefox RDP 没有 XHR instrumentation；' +
-        '找不到则返回 xhr-breakpoint-unresolved，不会注入 debugger;。',
+        '优先使用 Firefox RDP 原生 XHR breakpoint；旧版 ruyiPage 无该 API 时回退为显式标记的源码启发式，' +
+        '不会注入 debugger;，也不会冒充 verified request initiator。',
       inputSchema: {
         type: 'object',
         properties: {
           url: { type: 'string', description: 'URL 匹配片段' },
+          method: { type: 'string', description: '请求方法；默认 ANY', default: 'ANY' },
           pageIdx: { type: 'number', default: 0 },
         },
         required: ['url'],
@@ -206,6 +227,7 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
       const result = asRecord(await ctx.bridgeInstance.call('debug.break_on_xhr', {
         pageIdx: getPageIdx(args, ctx),
         url: args.url,
+        method: args.method,
       }));
       const planted = Array.isArray(result.breakpoints) ? result.breakpoints : [];
       for (const item of planted) {
@@ -222,10 +244,18 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
     tool: {
       name: 'ruyi_list_breakpoints',
       description: '列出当前 debugger 原生断点。',
-      inputSchema: { type: 'object', properties: {}, required: [] },
+      inputSchema: {
+        type: 'object',
+        properties: { pageIdx: { type: 'number', description: '仅列出指定标签页的断点' } },
+        required: [],
+      },
     },
-    handler: (async () => {
-      const result = await ctx.bridgeInstance.call('debug.list_breakpoints', {});
+    handler: (async (args) => {
+      const params: Record<string, unknown> = {};
+      if (args.pageIdx !== undefined) {
+        params.pageIdx = getPageIdx(args, ctx);
+      }
+      const result = await ctx.bridgeInstance.call('debug.list_breakpoints', params);
       return { content: [{ type: 'text', text: jsonResult(result) }] };
     }) as ToolHandler,
   });
@@ -245,10 +275,15 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
     },
     handler: (async (args) => {
       const bpId = args.breakpointId as string;
-      const result = await ctx.bridgeInstance.call('debug.remove_breakpoint', {
-        pageIdx: getPageIdx(args, ctx),
+      const params: Record<string, unknown> = {
         breakpointId: bpId,
-      });
+      };
+      // Omit pageIdx when the caller only has the breakpoint id; the Bridge
+      // can then route to the owning debugger instead of assuming page 0.
+      if (args.pageIdx !== undefined) {
+        params.pageIdx = getPageIdx(args, ctx);
+      }
+      const result = await ctx.bridgeInstance.call('debug.remove_breakpoint', params);
       ctx.removeBreakpoint(bpId);
       return { content: [{ type: 'text', text: jsonResult(result) }] };
     }) as ToolHandler,
@@ -262,7 +297,13 @@ export function registerDebugTools(register: ToolRegistrar, ctx: RuyiContext): v
         type: 'object',
         properties: {
           pageIdx: { type: 'number', default: 0 },
-          timeout: { type: 'number', description: '秒，默认 30', default: 30 },
+          timeout: {
+            type: 'number',
+            description: '秒，默认 30；0 表示立即轮询',
+            default: 30,
+            minimum: 0,
+            maximum: 120,
+          },
         },
         required: [],
       },

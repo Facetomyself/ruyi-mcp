@@ -1,6 +1,6 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.3.0-reverse-env.1",
+  "version": "0.3.0-reverse-env.2",
   "description": "Private reverse_ENV adapter for ruyiPage Firefox automation and native JS debugger",
   "private": true,
   "license": "MIT",
@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1256.py scripts/runtime_capture_lifecycle.py scripts/runtime_attach_lifecycle.py scripts/runtime_download_behavior.py scripts/runtime_debugger.py",
     "check:debugger-runtime": "python scripts/runtime_debugger.py",
+    "check:debugger-mcp-runtime": "node scripts/runtime_mcp_debugger.mjs",
     "check:contract": "python scripts/contract_bridge.py",
     "check:runtime": "python scripts/runtime_ruyipage_1256.py",
     "check:capture-runtime": "python scripts/runtime_capture_lifecycle.py",

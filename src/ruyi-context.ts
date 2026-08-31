@@ -15,12 +15,14 @@ export interface PageInfo {
 export interface BreakpointInfo {
   breakpointId: string;
   text: string;
-  mode?: 'text' | 'xhr' | 'location';
+  mode?: 'text' | 'xhr' | 'xhr-native' | 'location';
   pattern?: string;
   urlFilter?: string;
   condition?: string;
   type: 'native' | 'soft';
+  pageIdx?: number;
   url?: string;
+  sourceActor?: string;
   line?: number;
   column?: number;
 }
@@ -150,6 +152,16 @@ export class RuyiContext {
 
   getBreakpoints(): BreakpointInfo[] {
     return this.state.breakpoints;
+  }
+
+  clearBreakpoints(pageIdx?: number): void {
+    if (pageIdx === undefined) {
+      this.state.breakpoints = [];
+      return;
+    }
+    this.state.breakpoints = this.state.breakpoints.filter(
+      (bp) => bp.pageIdx !== pageIdx
+    );
   }
 
   // ------------------------------------------------------------------

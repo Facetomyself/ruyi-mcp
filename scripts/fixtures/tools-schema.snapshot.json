@@ -29,9 +29,14 @@
       "name": "ruyi_attach_browser"
     },
     {
-      "description": "在已加载源码中搜索 URL 片段并下原生断点。Firefox RDP 没有 XHR instrumentation；找不到则返回 xhr-breakpoint-unresolved，不会注入 debugger;。",
+      "description": "优先使用 Firefox RDP 原生 XHR breakpoint；旧版 ruyiPage 无该 API 时回退为显式标记的源码启发式，不会注入 debugger;，也不会冒充 verified request initiator。",
       "inputSchema": {
         "properties": {
+          "method": {
+            "default": "ANY",
+            "description": "请求方法；默认 ANY",
+            "type": "string"
+          },
           "pageIdx": {
             "default": 0,
             "type": "number"
@@ -218,7 +223,7 @@
       "name": "ruyi_close_page"
     },
     {
-      "description": "断开 debugger RDP 通道。若当前已暂停则先 resume，避免页面卡死。",
+      "description": "断开所有页面的 debugger RDP 通道并清理 native 断点。若当前已暂停则先 resume，避免页面卡死。",
       "inputSchema": {
         "properties": {
           "pageIdx": {
@@ -237,10 +242,14 @@
         "properties": {
           "autoResumeAfter": {
             "description": "暂停看门狗秒数，超时自动 resume，避免 JS 永久卡住。默认 60；0 表示关闭。",
+            "maximum": 3600,
+            "minimum": 0,
             "type": "number"
           },
           "debuggerPort": {
             "description": "已有 RDP 端口；attach 会话必填",
+            "maximum": 65535,
+            "minimum": 1,
             "type": "number"
           },
           "pageIdx": {
@@ -406,11 +415,26 @@
       "name": "ruyi_debug_resume"
     },
     {
-      "description": "在指定源 URL 的指定行下原生断点（debugger 自己下端点）。行号从 1 开始；省略 column 时自动取该行第一个可断点列。condition 为真才暂停；条件抛异常仍会暂停（why=breakpointConditionThrown）。",
+      "description": "在指定源 URL 或 sourceActor 的指定行下原生断点（debugger 自己下端点）。行号从 1 开始；省略 column 时自动取该行第一个可断点列。condition 为真才暂停；条件抛异常仍会暂停（why=breakpointConditionThrown）。",
       "inputSchema": {
+        "oneOf": [
+          {
+            "required": [
+              "url",
+              "line"
+            ]
+          },
+          {
+            "required": [
+              "sourceActor",
+              "line"
+            ]
+          }
+        ],
         "properties": {
           "column": {
             "description": "列号；省略则自动解析",
+            "minimum": 0,
             "type": "number"
           },
           "condition": {
@@ -419,11 +443,16 @@
           },
           "line": {
             "description": "行号，从 1 开始",
+            "minimum": 1,
             "type": "number"
           },
           "pageIdx": {
             "default": 0,
             "type": "number"
+          },
+          "sourceActor": {
+            "description": "无 URL 的 eval/blob/inline source actor（与 url 二选一）",
+            "type": "string"
           },
           "url": {
             "description": "源 URL，需与 ruyi_debug_list_sources 一致，可用后缀匹配",
@@ -431,7 +460,6 @@
           }
         },
         "required": [
-          "url",
           "line"
         ],
         "type": "object"
@@ -485,7 +513,9 @@
           },
           "timeout": {
             "default": 30,
-            "description": "秒，默认 30",
+            "description": "秒，默认 30；0 表示立即轮询",
+            "maximum": 120,
+            "minimum": 0,
             "type": "number"
           }
         },
@@ -836,26 +866,47 @@
     {
       "description": "获取指定 URL 脚本的源码片段。支持行号范围或字符偏移。",
       "inputSchema": {
+        "oneOf": [
+          {
+            "required": [
+              "url"
+            ]
+          },
+          {
+            "required": [
+              "sourceActor"
+            ]
+          }
+        ],
         "properties": {
           "endLine": {
             "description": "结束行号（1-based）",
+            "minimum": 1,
             "type": "number"
           },
           "length": {
             "default": 1000,
             "description": "返回字符数（配合 offset 使用），默认 1000",
+            "maximum": 8000000,
+            "minimum": 0,
             "type": "number"
           },
           "offset": {
             "description": "字符偏移（0-based，用于单行压缩文件）",
+            "minimum": 0,
             "type": "number"
           },
           "pageIdx": {
             "default": 0,
             "type": "number"
           },
+          "sourceActor": {
+            "description": "无 URL 的 eval/blob/inline source actor",
+            "type": "string"
+          },
           "startLine": {
             "description": "起始行号（1-based）",
+            "minimum": 1,
             "type": "number"
           },
           "url": {
@@ -863,9 +914,7 @@
             "type": "string"
           }
         },
-        "required": [
-          "url"
-        ],
+        "required": [],
         "type": "object"
       },
       "name": "ruyi_get_script_source"
@@ -1307,7 +1356,12 @@
     {
       "description": "列出当前 debugger 原生断点。",
       "inputSchema": {
-        "properties": {},
+        "properties": {
+          "pageIdx": {
+            "description": "仅列出指定标签页的断点",
+            "type": "number"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -1460,8 +1514,28 @@
             "description": "浏览器已启动时是否创建 container tab，默认 false",
             "type": "boolean"
           },
+          "debugCaseId": {
+            "description": "debug evidence 的 caseId；省略时取 debugEvidenceRoot 目录名。",
+            "type": "string"
+          },
+          "debugEvidenceRoot": {
+            "description": "可选项目 workspace 绝对路径；启用后将 debugger 观察写入 evidence/web/ruyi-debug/<runId>/。",
+            "type": "string"
+          },
+          "debugRunId": {
+            "description": "debug evidence runId；省略时由 Bridge 生成。",
+            "type": "string"
+          },
+          "debuggerAutoResumeAfter": {
+            "description": "暂停看门狗秒数，默认 60；0 表示关闭。",
+            "maximum": 3600,
+            "minimum": 0,
+            "type": "number"
+          },
           "debuggerPort": {
             "description": "RDP 端口。新启动默认随机本机端口；attach 且 enableDebugger 时必填。",
+            "maximum": 65535,
+            "minimum": 1,
             "type": "number"
           },
           "enableDebugger": {
@@ -1600,6 +1674,20 @@
     {
       "description": "保存脚本完整源码到本地文件。JSON 结果用 .json 扩展名，其他用 .js。",
       "inputSchema": {
+        "oneOf": [
+          {
+            "required": [
+              "url",
+              "filePath"
+            ]
+          },
+          {
+            "required": [
+              "sourceActor",
+              "filePath"
+            ]
+          }
+        ],
         "properties": {
           "filePath": {
             "description": "本地保存路径（绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）",
@@ -1609,13 +1697,16 @@
             "default": 0,
             "type": "number"
           },
+          "sourceActor": {
+            "description": "无 URL 的 eval/blob/inline source actor",
+            "type": "string"
+          },
           "url": {
-            "description": "脚本 URL",
+            "description": "脚本 URL（与 sourceActor 二选一）",
             "type": "string"
           }
         },
         "required": [
-          "url",
           "filePath"
         ],
         "type": "object"
@@ -1721,6 +1812,10 @@
           "pageIdx": {
             "default": 0,
             "type": "number"
+          },
+          "sourceActor": {
+            "description": "仅搜索指定 source actor（适用于 eval/blob/inline）",
+            "type": "string"
           },
           "text": {
             "description": "要匹配的源码文本",

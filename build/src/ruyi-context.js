@@ -96,6 +96,13 @@ export class RuyiContext {
     getBreakpoints() {
         return this.state.breakpoints;
     }
+    clearBreakpoints(pageIdx) {
+        if (pageIdx === undefined) {
+            this.state.breakpoints = [];
+            return;
+        }
+        this.state.breakpoints = this.state.breakpoints.filter((bp) => bp.pageIdx !== pageIdx);
+    }
     // ------------------------------------------------------------------
     // Capture
     // ------------------------------------------------------------------
