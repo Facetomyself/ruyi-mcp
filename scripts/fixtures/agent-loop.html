@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ruyi agent loop fixture</title>
+  <style>
+    body { font-family: sans-serif; margin: 24px; }
+    #stage { min-height: 240px; }
+    button, input, select { font-size: 16px; margin: 8px 0; display: block; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <h1>Agent loop fixture</h1>
+    <button id="go" type="button">Go</button>
+    <input id="name" type="text" placeholder="Name">
+    <select id="color">
+      <option value="red">Red</option>
+      <option value="blue">Blue</option>
+    </select>
+    <p id="out">idle</p>
+  </div>
+  <script>
+    document.getElementById("go").addEventListener("click", function () {
+      document.getElementById("out").textContent = "clicked";
+    });
+    document.getElementById("name").addEventListener("input", function (event) {
+      if (event.target.value === "Ada") {
+        document.getElementById("out").textContent = "typed";
+      }
+    });
+    document.getElementById("color").addEventListener("change", function (event) {
+      if (event.target.value === "blue") {
+        document.getElementById("out").textContent = "selected";
+      }
+    });
+  </script>
+</body>
+</html>

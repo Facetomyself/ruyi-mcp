@@ -12,7 +12,7 @@ This project is independently maintained by the community. It is not an official
 
 ## Highlights
 
-- Default automation toolset covers page lifecycle, humanized input, fingerprint/proxy, network observation, cookies, DOM, frames, interception, WebSockets, native downloads, and session handoff. Native debugger/source tools appear only with `RUYI_MCP_TOOLSET=debug` or `all`. The debugger plants source and request-level XHR breakpoints itself over Firefox DevTools RDP; it does not inject `debugger;`. Debugger observations are not RuyiTrace facts.
+- Default automation toolset covers page lifecycle, humanized input, fingerprint/proxy, network observation, cookies, DOM, frames, interception, WebSockets, native downloads, and session handoff. Native debugger/source tools appear only with `RUYI_MCP_TOOLSET=debug` or `all`. Experimental `RUYI_MCP_TOOLSET=agent` exposes `ruyi_observe` / `ruyi_act`. P0 has no Jev; `goal_run` remains runtime-pending. Debugger observations are not RuyiTrace facts.
 - Paused-state control runs through Bridge background workers: `ruyi_evaluate_script`, DOM clicks, and human actions can run concurrently with `ruyi_debug_wait_paused`, followed by `resume`/`step`/`scope`. Source actors cover eval/blob/multiple inline sources, and source retrieval preserves offset and line-range semantics.
 - The control plane no longer pretends to be a trace plane: `ruyi_trace_*`, `traceEnabled`, and Bridge trace state are removed. The independent Private `ruyitrace-mcp` owns RuyiTrace evidence capture.
 - The startup log identifies only `Evidence handoff: browser-session-handoff.v1`; ruyiPage BiDi observation must not be presented as a Trace evidence plane.
@@ -74,7 +74,7 @@ npm run check
 - `RUYI_FIREFOX_PATH`: Firefox executable path used for new launches. If unset, the Bridge checks only the Windows ruyiPage browser cache and `PATH`; it never falls back to a RuyiTrace runtime. `ruyi_attach_browser` only attaches to an existing BiDi endpoint and does not require a local browser path.
 - `RUYI_MCP_PROFILE_ROOT`: absolute parent directory for disposable Firefox profiles owned by the Bridge. It defaults to `<ruyi-mcp>/browser-profiles`; residual profiles after an abnormal exit are confined there and the directory is Git-ignored.
 - `RUYI_MCP_LOCAL_HEAD`: explicit Private-mirror Git SHA for release installs without `.git`; normal checkouts read local HEAD directly.
-- `RUYI_MCP_TOOLSET`: default `automation` (hides debugger/source tools, does not start RDP). `debug` / `all` / `expert` / `full` expose the native debugger; `debug`/`all` default `ruyi_new_page.enableDebugger=true`.
+- `RUYI_MCP_TOOLSET`: default `automation` (hides debugger/source tools, does not start RDP). `debug` / `all` / `expert` / `full` expose the native debugger; `debug`/`all` default `ruyi_new_page.enableDebugger=true`. `agent` is experimental: `new_page` / `attach` / `navigate` / `observe` / `act` / `quit` / `status` / `export_session` / `handle_cloudflare`. observe/act stay off the default automation snapshot.
 - `RUYI_MCP_DEBUG_EVIDENCE_ROOT`: optional external project workspace root. When set, debugger observations are written as bounded redacted records under `evidence/web/ruyi-debug/<runId>/observations.jsonl`. The same can be configured on the first `ruyi_new_page` call with `debugEvidenceRoot`, `debugCaseId`, and `debugRunId`.
 
 ## Proxy ingress in reverse_ENV
@@ -181,7 +181,15 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` runs TypeScript type checking, Python syntax checks, 61 Bridge contracts, the build, automation/debug/all toolset stdio smoke (48/71/71 tools), and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:debugger-runtime` is the direct ruyiPage gate; `npm run check:debugger-mcp-runtime` exercises the complete Node MCP → Python Bridge → BiDi/RDP path, including post-navigation attach, concurrent pause control, source actors, native XHR pause, cross-page breakpoint ownership, JSON-safe values, disable/re-enable cleanup, source offset, and redacted evidence. It requires the locally verified 151-proxy runtime. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is written only to a temporary JSONL file, never returned through MCP. `npm run check:download-runtime` downloads one local attachment and verifies that the BiDi-configured directory receives the complete file automatically.
+`npm run check` runs TypeScript type checking, Python syntax checks, Bridge contracts, the build, automation/debug/all/agent toolset stdio smoke (48/71/71 tools plus the agent subset), and Bridge/server/stdio lifecycle tests. It does not launch Firefox. `npm run check:debugger-runtime` is the direct ruyiPage gate; `npm run check:debugger-mcp-runtime` exercises the complete Node MCP → Python Bridge → BiDi/RDP path, including post-navigation attach, concurrent pause control, source actors, native XHR pause, cross-page breakpoint ownership, JSON-safe values, disable/re-enable cleanup, source offset, and redacted evidence. It requires the locally verified 151-proxy runtime. `npm run check:capture-runtime` uses a local HTTP fixture and real Firefox to verify start/wait/stop cycles and asserts that a 128 KiB response body is written only to a temporary JSONL file, never returned through MCP. `npm run check:download-runtime` downloads one local attachment and verifies that the BiDi-configured directory receives the complete file automatically. `npm run check:agent-runtime` serves `scripts/fixtures/agent-loop.html` locally and checks numbered click, type, and select.
+
+## Experimental toolset=agent (P0)
+
+- `RUYI_MCP_TOOLSET=agent` exposes launch/navigate/observe/act/quit/status/handoff/Cloudflare only.
+- `ruyi_observe` numbers visible interactive nodes and returns `snapshotId`. Live geometry stays on the page; `ruyi_act` returns `miss` with `retried=false` when the snapshot is stale or the node is gone.
+- The host chooses `op` and `index`. Jev / `ruyi_goal_run` are runtime-pending.
+- A successful control-loop step is not a RuyiTrace browser fact and is not `serverAccepted`.
+- automation remains 48 tools.
 
 For links with discontinuous internal hit regions, select a stable visible descendant instead of the outer anchor's geometric center. MCP stdio closure enters `bridge.stop()`; custom SDK clients should still call `ruyi_browser_quit` before closing stdio so an attached browser completes detach-only cleanup.
 

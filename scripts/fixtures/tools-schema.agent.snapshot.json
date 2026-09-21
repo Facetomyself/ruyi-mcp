@@ -1,0 +1,387 @@
+{
+  "snapshotVersion": 1,
+  "tools": [
+    {
+      "description": "对最近一次 ruyi_observe 的编号节点执行 CLICK / TYPE_TEXT / SELECT / SCROLL_* / WAIT。CLICK 使用快照活引用的几何，不接受调用方 CSS/XPath。节点消失返回 miss。P0 不含 Jev；宿主自己选 op 和 index。",
+      "inputSchema": {
+        "properties": {
+          "frameContextId": {
+            "description": "可选 frame browsing context ID，必须与 observe 同一 frame。",
+            "type": "string"
+          },
+          "index": {
+            "description": "编号表下标；CLICK/TYPE_TEXT/SELECT 必填。",
+            "minimum": 0,
+            "type": "number"
+          },
+          "op": {
+            "description": "动作。P0 的 DRAG 返回 miss。",
+            "enum": [
+              "CLICK",
+              "TYPE_TEXT",
+              "SELECT",
+              "SCROLL_UP",
+              "SCROLL_DOWN",
+              "WAIT",
+              "DONE",
+              "BLOCKED",
+              "DRAG"
+            ],
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "snapshotId": {
+            "description": "ruyi_observe 返回的 snapshotId；CLICK/TYPE_TEXT/SELECT 必填。",
+            "type": "string"
+          },
+          "text": {
+            "description": "TYPE_TEXT 要输入的文本，或 SELECT 的 option 文本/value。",
+            "type": "string"
+          },
+          "waitMs": {
+            "default": 500,
+            "description": "WAIT 毫秒，默认 500",
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_act"
+    },
+    {
+      "description": "通过 Firefox WebDriver BiDi 端口接管已启动的浏览器，不新建进程、不导航页面，MCP 退出或 bridge 超时时保留外部浏览器。",
+      "inputSchema": {
+        "properties": {
+          "address": {
+            "default": "127.0.0.1",
+            "description": "监听地址，默认 127.0.0.1",
+            "type": "string"
+          },
+          "port": {
+            "description": "Firefox --remote-debugging-port",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "number"
+          },
+          "profilePath": {
+            "description": "现有 Firefox profile 绝对路径（可选；外部数据，Bridge 不会创建或删除）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "port"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_attach_browser"
+    },
+    {
+      "description": "关闭由 MCP 启动的浏览器并清理状态；端口接管的外部浏览器只断开连接，不关闭进程。",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_browser_quit"
+    },
+    {
+      "description": "获取浏览器当前状态：是否存活、当前 URL、页面数量、断点数、preload 脚本数。",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_browser_status"
+    },
+    {
+      "description": "导出 browser-session-handoff.v1。默认仅导出 Cookie；Storage 只有显式请求时才作为 observation-only evidence 写盘，RuyiTrace v1 不支持 Storage import。MCP 响应仅返回带 evidence-pointer.v1 的脱敏 handoff。",
+      "inputSchema": {
+        "properties": {
+          "browserPath": {
+            "description": "Firefox 可执行文件绝对路径；attach 模式无法自动发现时必填，用于版本、BuildID 与 SHA-256 校验。",
+            "type": "string"
+          },
+          "caseId": {
+            "description": "Web reverse case ID，需匹配 ^[a-z0-9][a-z0-9._-]{1,79}$。",
+            "pattern": "^[a-z0-9][a-z0-9._-]{1,79}$",
+            "type": "string"
+          },
+          "handoffId": {
+            "description": "可选 handoff ID；未提供时自动生成。",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,95}$",
+            "type": "string"
+          },
+          "include": {
+            "default": [
+              "cookies"
+            ],
+            "description": "要写入 evidence 文件的浏览器状态。默认仅 Cookie；Storage 需显式请求且仅供观察，consumer 不支持导入。原值不会 inline 返回。",
+            "items": {
+              "enum": [
+                "cookies",
+                "storage"
+              ],
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引",
+            "type": "number"
+          },
+          "workspaceRoot": {
+            "description": "当前项目 workspace 根目录的绝对路径；状态文件固定写入 evidence/web/handoff/<handoffId>。",
+            "type": "string"
+          }
+        },
+        "required": [
+          "caseId",
+          "workspaceRoot"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_export_session"
+    },
+    {
+      "description": "自动处理 Cloudflare Turnstile 验证（5s 盾）。通过 BiDi 查找 CF iframe 并在内部触发点击，绕过 closed shadow root 限制。",
+      "inputSchema": {
+        "properties": {
+          "checkInterval": {
+            "default": 2,
+            "description": "检测间隔（秒），默认 2",
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "timeout": {
+            "default": 30,
+            "description": "最大等待时间（秒），默认 30",
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_handle_cloudflare"
+    },
+    {
+      "description": "导航已有标签页到新 URL，或执行刷新/前进/后退。",
+      "inputSchema": {
+        "properties": {
+          "pageIdx": {
+            "default": 0,
+            "description": "标签页索引，默认当前活跃页",
+            "type": "number"
+          },
+          "timeout": {
+            "default": 30,
+            "description": "超时（秒），默认 30",
+            "type": "number"
+          },
+          "type": {
+            "default": "url",
+            "description": "导航类型",
+            "enum": [
+              "url",
+              "back",
+              "forward",
+              "reload"
+            ],
+            "type": "string"
+          },
+          "url": {
+            "description": "目标 URL（type=url 时必填）",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_navigate_page"
+    },
+    {
+      "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。国内机器使用 Cliproxy 时，浏览器代理只能指向已验证的本机 Cliproxy chained sidecar listener，不能直连 provider endpoint。首次调用自动启动 Firefox 浏览器。",
+      "inputSchema": {
+        "properties": {
+          "container": {
+            "default": false,
+            "description": "浏览器已启动时是否创建 container tab，默认 false",
+            "type": "boolean"
+          },
+          "debugCaseId": {
+            "description": "debug evidence 的 caseId；省略时取 debugEvidenceRoot 目录名。",
+            "type": "string"
+          },
+          "debugEvidenceRoot": {
+            "description": "可选项目 workspace 绝对路径；启用后将 debugger 观察写入 evidence/web/ruyi-debug/<runId>/。",
+            "type": "string"
+          },
+          "debugRunId": {
+            "description": "debug evidence runId；省略时由 Bridge 生成。",
+            "type": "string"
+          },
+          "debuggerAutoResumeAfter": {
+            "description": "暂停看门狗秒数，默认 60；0 表示关闭。",
+            "maximum": 3600,
+            "minimum": 0,
+            "type": "number"
+          },
+          "debuggerPort": {
+            "description": "RDP 端口。新启动默认随机本机端口；attach 且 enableDebugger 时必填。",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "number"
+          },
+          "enableDebugger": {
+            "description": "启动 Firefox DevTools RDP（--start-debugger-server）供 page.debugger 下断点。必须在 launch 时打开，启动后无法补开。debug/all toolset 默认 true，automation 默认 false。",
+            "type": "boolean"
+          },
+          "fingerprint": {
+            "description": "智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。",
+            "properties": {
+              "firefoxVersion": {
+                "description": "生成 UA 用的 Firefox 主版本；省略则读取 RUYI_FIREFOX_PATH 可执行文件版本",
+                "type": "number"
+              },
+              "geolocationAccuracy": {
+                "description": "定位精度（米），默认 15000",
+                "type": "number"
+              },
+              "geolocationAltitude": {
+                "description": "可选海拔",
+                "type": "number"
+              },
+              "geolocationEnabled": {
+                "description": "是否写入 fpfile/BiDi 地理位置，默认 true",
+                "type": "boolean"
+              },
+              "geolocationHeading": {
+                "description": "可选朝向 0-360",
+                "type": "number"
+              },
+              "geolocationLatitude": {
+                "description": "覆盖探测到的纬度",
+                "type": "number"
+              },
+              "geolocationLongitude": {
+                "description": "覆盖探测到的经度",
+                "type": "number"
+              },
+              "geolocationPermission": {
+                "description": "prompt / granted / denied，默认 granted",
+                "type": "string"
+              },
+              "geolocationSpeed": {
+                "description": "可选速度",
+                "type": "number"
+              },
+              "manualGeo": {
+                "description": "在线 Geo 全部失败时的显式回退（ip/country_code/timezone/latitude/longitude）",
+                "type": "object"
+              },
+              "proxyHost": {
+                "description": "浏览器第一跳 host；Cliproxy 场景填已验证的本机 chained sidecar host，不填 provider host。",
+                "type": "string"
+              },
+              "proxyPort": {
+                "description": "浏览器第一跳端口；Cliproxy 场景填 sidecar listener port，主 Clash 7897 不等于 Cliproxy relay。",
+                "type": "number"
+              },
+              "proxyPwd": {
+                "description": "第一跳认证；不得填入 Cliproxy provider 密码。",
+                "type": "string"
+              },
+              "proxyUser": {
+                "description": "第一跳认证；不得填入 Cliproxy provider 账号。",
+                "type": "string"
+              },
+              "requireCountry": {
+                "description": "要求代理出口国家，如 US",
+                "type": "string"
+              },
+              "webrtcLocalIpv4": {
+                "description": "可选 WebRTC 本地 IPv4",
+                "type": "string"
+              },
+              "webrtcPublicIpv4": {
+                "description": "可选 WebRTC 公网 IPv4",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "headless": {
+            "default": false,
+            "description": "无头模式，默认 false",
+            "type": "boolean"
+          },
+          "privateMode": {
+            "default": false,
+            "description": "隐私模式，默认 false",
+            "type": "boolean"
+          },
+          "profilePath": {
+            "description": "外部持久 Firefox profile 的绝对路径（可选）；默认在 RUYI_MCP_PROFILE_ROOT 创建并在正常退出时回收受控临时 profile",
+            "type": "string"
+          },
+          "proxy": {
+            "description": "浏览器第一跳代理。Cliproxy 场景仅填写已验证的本机 chained sidecar loopback listener，例如 http://127.0.0.1:<sidecar-port>；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy。不得填写 *.cliproxy.io:3010 或 provider 账密 URL。",
+            "type": "string"
+          },
+          "timeout": {
+            "default": 30,
+            "description": "导航超时（秒），默认 30",
+            "type": "number"
+          },
+          "url": {
+            "description": "目标 URL（必填）",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_new_page"
+    },
+    {
+      "description": "对当前页做一次 Gecko 可见节点编号快照。返回 role/name/ops 表与 snapshotId。后续 ruyi_act 必须带同一 snapshotId 和下标；过期快照返回 miss，不盲着重试。这是控制环观察，不是 RuyiTrace browser fact。",
+      "inputSchema": {
+        "properties": {
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；快照只扫该 frame。",
+            "type": "string"
+          },
+          "maxNodes": {
+            "default": 250,
+            "description": "编号上限，默认 250",
+            "maximum": 250,
+            "minimum": 1,
+            "type": "number"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_observe"
+    }
+  ]
+}

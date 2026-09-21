@@ -19,7 +19,8 @@ import { registerCookieTools } from './tools/cookie.js';
 import { registerInterceptTools } from './tools/intercept.js';
 import { registerWebSocketTools } from './tools/websocket.js';
 import { registerDownloadTools } from './tools/downloads.js';
-import { EXPERT_ONLY_TOOLS, resolveToolset } from './tools/toolset.js';
+import { registerAgentTools } from './tools/agent.js';
+import { AGENT_LOOP_TOOLS, AGENT_TOOLS, EXPERT_ONLY_TOOLS, resolveToolset, } from './tools/toolset.js';
 export const SERVER_VERSION = '0.3.0-reverse-env.2';
 const serverCleanups = new WeakMap();
 /**
@@ -59,9 +60,25 @@ export async function createServer(bridge) {
     registerDownloadTools(register, ctx);
     registerWebSocketTools(register, ctx);
     registerUtilTools(register, ctx);
+    registerAgentTools(register, ctx);
     const toolset = resolveToolset();
     if (toolset === 'automation') {
         for (const name of EXPERT_ONLY_TOOLS) {
+            toolHandlers.delete(name);
+        }
+        for (const name of AGENT_LOOP_TOOLS) {
+            toolHandlers.delete(name);
+        }
+    }
+    else if (toolset === 'agent') {
+        for (const name of Array.from(toolHandlers.keys())) {
+            if (!AGENT_TOOLS.has(name)) {
+                toolHandlers.delete(name);
+            }
+        }
+    }
+    else {
+        for (const name of AGENT_LOOP_TOOLS) {
             toolHandlers.delete(name);
         }
     }

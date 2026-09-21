@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1256.py scripts/runtime_capture_lifecycle.py scripts/runtime_attach_lifecycle.py scripts/runtime_download_behavior.py scripts/runtime_debugger.py",
+    "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1256.py scripts/runtime_capture_lifecycle.py scripts/runtime_attach_lifecycle.py scripts/runtime_download_behavior.py scripts/runtime_debugger.py scripts/runtime_agent_loop.py",
     "check:debugger-runtime": "python scripts/runtime_debugger.py",
     "check:debugger-mcp-runtime": "node scripts/runtime_mcp_debugger.mjs",
     "check:contract": "python scripts/contract_bridge.py",
@@ -17,6 +17,7 @@
     "check:capture-runtime": "python scripts/runtime_capture_lifecycle.py",
     "check:attach-runtime": "python scripts/runtime_attach_lifecycle.py",
     "check:download-runtime": "python scripts/runtime_download_behavior.py",
+    "check:agent-runtime": "python scripts/runtime_agent_loop.py",
     "smoke": "node scripts/smoke-list-tools.mjs",
     "snapshot:tools": "npm run build && node scripts/smoke-list-tools.mjs --update-snapshot",
     "check:lifecycle": "node --test scripts/server-contract.test.mjs scripts/bridge-lifecycle.test.mjs scripts/stdio-lifecycle.test.mjs",

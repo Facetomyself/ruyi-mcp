@@ -44,6 +44,19 @@ async function updateSnapshotAtomically(snapshotPath, text) {
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const snapshotPath = resolve(root, 'scripts/fixtures/tools-schema.snapshot.json');
+const agentSnapshotPath = resolve(root, 'scripts/fixtures/tools-schema.agent.snapshot.json');
+const AGENT_LOOP_TOOLS = ['ruyi_observe', 'ruyi_act'];
+const AGENT_REQUIRED_TOOLS = [
+  'ruyi_new_page',
+  'ruyi_attach_browser',
+  'ruyi_navigate_page',
+  'ruyi_observe',
+  'ruyi_act',
+  'ruyi_browser_quit',
+  'ruyi_browser_status',
+  'ruyi_export_session',
+  'ruyi_handle_cloudflare',
+];
 const EXPERT_ONLY_TOOLS = [
   'ruyi_break_on_xhr',
   'ruyi_debug_disable',
@@ -139,6 +152,11 @@ for (const required of ['ruyi_new_page', 'ruyi_human_click', 'ruyi_export_sessio
     throw new Error(`${required} must remain on the automation toolset`);
   }
 }
+for (const name of AGENT_LOOP_TOOLS) {
+  if (automationNames.includes(name)) {
+    throw new Error(`${name} must stay off the default automation toolset until P4`);
+  }
+}
 
 const debugListed = await listTools('debug');
 assertControlPlaneLogs(debugListed.serverStderr);
@@ -147,6 +165,11 @@ const debugNames = debugListed.result.tools.map((tool) => tool.name);
 for (const name of EXPERT_ONLY_TOOLS) {
   if (!debugNames.includes(name)) {
     throw new Error(`${name} must be available in RUYI_MCP_TOOLSET=debug`);
+  }
+}
+for (const name of AGENT_LOOP_TOOLS) {
+  if (debugNames.includes(name)) {
+    throw new Error(`${name} must stay off the debug toolset in P0`);
   }
 }
 
@@ -206,6 +229,37 @@ for (const name of EXPERT_ONLY_TOOLS) {
     throw new Error(`${name} must remain available in RUYI_MCP_TOOLSET=all`);
   }
 }
+for (const name of AGENT_LOOP_TOOLS) {
+  if (names.includes(name)) {
+    throw new Error(`${name} must stay off the all toolset snapshot in P0`);
+  }
+}
+
+const agentListed = await listTools('agent');
+assertControlPlaneLogs(agentListed.serverStderr);
+assert.match(agentListed.serverStderr, /\[ruyi-mcp\] Toolset: agent/);
+const agentNames = agentListed.result.tools.map((tool) => tool.name);
+if (new Set(agentNames).size !== agentNames.length) {
+  throw new Error('agent tools/list contains duplicate tool names');
+}
+for (const name of AGENT_REQUIRED_TOOLS) {
+  if (!agentNames.includes(name)) {
+    throw new Error(`${name} must be available in RUYI_MCP_TOOLSET=agent`);
+  }
+}
+for (const name of EXPERT_ONLY_TOOLS) {
+  if (agentNames.includes(name)) {
+    throw new Error(`${name} must stay off the agent toolset`);
+  }
+}
+if (agentNames.includes('ruyi_human_click')) {
+  throw new Error('ruyi_human_click belongs to automation, not the P0 agent surface');
+}
+const agentSnapshot = canonicalize({
+  snapshotVersion: 1,
+  tools: [...agentListed.result.tools].sort((left, right) => compareAscii(left.name, right.name)),
+});
+const agentSnapshotText = serializeSnapshot(agentSnapshot);
 
 const snapshot = canonicalize({
   snapshotVersion: 1,
@@ -215,7 +269,9 @@ const snapshotText = serializeSnapshot(snapshot);
 
 if (updateSnapshot) {
   await updateSnapshotAtomically(snapshotPath, snapshotText);
+  await updateSnapshotAtomically(agentSnapshotPath, agentSnapshotText);
   console.log(`ruyi-mcp schema snapshot updated: ${snapshotPath}`);
+  console.log(`ruyi-mcp agent schema snapshot updated: ${agentSnapshotPath}`);
 } else {
   let expectedText;
   try {
@@ -240,8 +296,31 @@ if (updateSnapshot) {
     expected,
     'Tool schema snapshot changed. Review the contract and run npm run snapshot:tools explicitly.'
   );
+
+  let expectedAgentText;
+  try {
+    expectedAgentText = await readFile(agentSnapshotPath, 'utf8');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Unable to read agent tool schema snapshot (${message}). `
+        + 'Run npm run snapshot:tools to create it explicitly.'
+    );
+  }
+  const expectedAgent = JSON.parse(expectedAgentText);
+  const canonicalExpectedAgentText = serializeSnapshot(canonicalize(expectedAgent));
+  if (expectedAgentText !== canonicalExpectedAgentText) {
+    throw new Error(
+      'Agent tool schema snapshot is not canonical. Run npm run snapshot:tools to rewrite it explicitly.'
+    );
+  }
+  assert.deepStrictEqual(
+    agentSnapshot,
+    expectedAgent,
+    'Agent tool schema snapshot changed. Review the contract and run npm run snapshot:tools explicitly.'
+  );
 }
 
 console.log(
-  `ruyi-mcp smoke OK: automation ${automation.result.tools.length} tools, debug ${debugListed.result.tools.length} tools, all ${result.tools.length} tools`
+  `ruyi-mcp smoke OK: automation ${automation.result.tools.length} tools, debug ${debugListed.result.tools.length} tools, all ${result.tools.length} tools, agent ${agentListed.result.tools.length} tools`
 );

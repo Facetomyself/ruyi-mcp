@@ -309,7 +309,24 @@ _ASYNC_METHODS = frozenset({
     "human.input",
     "human.move",
     "human.scroll",
+    "page.snapshot",
+    "page.act",
 })
+_AGENT_DOM_PATH = Path(__file__).resolve().parent / "agent_dom.js"
+_AGENT_DOM_JS = _AGENT_DOM_PATH.read_text(encoding="utf-8")
+_AGENT_ACT_OPS = frozenset({
+    "CLICK",
+    "TYPE_TEXT",
+    "SELECT",
+    "SCROLL_UP",
+    "SCROLL_DOWN",
+    "WAIT",
+    "DONE",
+    "BLOCKED",
+    "DRAG",
+})
+_AGENT_INDEX_OPS = frozenset({"CLICK", "TYPE_TEXT", "SELECT", "DRAG"})
+_AGENT_SNAPSHOT_LIMIT = 250
 class FrameTargetError(ValueError):
     """A requested frame is absent from the selected page's current tree."""
 
@@ -972,6 +989,7 @@ class RuyiBridge:
         self._debug_evidence_path: Optional[Path] = None
         self._debug_evidence_lock = threading.Lock()
         self._debug_evidence_count = 0
+        self._agent_snapshots: dict[str, dict[str, Any]] = {}
 
         self._handlers = {
             # Browser lifecycle
@@ -988,6 +1006,8 @@ class RuyiBridge:
             "page.reload":           self._reload,
             "page.screenshot":       self._screenshot,
             "page.clear_data":       self._clear_data,
+            "page.snapshot":         self._page_snapshot,
+            "page.act":              self._page_act,
             # Script execution
             "script.evaluate":       self._evaluate,
             "script.add_preload":    self._add_preload,
@@ -2195,6 +2215,247 @@ class RuyiBridge:
             pass
         return {"cleared": True}
 
+    def _run_agent_js(self, target: Any, expression: str, timeout: int = 10) -> Any:
+        script = (
+            "(() => {\n"
+            f"{_AGENT_DOM_JS}\n"
+            f"return {expression};\n"
+            "})()"
+        )
+        return target.run_js(script, timeout=timeout)
+
+    def _page_snapshot(self, params: dict) -> dict:
+        target, target_metadata = self._resolve_target(params)
+        limit = int(params.get("maxNodes", _AGENT_SNAPSHOT_LIMIT))
+        if limit < 1 or limit > _AGENT_SNAPSHOT_LIMIT:
+            raise ValueError(f"maxNodes must be between 1 and {_AGENT_SNAPSHOT_LIMIT}")
+
+        raw = self._run_agent_js(
+            target,
+            f"ruyiAgentSnapshot({limit})",
+        )
+        if not isinstance(raw, dict):
+            raise RuntimeError("page.snapshot did not return a table")
+
+        snapshot_id = str(raw.get("snapshotId") or "").strip()
+        if not snapshot_id:
+            raise RuntimeError("page.snapshot missing snapshotId")
+        nodes = raw.get("nodes")
+        if not isinstance(nodes, list):
+            raise RuntimeError("page.snapshot missing nodes")
+        indexes = [node.get("index") for node in nodes if isinstance(node, dict)]
+        if len(indexes) != len(set(indexes)):
+            raise RuntimeError("page.snapshot indexes are not unique")
+
+        key = f"{id(target)}:{snapshot_id}"
+        self._agent_snapshots[key] = {
+            "snapshotId": snapshot_id,
+            "pageId": id(target),
+            "marker": {
+                "url": raw.get("url"),
+                "title": raw.get("title"),
+                "scroll": raw.get("scroll"),
+            },
+            "nodeCount": len(nodes),
+        }
+        return {
+            "snapshotId": snapshot_id,
+            "url": raw.get("url"),
+            "title": raw.get("title"),
+            "scroll": raw.get("scroll"),
+            "truncated": bool(raw.get("truncated")),
+            "truncatedReasons": raw.get("truncatedReasons") or [],
+            "nodeCount": len(nodes),
+            "nodes": nodes,
+            "target": target_metadata,
+        }
+
+    def _page_act(self, params: dict) -> dict:
+        target, target_metadata = self._resolve_target(params)
+        op = str(params.get("op") or "").strip().upper()
+        if op not in _AGENT_ACT_OPS:
+            raise ValueError(f"unsupported op: {op or '<empty>'}")
+
+        snapshot_id = str(params.get("snapshotId") or "").strip()
+        raw_index = params.get("index")
+        text = params.get("text")
+        wait_ms = int(params.get("waitMs", 500))
+
+        if op in _AGENT_INDEX_OPS:
+            if not snapshot_id:
+                raise ValueError("snapshotId is required for this op")
+            if not isinstance(raw_index, int) or raw_index < 0:
+                raise ValueError("index must be a non-negative integer")
+            key = f"{id(target)}:{snapshot_id}"
+            if key not in self._agent_snapshots:
+                return {
+                    "ok": False,
+                    "miss": True,
+                    "reason": "stale_snapshot",
+                    "retried": False,
+                    "op": op,
+                    "target": target_metadata,
+                }
+
+        if op == "DRAG":
+            return {
+                "ok": False,
+                "miss": True,
+                "reason": "drag_not_in_p0",
+                "retried": False,
+                "op": op,
+                "target": target_metadata,
+            }
+        if op == "WAIT":
+            time.sleep(max(0, min(wait_ms, 10000)) / 1000.0)
+            return {"ok": True, "op": op, "waitMs": wait_ms, "target": target_metadata}
+        if op == "DONE":
+            return {"ok": True, "op": op, "done": True, "target": target_metadata}
+        if op == "BLOCKED":
+            return {
+                "ok": False,
+                "op": op,
+                "blocked": True,
+                "reason": "blocked",
+                "target": target_metadata,
+            }
+        if op in {"SCROLL_UP", "SCROLL_DOWN"}:
+            scroll = self._human_scroll(
+                {
+                    "pageIdx": params.get("pageIdx", 0),
+                    "frameContextId": params.get("frameContextId"),
+                    "direction": "up" if op == "SCROLL_UP" else "down",
+                    "steps": int(params.get("steps", 4)),
+                }
+            )
+            return {"ok": True, "op": op, "scroll": scroll, "target": target_metadata}
+
+        probe = self._run_agent_js(
+            target,
+            "ruyiAgentAct("
+            + json.dumps(
+                {
+                    "snapshotId": snapshot_id,
+                    "index": raw_index,
+                    "op": op,
+                    "text": text,
+                }
+            )
+            + ")",
+        )
+        if not isinstance(probe, dict) or not probe.get("ok"):
+            reason = "gone"
+            if isinstance(probe, dict):
+                reason = str(probe.get("reason") or reason)
+            return {
+                "ok": False,
+                "miss": True,
+                "reason": reason,
+                "retried": False,
+                "op": op,
+                "target": target_metadata,
+            }
+
+        if op == "SELECT":
+            return {
+                "ok": True,
+                "op": op,
+                "value": probe.get("value"),
+                "index": raw_index,
+                "snapshotId": snapshot_id,
+                "retried": False,
+                "target": target_metadata,
+            }
+
+        stamp = str(probe.get("stamp") or "")
+        if not stamp:
+            return {
+                "ok": False,
+                "miss": True,
+                "reason": "gone",
+                "retried": False,
+                "op": op,
+                "target": target_metadata,
+            }
+
+        if op == "CLICK":
+            if "x" not in probe or "y" not in probe:
+                return {
+                    "ok": False,
+                    "miss": True,
+                    "reason": "gone",
+                    "retried": False,
+                    "op": op,
+                    "target": target_metadata,
+                }
+            click = self._human_click(
+                {
+                    "pageIdx": params.get("pageIdx", 0),
+                    "frameContextId": params.get("frameContextId"),
+                    "target": {"x": int(probe["x"]), "y": int(probe["y"])},
+                    "algorithm": params.get("algorithm", "windmouse"),
+                }
+            )
+            if not click.get("clicked"):
+                return {
+                    "ok": False,
+                    "miss": True,
+                    "reason": "gone",
+                    "retried": False,
+                    "op": op,
+                    "target": target_metadata,
+                }
+            return {
+                "ok": True,
+                "op": op,
+                "index": raw_index,
+                "snapshotId": snapshot_id,
+                "retried": False,
+                "click": click,
+                "target": target_metadata,
+            }
+
+        if op == "TYPE_TEXT":
+            if text is None:
+                return {
+                    "ok": False,
+                    "needsText": True,
+                    "op": op,
+                    "index": raw_index,
+                    "snapshotId": snapshot_id,
+                    "retried": False,
+                    "target": target_metadata,
+                }
+            typed = self._human_input(
+                {
+                    "pageIdx": params.get("pageIdx", 0),
+                    "frameContextId": params.get("frameContextId"),
+                    "target": f'[data-ruyi-agent="{stamp}"]',
+                    "text": str(text),
+                    "delayMs": params.get("delayMs", 50),
+                }
+            )
+            if not typed.get("input"):
+                return {
+                    "ok": False,
+                    "miss": True,
+                    "reason": "gone",
+                    "retried": False,
+                    "op": op,
+                    "target": target_metadata,
+                }
+            return {
+                "ok": True,
+                "op": op,
+                "index": raw_index,
+                "snapshotId": snapshot_id,
+                "retried": False,
+                "input": typed,
+                "target": target_metadata,
+            }
+
+        raise ValueError(f"unsupported op: {op}")
+
     # ------------------------------------------------------------------
     # Script execution
     # ------------------------------------------------------------------
@@ -3028,19 +3289,14 @@ class RuyiBridge:
             "style": style,
         }
 
-    def _human_click(self, params: dict) -> dict:
-        target, target_metadata = self._resolve_target(params)
-        selector = self._norm_selector(params["target"])
-        algorithm = params.get("algorithm", "windmouse")
-
-        el = target.ele(selector)
-        if el is None or (NoneElement and isinstance(el, NoneElement)):
-            return {
-                "found": False,
-                "error": f"Element not found: {selector}",
-                "target": target_metadata,
-            }
-
+    def _pointer_click(
+        self,
+        target: Any,
+        el: Any,
+        algorithm: str,
+        target_metadata: dict,
+        selector: Any,
+    ) -> dict:
         actions = target.actions
         # Firefox may keep a stale BiDi pointer source after many document
         # navigations. performActions can still return success while the page
@@ -3092,6 +3348,26 @@ class RuyiBridge:
             "clickPoint": {"x": click_x, "y": click_y},
             "freshPointerSource": True,
         }
+
+    def _human_click(self, params: dict) -> dict:
+        target, target_metadata = self._resolve_target(params)
+        algorithm = params.get("algorithm", "windmouse")
+        raw_target = params.get("target")
+        if isinstance(raw_target, dict) and "x" in raw_target and "y" in raw_target:
+            el, selector = self._resolve_action_target(target, raw_target, "target")
+            return self._pointer_click(
+                target, el, algorithm, target_metadata, selector
+            )
+
+        selector = self._norm_selector(str(raw_target or ""))
+        el = target.ele(selector)
+        if el is None or (NoneElement and isinstance(el, NoneElement)):
+            return {
+                "found": False,
+                "error": f"Element not found: {selector}",
+                "target": target_metadata,
+            }
+        return self._pointer_click(target, el, algorithm, target_metadata, selector)
 
     def _human_scroll(self, params: dict) -> dict:
         """Perform small, one-direction native wheel steps with random pauses."""

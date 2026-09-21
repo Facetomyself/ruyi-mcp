@@ -12,7 +12,7 @@
 
 ## 核心能力
 
-- 默认自动化 toolset 覆盖页面生命周期、拟人交互、指纹/代理、网络观察、Cookie、DOM、Frame、拦截、WebSocket、原生下载与 Session handoff。原生 debugger / 源码工具只在 `RUYI_MCP_TOOLSET=debug` 或 `all` 时出现。
+- 默认自动化 toolset 覆盖页面生命周期、拟人交互、指纹/代理、网络观察、Cookie、DOM、Frame、拦截、WebSocket、原生下载与 Session handoff。原生 debugger / 源码工具只在 `RUYI_MCP_TOOLSET=debug` 或 `all` 时出现。实验档 `RUYI_MCP_TOOLSET=agent` 暴露 `ruyi_observe` / `ruyi_act` 编号执行环；P0 不含 Jev，`goal_run` 仍为 runtime-pending。
 - `page.debugger` 走 Firefox DevTools RDP（`--start-debugger-server`），由 debugger 自己在源 URL/行下端点，并支持 request-level XHR breakpoint：断点、条件断点、单步、调用栈、作用域、读源码、异常暂停。禁止 preload 注入 `debugger;`。
 - 暂停态控制通过 Bridge 后台 worker 处理：`ruyi_evaluate_script`、DOM click 和 human action 可与 `ruyi_debug_wait_paused` 并行，随后由 `resume/step/scope` 控制；source actor 支持 eval/blob/多段 inline，源码窗口保留 `offset`/行范围语义。
 - debugger pause/scope 是观察，不是 RuyiTrace browser fact。`ruyi_trace_*`、`traceEnabled` 和 Bridge Trace 状态均已删除；C++ DOMTrace 只由独立 Private `ruyitrace-mcp` 承担。
@@ -75,7 +75,7 @@ npm run check
 - `RUYI_FIREFOX_PATH`：新建浏览器时使用的 Firefox 可执行文件路径。未设置时，Bridge 只检查 Windows RuyiPage 浏览器缓存和 `PATH`，绝不回退到 RuyiTrace runtime；`ruyi_attach_browser` 只接管现有 BiDi 端口，不要求本地 browser path。
 - `RUYI_MCP_PROFILE_ROOT`：Bridge 自动创建的 disposable Firefox profile 根目录。必须是绝对路径；未设置时默认为 `<ruyi-mcp>/browser-profiles`。异常退出留下的残留也只会位于此处，且该目录被 Git 忽略。
 - `RUYI_MCP_LOCAL_HEAD`：仅供无 `.git` 的 release 安装显式提供 Private mirror Git SHA；普通 checkout 会直接读取本地 HEAD。
-- `RUYI_MCP_TOOLSET`：默认 `automation`（隐藏 debugger/源码工具，不启动 RDP）。`debug` / `all` / `expert` / `full` 暴露原生 debugger；`debug`/`all` 下 `ruyi_new_page` 默认 `enableDebugger=true`。
+- `RUYI_MCP_TOOLSET`：默认 `automation`（隐藏 debugger/源码工具，不启动 RDP）。`debug` / `all` / `expert` / `full` 暴露原生 debugger；`debug`/`all` 下 `ruyi_new_page` 默认 `enableDebugger=true`。`agent` 是实验 toolset：`new_page` / `attach` / `navigate` / `observe` / `act` / `quit` / `status` / `export_session` / `handle_cloudflare`。observe/act 不进入默认 automation 快照。
 - `RUYI_MCP_DEBUG_EVIDENCE_ROOT`：可选外部项目 workspace 根目录；配置后 debugger 观察会以脱敏记录写入 `evidence/web/ruyi-debug/<runId>/observations.jsonl`。也可在首次 `ruyi_new_page` 传 `debugEvidenceRoot`、`debugCaseId`、`debugRunId`。
 
 ## 代理接入（reverse_ENV）
@@ -183,7 +183,15 @@ npm run check
 npm audit --omit=dev
 ```
 
-`npm run check` 会执行 TypeScript typecheck、Python 语法检查、61 项 Bridge contract、构建、automation/debug/all toolset stdio smoke（当前 48/71/71 tools）、以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:debugger-runtime` 是 direct ruyiPage gate；`npm run check:debugger-mcp-runtime` 进一步走 Node MCP → Python Bridge → BiDi/RDP 的完整首导航、并发暂停、sourceActor、native XHR、跨页断点、JSON-safe 值、disable/re-enable、源码 offset 和 evidence gate，需要本地已配置的 151-proxy runtime。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 只写入临时 JSONL、不会回传 MCP response。`npm run check:download-runtime` 使用一次本地附件下载，确认 BiDi 下载目录配置能自动落盘并校验完整文件内容。
+`npm run check` 会执行 TypeScript typecheck、Python 语法检查、Bridge contract、构建、automation/debug/all/agent toolset stdio smoke（当前 48/71/71 tools + agent 子集）、以及 Bridge/server/stdio 生命周期测试；该命令不会启动 Firefox。`npm run check:debugger-runtime` 是 direct ruyiPage gate；`npm run check:debugger-mcp-runtime` 进一步走 Node MCP → Python Bridge → BiDi/RDP 的完整首导航、并发暂停、sourceActor、native XHR、跨页断点、JSON-safe 值、disable/re-enable、源码 offset 和 evidence gate，需要本地已配置的 151-proxy runtime。`npm run check:capture-runtime` 使用本地 HTTP fixture 与真实 Firefox 连续验证 start/wait/stop，并断言 128 KiB response body 只写入临时 JSONL、不会回传 MCP response。`npm run check:download-runtime` 使用一次本地附件下载，确认 BiDi 下载目录配置能自动落盘并校验完整文件内容。`npm run check:agent-runtime` 用本地 `scripts/fixtures/agent-loop.html` 验收 `page.snapshot` / `page.act` 编号点击、输入和 select，不访问外网。
+
+## 实验 toolset=agent（P0）
+
+- 设置 `RUYI_MCP_TOOLSET=agent` 后，MCP 只暴露启动/导航/observe/act/quit/status/handoff/Cloudflare 子集。
+- `ruyi_observe` 在页内扫可见可交互节点，返回编号表与 `snapshotId`。活引用留在页面；`ruyi_act` 用该轮几何，过期或节点消失返回 `miss`，`retried=false`。
+- 宿主自己选 `op` + `index`。Jev / `ruyi_goal_run` 尚未接入，标 runtime-pending。
+- 控制环成功不是 RuyiTrace browser fact，也不是 `serverAccepted`。
+- automation 仍是 48 tools；采集器脚本无需迁移。
 
 对内部命中区域不连续的链接（例如 Google Scholar 下一页），应选择实际可见的稳定子节点，不要点击外层 anchor 的几何中心。MCP stdio transport 关闭会进入 `bridge.stop()`；自建 SDK client 在关闭 stdio 前仍应先调用 `ruyi_browser_quit`，确保 attached browser 完成 detach-only。
 

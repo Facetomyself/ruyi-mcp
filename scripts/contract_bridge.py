@@ -873,6 +873,103 @@ class FakeHumanPage:
         return self.elements.get(selector)
 
 
+class FakeInputElement:
+    def __init__(self):
+        self.chars: list[str] = []
+
+    def input(self, char, clear=False):
+        if clear:
+            self.chars.clear()
+        self.chars.append(char)
+
+
+class FakeAgentPage:
+    _context_id = "agent-context"
+    url = "http://127.0.0.1/agent-loop"
+    title = "ruyi agent loop fixture"
+
+    def __init__(self):
+        self.actions = FakeHumanActions()
+        self.browser_driver = FakeWheelDriver()
+        self._driver = SimpleNamespace(_browser_driver=self.browser_driver)
+        self.rect = SimpleNamespace(viewport_midpoint=(320, 240))
+        self.textbox = FakeInputElement()
+        self.elements = {
+            'css:[data-ruyi-agent="snap_test:1"]': self.textbox,
+        }
+        self.run_js_calls: list[str] = []
+        self.probe_ok = True
+        self.probe_reason = "gone"
+        self.duplicate_indexes = False
+
+    def ele(self, selector):
+        return self.elements.get(selector)
+
+    def run_js(self, script, timeout=None, sandbox=None):
+        self.run_js_calls.append(script)
+        if "return ruyiAgentSnapshot(" in script:
+            nodes = [
+                {
+                    "index": 0,
+                    "role": "button",
+                    "tag": "button",
+                    "name": "Go",
+                    "ops": ["CLICK"],
+                    "inViewport": True,
+                },
+                {
+                    "index": 1 if not self.duplicate_indexes else 0,
+                    "role": "textbox",
+                    "tag": "input",
+                    "name": "Name",
+                    "ops": ["TYPE_TEXT", "CLICK"],
+                    "inViewport": True,
+                },
+            ]
+            return {
+                "snapshotId": "snap_test",
+                "url": self.url,
+                "title": self.title,
+                "scroll": {"x": 0, "y": 0},
+                "truncated": False,
+                "truncatedReasons": [],
+                "nodeCount": 2,
+                "nodes": nodes,
+            }
+        marker = "return ruyiAgentAct("
+        if marker in script:
+            start = script.index(marker) + len(marker)
+            end = script.rindex(");")
+            payload = json.loads(script[start:end])
+            if not self.probe_ok:
+                return {
+                    "ok": False,
+                    "miss": True,
+                    "reason": self.probe_reason,
+                    "retried": False,
+                }
+            op = payload.get("op")
+            index = payload.get("index")
+            if op == "SELECT":
+                return {
+                    "ok": True,
+                    "op": "SELECT",
+                    "value": payload.get("text"),
+                    "stamp": f"snap_test:{index}",
+                    "retried": False,
+                }
+            return {
+                "ok": True,
+                "op": op,
+                "x": 88,
+                "y": 42,
+                "stamp": f"snap_test:{index}",
+                "tag": "button" if op == "CLICK" else "input",
+                "retried": False,
+            }
+        raise AssertionError("unexpected agent script")
+
+
 class FakeFrameActionPage:
     _context_id = "top-human-context"
     url = "https://top.fixture.invalid/"
@@ -1000,6 +1097,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "fingerprint.set",
             "human.scroll",
             "human.drag",
+            "page.snapshot",
+            "page.act",
             "session.export",
             "download.set_behavior",
             "debug.enable",
@@ -2691,6 +2790,202 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     }
                 )
                 self.assertIn("error", response)
+
+    def test_page_snapshot_returns_unique_indexes_and_stores_freshness(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeAgentPage()
+        bridge.pages[0] = page
+
+        response = bridge.handle(
+            {
+                "id": 300,
+                "method": "page.snapshot",
+                "params": {"pageIdx": 0, "maxNodes": 250},
+            }
+        )
+
+        self.assertNotIn("error", response)
+        result = response["result"]
+        self.assertEqual(result["snapshotId"], "snap_test")
+        indexes = [node["index"] for node in result["nodes"]]
+        self.assertEqual(indexes, [0, 1])
+        self.assertEqual(len(indexes), len(set(indexes)))
+        self.assertFalse(result["truncated"])
+        self.assertIn(f"{id(page)}:snap_test", bridge._agent_snapshots)
+        self.assertTrue(any("ruyiAgentSnapshot" in script for script in page.run_js_calls))
+
+    def test_page_act_rejects_unknown_op_and_stale_or_missing_nodes(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeAgentPage()
+        bridge.pages[0] = page
+        bridge.handle({"id": 301, "method": "page.snapshot", "params": {"pageIdx": 0}})
+
+        unknown = bridge.handle(
+            {
+                "id": 302,
+                "method": "page.act",
+                "params": {"pageIdx": 0, "op": "EVAL"},
+            }
+        )
+        self.assertIn("error", unknown)
+        self.assertIn("unsupported op", unknown["error"]["message"])
+
+        stale = bridge.handle(
+            {
+                "id": 303,
+                "method": "page.act",
+                "params": {
+                    "pageIdx": 0,
+                    "op": "CLICK",
+                    "snapshotId": "snap_other",
+                    "index": 0,
+                },
+            }
+        )
+        self.assertNotIn("error", stale)
+        self.assertTrue(stale["result"]["miss"])
+        self.assertEqual(stale["result"]["reason"], "stale_snapshot")
+        self.assertFalse(stale["result"]["retried"])
+
+        page.probe_ok = False
+        page.probe_reason = "detached"
+        missing = bridge.handle(
+            {
+                "id": 304,
+                "method": "page.act",
+                "params": {
+                    "pageIdx": 0,
+                    "op": "CLICK",
+                    "snapshotId": "snap_test",
+                    "index": 0,
+                },
+            }
+        )
+        self.assertNotIn("error", missing)
+        self.assertTrue(missing["result"]["miss"])
+        self.assertEqual(missing["result"]["reason"], "detached")
+        self.assertFalse(missing["result"]["retried"])
+        self.assertEqual(len(page.actions.calls), 0)
+
+        drag = bridge.handle(
+            {
+                "id": 305,
+                "method": "page.act",
+                "params": {
+                    "pageIdx": 0,
+                    "op": "DRAG",
+                    "snapshotId": "snap_test",
+                    "index": 0,
+                },
+            }
+        )
+        self.assertEqual(drag["result"]["reason"], "drag_not_in_p0")
+        self.assertFalse(drag["result"]["retried"])
+
+    def test_page_act_click_uses_live_geometry_not_caller_css(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeAgentPage()
+        bridge.pages[0] = page
+        bridge.handle({"id": 310, "method": "page.snapshot", "params": {"pageIdx": 0}})
+
+        response = bridge.handle(
+            {
+                "id": 311,
+                "method": "page.act",
+                "params": {
+                    "pageIdx": 0,
+                    "op": "CLICK",
+                    "snapshotId": "snap_test",
+                    "index": 0,
+                },
+            }
+        )
+
+        self.assertNotIn("error", response)
+        self.assertTrue(response["result"]["ok"])
+        self.assertFalse(response["result"]["retried"])
+        click = response["result"]["click"]
+        self.assertEqual(click["selector"], {"x": 88, "y": 42})
+        self.assertTrue(click["atomicPointer"])
+        self.assertEqual(
+            page.actions.calls[0],
+            ("release_all",),
+        )
+        self.assertEqual(page.actions.calls[1][0], "human_move")
+        self.assertEqual(page.actions.calls[1][1], {"x": 88, "y": 42})
+
+    def test_page_act_type_text_without_text_pauses_for_host(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeAgentPage()
+        bridge.pages[0] = page
+        bridge.handle({"id": 320, "method": "page.snapshot", "params": {"pageIdx": 0}})
+
+        paused = bridge.handle(
+            {
+                "id": 321,
+                "method": "page.act",
+                "params": {
+                    "pageIdx": 0,
+                    "op": "TYPE_TEXT",
+                    "snapshotId": "snap_test",
+                    "index": 1,
+                },
+            }
+        )
+        self.assertTrue(paused["result"]["needsText"])
+        self.assertFalse(paused["result"].get("ok", False))
+
+        typed = bridge.handle(
+            {
+                "id": 322,
+                "method": "page.act",
+                "params": {
+                    "pageIdx": 0,
+                    "op": "TYPE_TEXT",
+                    "snapshotId": "snap_test",
+                    "index": 1,
+                    "text": "Ada",
+                    "delayMs": 0,
+                },
+            }
+        )
+        self.assertTrue(typed["result"]["ok"])
+        self.assertEqual(page.textbox.chars, ["A", "d", "a"])
+
+    def test_page_act_scroll_wait_done_do_not_touch_index(self):
+        bridge = BRIDGE_MODULE.RuyiBridge()
+        page = FakeAgentPage()
+        bridge.pages[0] = page
+
+        with patch.object(BRIDGE_MODULE.random, "randint", return_value=80):
+            with patch.object(BRIDGE_MODULE.time, "sleep"):
+                scroll = bridge.handle(
+                    {
+                        "id": 330,
+                        "method": "page.act",
+                        "params": {"pageIdx": 0, "op": "SCROLL_DOWN", "steps": 1},
+                    }
+                )
+                wait = bridge.handle(
+                    {
+                        "id": 331,
+                        "method": "page.act",
+                        "params": {"pageIdx": 0, "op": "WAIT", "waitMs": 10},
+                    }
+                )
+        done = bridge.handle(
+            {"id": 332, "method": "page.act", "params": {"pageIdx": 0, "op": "DONE"}}
+        )
+        blocked = bridge.handle(
+            {"id": 333, "method": "page.act", "params": {"pageIdx": 0, "op": "BLOCKED"}}
+        )
+
+        self.assertTrue(scroll["result"]["ok"])
+        self.assertTrue(scroll["result"]["scroll"]["nativeWheel"])
+        self.assertTrue(wait["result"]["ok"])
+        self.assertTrue(done["result"]["done"])
+        self.assertTrue(blocked["result"]["blocked"])
+        self.assertEqual(page.run_js_calls, [])
 
     def test_human_drag_builds_atomic_waited_chain(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
