@@ -20,13 +20,13 @@
   "properties": {
     "schema": {"const": "evidence-pointer.v1"},
     "caseId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,79}$"},
-    "plane": {"enum": ["ruyi-control", "ruyitrace", "v8trace", "iv8", "ruyidom", "parity"]},
+    "plane": {"enum": ["ruyi-control", "ruyitrace", "v8trace", "v8trace-chromium", "iv8", "ruyidom", "parity"]},
     "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,95}$"},
     "artifactId": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{1,95}$"},
     "path": {
       "type": "string",
       "maxLength": 1024,
-      "pattern": "^evidence/web/(handoff|ruyitrace|v8trace|iv8|ruyidom|parity)/[a-z0-9][a-z0-9_-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+      "pattern": "^evidence/web/(handoff|ruyitrace|v8trace|v8trace-chromium|iv8|ruyidom|parity)/[a-z0-9][a-z0-9_-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
     },
     "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "bytes": {"type": "integer", "minimum": 0},
@@ -57,6 +57,10 @@
     {
       "if": {"properties": {"plane": {"const": "v8trace"}}, "required": ["plane"]},
       "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/v8trace/"}}}
+    },
+    {
+      "if": {"properties": {"plane": {"const": "v8trace-chromium"}}, "required": ["plane"]},
+      "then": {"properties": {"path": {"type": "string", "pattern": "^evidence/web/v8trace-chromium/"}}}
     },
     {
       "if": {"properties": {"plane": {"const": "iv8"}}, "required": ["plane"]},
