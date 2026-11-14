@@ -27,7 +27,7 @@
       "additionalProperties": false,
       "required": ["service", "publicBaseSha", "localHeadSha"],
       "properties": {
-        "service": {"const": "ruyi-mcp-reverse-env"},
+        "service": {"enum": ["ruyi-mcp", "ruyi-mcp-reverse-env"]},
         "publicBaseSha": {"type": "string", "pattern": "^[a-f0-9]{7,40}$"},
         "localHeadSha": {"type": "string", "pattern": "^[a-f0-9]{7,40}$"}
       }

@@ -52,7 +52,7 @@ export function registerScriptTools(register, ctx) {
         }`;
             }
             try {
-                const debugSources = await ctx.bridgeInstance.call('debug.sources', {
+                const debugSources = await ctx.debuggerCall('debug.sources', {
                     pageIdx,
                     filter,
                 });
@@ -168,7 +168,7 @@ export function registerScriptTools(register, ctx) {
         }
       }`;
             try {
-                const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+                const debugSource = await ctx.debuggerCall('debug.source_text', {
                     pageIdx,
                     url,
                     sourceActor,
@@ -259,7 +259,7 @@ export function registerScriptTools(register, ctx) {
             }
             const safeFilePath = pathCheck.resolved;
             try {
-                const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+                const debugSource = await ctx.debuggerCall('debug.source_text', {
                     pageIdx,
                     url,
                     sourceActor,
@@ -377,7 +377,7 @@ export function registerScriptTools(register, ctx) {
             const maxResults = args.maxResults ?? 30;
             if (!isRegex) {
                 try {
-                    const debugSearch = await ctx.bridgeInstance.call('debug.search', {
+                    const debugSearch = await ctx.debuggerCall('debug.search', {
                         pageIdx,
                         query,
                         urlFilter,

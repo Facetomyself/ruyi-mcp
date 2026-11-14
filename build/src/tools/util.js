@@ -105,7 +105,7 @@ export function registerUtilTools(register, ctx) {
             },
         },
         handler: (async () => {
-            const result = await ctx.bridgeInstance.call('browser.status');
+            const result = await ctx.status();
             return {
                 content: [{ type: 'text', text: jsonResult(result) }],
             };

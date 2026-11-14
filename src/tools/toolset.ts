@@ -4,7 +4,15 @@
  * observe/act loop is a separate experimental agent surface.
  */
 
-export type RuyiToolset = 'automation' | 'debug' | 'all' | 'agent';
+export type RuyiToolset = 'automation' | 'debug' | 'all' | 'agent' | 'compact';
+
+export const COMPACT_TOOLS = new Set<string>([
+  'ruyi_browser_status',
+  'ruyi_observe',
+  'ruyi_act',
+  'ruyi_search_tools',
+  'ruyi_execute_tool',
+]);
 
 export const EXPERT_ONLY_TOOLS = new Set<string>([
   'ruyi_break_on_xhr',
@@ -50,7 +58,10 @@ export const AGENT_TOOLS = new Set<string>([
 ]);
 
 export function resolveToolset(raw = process.env.RUYI_MCP_TOOLSET): RuyiToolset {
-  const value = String(raw || 'automation').trim().toLowerCase();
+  const value = String(raw || 'compact').trim().toLowerCase();
+  if (value === 'compact') {
+    return 'compact';
+  }
   if (value === 'debug') {
     return 'debug';
   }
@@ -60,9 +71,12 @@ export function resolveToolset(raw = process.env.RUYI_MCP_TOOLSET): RuyiToolset 
   if (value === 'agent') {
     return 'agent';
   }
-  return 'automation';
+  if (value === 'automation') {
+    return 'automation';
+  }
+  throw new Error(`Unknown RUYI_MCP_TOOLSET: ${value}`);
 }
 
 export function debuggerEnabledByDefault(toolset = resolveToolset()): boolean {
-  return toolset !== 'automation' && toolset !== 'agent';
+  return true;
 }

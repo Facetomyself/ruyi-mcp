@@ -3,7 +3,7 @@ name: ci
 on:
   push:
     branches:
-      - reverse-env/main
+      - main
   pull_request:
 
 jobs:

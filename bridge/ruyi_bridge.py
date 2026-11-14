@@ -47,11 +47,8 @@ if hasattr(sys.stderr, "reconfigure"):
 try:
     from ruyipage import FirefoxPage, FirefoxOptions, Settings
     from ruyipage import NoneElement
-    from ruyipage.errors import DebuggerError
-    try:
-        from ruyipage._units.debugger import Breakpoint as RuyiBreakpoint
-    except ImportError:
-        RuyiBreakpoint = None  # type: ignore
+    DebuggerError = RuntimeError
+    RuyiBreakpoint = None
     RUYIPAGE_AVAILABLE = True
 except ImportError:
     RUYIPAGE_AVAILABLE = False
@@ -285,7 +282,7 @@ _GIT_SHA_PATTERN = re.compile(r"^[a-f0-9]{7,40}$")
 _COOKIE_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,4096}$")
 _COOKIE_DOMAIN_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 PUBLIC_BASE_SHA = "788d7af28dd9ec4e91d79470cd30030aac3f8aba"
-CONTROL_PLANE_SERVICE = "ruyi-mcp-reverse-env"
+CONTROL_PLANE_SERVICE = "ruyi-mcp"
 _HEADER_ALLOWLIST = frozenset({
     "content-type",
     "content-length",
@@ -300,6 +297,9 @@ _HEADER_ALLOWLIST = frozenset({
 # accept debugger control commands (resume/step/scope) while such a call is
 # waiting for a paused page.
 _ASYNC_METHODS = frozenset({
+    "page.navigate",
+    "page.new",
+    "page.reload",
     "script.evaluate",
     "debug.wait_paused",
     "dom.click",
@@ -990,6 +990,9 @@ class RuyiBridge:
         self._debug_evidence_lock = threading.Lock()
         self._debug_evidence_count = 0
         self._agent_snapshots: dict[str, dict[str, Any]] = {}
+        self._bidi_trace_active = False
+        self._bidi_trace_launch = False
+        self._bidi_trace_output: Optional[str] = None
 
         self._handlers = {
             # Browser lifecycle
@@ -1046,27 +1049,9 @@ class RuyiBridge:
             "human.input":           self._human_input,
             # Session export
             "session.export":        self._export_session,
-            # Debug (Firefox DevTools RDP via page.debugger)
-            "debug.enable": self._debug_enable,
-            "debug.disable": self._debug_disable,
-            "debug.status": self._debug_status,
-            "debug.sources": self._debug_sources,
-            "debug.source_text": self._debug_source_text,
-            "debug.search": self._debug_search,
-            "debug.set_breakpoint": self._debug_set_breakpoint,
-            "debug.set_breakpoint_on_text": self._debug_set_breakpoint_on_text,
-            "debug.break_on_xhr": self._debug_break_on_xhr,
-            "debug.remove_breakpoint": self._debug_remove_breakpoint,
-            "debug.list_breakpoints": self._debug_list_breakpoints,
-            "debug.wait_paused": self._debug_wait_paused,
-            "debug.get_paused_info": self._debug_get_paused_info,
-            "debug.pause": self._debug_pause,
-            "debug.resume": self._debug_resume,
-            "debug.step": self._debug_step,
-            "debug.frames": self._debug_frames,
-            "debug.scope": self._debug_scope,
-            "debug.expand": self._debug_expand,
-            "debug.pause_on_exceptions": self._debug_pause_on_exceptions,
+            "bidi_trace.start": self._bidi_trace_start,
+            "bidi_trace.stop": self._bidi_trace_stop,
+            "bidi_trace.results": self._bidi_trace_results,
             # Frame
             "frame.list":            self._frame_list,
             "frame.select":          self._frame_select,
@@ -1762,7 +1747,7 @@ class RuyiBridge:
             if debugger_port is None:
                 debugger_port = _allocate_loopback_port()
             opts.enable_debugger(True, port=int(debugger_port))
-            self._debugger_enabled = True
+            self._debugger_enabled = False
             self._debugger_server_enabled = True
             self._debugger_port = int(debugger_port)
             self._debugger_auto_resume_after = auto_resume_after
@@ -1776,6 +1761,11 @@ class RuyiBridge:
             self._debugger_auto_resume_after = 60
 
         profile_path, profile_mode = self._prepare_profile(params, existing_only)
+        self._bidi_trace_launch = bool(params.get("traceEnabled", False))
+        self._bidi_trace_active = self._bidi_trace_launch
+        self._bidi_trace_output = None
+        Settings.trace_enabled = self._bidi_trace_launch
+        opts.enable_trace(self._bidi_trace_launch)
         try:
             if profile_path is not None:
                 opts.set_profile(str(profile_path))
@@ -1823,29 +1813,6 @@ class RuyiBridge:
             self._fingerprint_ctx.apply_emulation(self.page)
 
         debugger_started = False
-        # For a newly launched browser, defer the RDP attach until the caller
-        # has completed its first navigation. Firefox 151/155 invalidates the
-        # initial RDP thread actor during that navigation; attaching here makes
-        # every subsequent sources/breakpoint request time out. Attach-only
-        # sessions do not navigate and can be connected immediately.
-        if self._debugger_enabled and existing_only:
-            try:
-                self._start_page_debugger(self.page)
-                debugger_started = True
-            except Exception:
-                try:
-                    self.page.quit()
-                except Exception:
-                    pass
-                self.page = None
-                self.opts = None
-                self._fingerprint_ctx = None
-                self._debugger_enabled = False
-                self._debugger_server_enabled = False
-                self._debugger_port = None
-                self._cleanup_managed_profile()
-                self._profile_path = None
-                raise
 
         self.pages = {}
         self._next_page_idx = 0
@@ -1887,12 +1854,6 @@ class RuyiBridge:
         owned_profile = None if attached else self._managed_profile
         if self.page:
             try:
-                # Every tab may own an RDP connection. Stop all of them before
-                # detaching/closing so paused threads and reader sockets do not
-                # outlive the bridge.
-                self._stop_all_page_debuggers(suppress_errors=True)
-                if not self.pages:
-                    self._stop_page_debugger(self.page, suppress_errors=True)
                 if attached:
                     browser = getattr(self.page, "_firefox", None)
                     detach = getattr(browser, "_detach_on_exit", None)
@@ -1953,6 +1914,11 @@ class RuyiBridge:
         process_cleanup = None if attached else _reap_owned_firefox(owned_pid, owned_profile)
         cleanup = self._cleanup_managed_profile()
         self._profile_path = None
+        self._bidi_trace_active = False
+        self._bidi_trace_launch = False
+        self._bidi_trace_output = None
+        if Settings is not None:
+            Settings.trace_enabled = False
         result: dict[str, Any] = {}
         if cleanup is not None:
             result["profileCleanup"] = cleanup
@@ -1968,8 +1934,10 @@ class RuyiBridge:
             status_page = self._get_page(page_idx)
             return {
                 "alive": True,
-                "url": _safe_url(getattr(status_page, 'url', ''))["url"],
-                "title": getattr(status_page, 'title', ''),
+                "contextId": str(getattr(status_page, "_context_id", "")),
+                "browserPid": self._owned_firefox_pid,
+                "attached": self._attached_existing,
+                "browserPath": str(self._browser_path) if self._browser_path else None,
                 "pageCount": len(self.pages),
                 "breakpointCount": sum(
                     1 for item in self._public_breakpoints()
@@ -1979,7 +1947,7 @@ class RuyiBridge:
                 "debuggerEnabled": self._debugger_enabled,
                 "debuggerServerEnabled": self._debugger_server_enabled,
                 "debuggerPort": self._debugger_port,
-                "debuggerStarted": self._debugger_is_started(status_page),
+                "debuggerStarted": False,
                 "profileMode": (
                     "managed"
                     if self._managed_profile is not None
@@ -2132,7 +2100,6 @@ class RuyiBridge:
             raise ValueError(f"Invalid pageIdx: {idx}")
 
         page = self.pages.pop(idx)
-        self._stop_page_debugger(page, suppress_errors=True)
         with self._debugger_lock:
             self._native_breakpoints = [
                 item for item in self._native_breakpoints
@@ -2836,6 +2803,64 @@ class RuyiBridge:
     # ------------------------------------------------------------------
     # Cookies
     # ------------------------------------------------------------------
+    def _bidi_trace_start(self, params: dict) -> dict:
+        page = self._get_page(params.get("pageIdx", 0))
+        output_file = params.get("outputFile")
+        if output_file is not None:
+            output_file = _contained_output_path(output_file, "outputFile", kind="file")
+        previous_enabled = bool(Settings.trace_enabled)
+        try:
+            Settings.trace_enabled = True
+            if self.opts is not None:
+                self.opts.enable_trace(True)
+            tracer = page.trace
+            if not previous_enabled and not self._bidi_trace_active:
+                tracer.clear()
+        except Exception:
+            Settings.trace_enabled = previous_enabled
+            if self.opts is not None:
+                self.opts.enable_trace(previous_enabled)
+            raise
+        self._bidi_trace_active = True
+        self._bidi_trace_output = output_file
+        return {
+            "tracing": True,
+            "plane": "bidi-timeline",
+            "scope": "browser",
+            "fullTrace": self._bidi_trace_launch,
+            "partialTrace": not self._bidi_trace_launch,
+            "alreadyTracing": previous_enabled,
+        }
+
+    def _bidi_trace_stop(self, params: dict) -> dict:
+        page = self._get_page(params.get("pageIdx", 0))
+        Settings.trace_enabled = False
+        if self.opts is not None:
+            self.opts.enable_trace(False)
+        self._bidi_trace_active = False
+        tracer = page.trace
+        result = {"tracing": False, "plane": "bidi-timeline", "scope": "browser", "summary": str(tracer.summary())[:10000]}
+        if self._bidi_trace_output:
+            destination = Path(_contained_output_path(self._bidi_trace_output, "outputFile", kind="file"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            payload = str(tracer.dump_json())
+            destination.write_text(payload, encoding="utf-8", newline="\n")
+            result["output"] = {"path": str(destination), "bytes": destination.stat().st_size, "sha256": _sha256_file(destination)}
+        self._bidi_trace_output = None
+        return result
+
+    def _bidi_trace_results(self, params: dict) -> dict:
+        page = self._get_page(params.get("pageIdx", 0))
+        limit = params.get("limit", 50)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer between 1 and 100")
+        return {
+            "tracing": bool(self._bidi_trace_active and Settings.trace_enabled),
+            "plane": "bidi-timeline",
+            "scope": "browser",
+            "entries": _serialize(page.trace.latest(limit)),
+        }
+
     def _get_cookies(self, params: dict) -> dict:
         page = self._get_page(params.get("pageIdx", 0))
         try:
@@ -3669,36 +3694,13 @@ class RuyiBridge:
     # Debug (Firefox DevTools RDP via page.debugger)
     # ------------------------------------------------------------------
     def _debugger_is_started(self, page: Any) -> bool:
-        try:
-            dbg = getattr(page, "debugger", None)
-            return bool(dbg is not None and getattr(dbg, "started", False))
-        except Exception:
-            return False
+        return False
 
     def _start_page_debugger(self, page: Any) -> Any:
-        with self._debugger_lock:
-            dbg = getattr(page, "debugger", None)
-            if dbg is None:
-                raise RuntimeError("page.debugger is not available on this ruyiPage build")
-            if not getattr(dbg, "started", False):
-                if self._debugger_port is None:
-                    raise RuntimeError("debugger RDP port is not configured")
-                dbg.start(
-                    port=self._debugger_port,
-                    auto_resume_after=self._debugger_auto_resume_after,
-                )
-            return dbg
+        raise RuntimeError("Native debugger is owned by the TypeScript RDP adapter")
 
     def _stop_page_debugger(self, page: Any, *, suppress_errors: bool = False) -> None:
-        dbg = getattr(page, "debugger", None)
-        if dbg is None or not getattr(dbg, "started", False):
-            return
-        try:
-            with self._debugger_lock:
-                dbg.stop()
-        except Exception:
-            if not suppress_errors:
-                raise
+        return
 
     def _stop_all_page_debuggers(self, *, suppress_errors: bool = False) -> None:
         first_error: Optional[Exception] = None

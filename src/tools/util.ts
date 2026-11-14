@@ -116,7 +116,7 @@ export function registerUtilTools(register: ToolRegistrar, ctx: RuyiContext): vo
       },
     },
     handler: (async () => {
-      const result = await ctx.bridgeInstance.call('browser.status') as Record<string, unknown>;
+      const result = await ctx.status();
 
       return {
         content: [{ type: 'text', text: jsonResult(result) }],

@@ -2,13 +2,76 @@
   "snapshotVersion": 1,
   "tools": [
     {
+      "description": "对最近一次 ruyi_observe 的编号节点执行 CLICK / TYPE_TEXT / SELECT / SCROLL_* / WAIT。CLICK 使用快照活引用的几何，不接受调用方 CSS/XPath。节点消失返回 miss。P0 不含 Jev；宿主自己选 op 和 index。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "frameContextId": {
+            "description": "可选 frame browsing context ID，必须与 observe 同一 frame。",
+            "type": "string"
+          },
+          "index": {
+            "description": "编号表下标；CLICK/TYPE_TEXT/SELECT 必填。",
+            "minimum": 0,
+            "type": "number"
+          },
+          "op": {
+            "description": "动作。P0 的 DRAG 返回 miss。",
+            "enum": [
+              "CLICK",
+              "TYPE_TEXT",
+              "SELECT",
+              "SCROLL_UP",
+              "SCROLL_DOWN",
+              "WAIT",
+              "DONE",
+              "BLOCKED",
+              "DRAG"
+            ],
+            "type": "string"
+          },
+          "pageIdx": {
+            "default": 0,
+            "type": "number"
+          },
+          "snapshotId": {
+            "description": "ruyi_observe 返回的 snapshotId；CLICK/TYPE_TEXT/SELECT 必填。",
+            "type": "string"
+          },
+          "text": {
+            "description": "TYPE_TEXT 要输入的文本，或 SELECT 的 option 文本/value。",
+            "type": "string"
+          },
+          "waitMs": {
+            "default": 500,
+            "description": "WAIT 毫秒，默认 500",
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "op"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_act"
+    },
+    {
       "description": "通过 Firefox WebDriver BiDi 端口接管已启动的浏览器，不新建进程、不导航页面，MCP 退出或 bridge 超时时保留外部浏览器。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "address": {
             "default": "127.0.0.1",
             "description": "监听地址，默认 127.0.0.1",
             "type": "string"
+          },
+          "debuggerPort": {
+            "description": "现有 loopback RDP 端口，仅登记，不自动 attach。",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
           },
           "port": {
             "description": "Firefox --remote-debugging-port",
@@ -29,20 +92,85 @@
       "name": "ruyi_attach_browser"
     },
     {
-      "description": "优先使用 Firefox RDP 原生 XHR breakpoint；旧版 ruyiPage 无该 API 时回退为显式标记的源码启发式，不会注入 debugger;，也不会冒充 verified request initiator。",
+      "description": "借用活动 RuyiTrace 会话的控制租约，读取本地 restricted descriptor；不创建第二条 BiDi session，不接管浏览器生命周期。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "method": {
-            "default": "ANY",
-            "description": "请求方法；默认 ANY",
+          "sessionPath": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionPath"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_attach_trace_session"
+    },
+    {
+      "description": "浏览器级 BiDi 命令、事件与错误时间线；所有 tab 共享缓冲，不是页面 JS trace 或 C++ DOMTrace。读取有界最近记录。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pageIdx": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ruyi_bidi_trace_get_results"
+    },
+    {
+      "description": "浏览器级 BiDi 命令、事件与错误时间线；所有 tab 共享缓冲，不是页面 JS trace 或 C++ DOMTrace。开始记录，可指定停止时输出路径。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "outputFile": {
+            "description": "完整 JSON 输出的绝对路径",
             "type": "string"
           },
           "pageIdx": {
-            "default": 0,
-            "type": "number"
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ruyi_bidi_trace_start"
+    },
+    {
+      "description": "浏览器级 BiDi 命令、事件与错误时间线；所有 tab 共享缓冲，不是页面 JS trace 或 C++ DOMTrace。停止并返回摘要；完整数据按显式路径保存。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "pageIdx": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ruyi_bidi_trace_stop"
+    },
+    {
+      "description": "Set native page XHR/fetch breakpoint. Worker outgoing request breakpoint is unsupported.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
           },
           "url": {
-            "description": "URL 匹配片段",
             "type": "string"
           }
         },
@@ -56,6 +184,7 @@
     {
       "description": "关闭由 MCP 启动的浏览器并清理状态；端口接管的外部浏览器只断开连接，不关闭进程。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object"
@@ -65,6 +194,7 @@
     {
       "description": "获取浏览器当前状态：是否存活、当前 URL、页面数量、断点数、preload 脚本数。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object"
@@ -74,6 +204,7 @@
     {
       "description": "开始被动抓包。默认只收集脱敏 metadata，不申请 body DataCollector；需要字段结构或原始 body 时显式设置 resultMode。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "method": {
             "description": "仅匹配 HTTP 方法（GET/POST/...）",
@@ -107,6 +238,7 @@
     {
       "description": "停止被动抓包。会先清空尚未消费的队列/历史，避免 ruyiPage stop 隐式补读全部 body；mode=metadata 可在清理前返回有上限的脱敏摘要，并报告 observed/returned/discarded 计数。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "cleanupTimeout": {
             "default": 5,
@@ -144,6 +276,7 @@
     {
       "description": "等待并获取抓包结果。在调用 ruyi_capture_start 后使用。默认只返回脱敏 metadata；schema 只返回 body 字段结构、长度和 hash；body 永不经过 MCP response，只会追加到指定的本地 JSONL 文件。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "bodyReadTimeout": {
             "default": 1,
@@ -194,6 +327,7 @@
     {
       "description": "清除当前页面的浏览器状态：Cookie、localStorage、sessionStorage。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -208,6 +342,7 @@
     {
       "description": "关闭指定标签页。不能关闭主标签页（pageIdx=0）。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 1,
@@ -223,38 +358,160 @@
       "name": "ruyi_close_page"
     },
     {
-      "description": "断开所有页面的 debugger RDP 通道并清理 native 断点。若当前已暂停则先 resume，避免页面卡死。",
+      "description": "Enable native breakpoints for this attached session.",
       "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_arm"
+    },
+    {
+      "description": "Set or clear native source blackboxing, optionally by range.",
+      "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "enabled": {
+            "type": "boolean"
+          },
+          "endColumn": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endLine": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "sourceActor": {
+            "type": "string"
+          },
+          "startColumn": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "startLine": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
           }
         },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_blackbox"
+    },
+    {
+      "description": "Report implemented native capabilities separately from runtime verification and unsupported combinations.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_capabilities"
+    },
+    {
+      "description": "Resume owned pauses, detach RDP, release observation lease. Never close an external browser.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
         "required": [],
         "type": "object"
       },
       "name": "ruyi_debug_disable"
     },
     {
-      "description": "连接 Firefox DevTools RDP 并 attach 当前标签页的 thread actor。必须在 ruyi_new_page 时传入 enableDebugger=true（启动 --start-debugger-server）。debug toolset 默认会在 launch 时打开。",
+      "description": "Set native DOM subtree, attribute or removal breakpoint.",
       "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "attribute": {
+            "type": "boolean"
+          },
+          "nodeActor": {
+            "type": "string"
+          },
+          "removal": {
+            "type": "boolean"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "subtree": {
+            "type": "boolean"
+          },
+          "targetId": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_dom_breakpoint"
+    },
+    {
+      "description": "Attach Firefox native RDP in observe mode. Exact target identity is required; shared workers require exact sharedWorkerUrls; no script injection.",
+      "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "autoResumeAfter": {
-            "description": "暂停看门狗秒数，超时自动 resume，避免 JS 永久卡住。默认 60；0 表示关闭。",
-            "maximum": 3600,
+            "default": 30,
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "browserId": {
             "minimum": 0,
-            "type": "number"
+            "type": "integer"
+          },
+          "contextId": {
+            "type": "string"
           },
           "debuggerPort": {
-            "description": "已有 RDP 端口；attach 会话必填",
             "maximum": 65535,
             "minimum": 1,
-            "type": "number"
+            "type": "integer"
           },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "descriptorActor": {
+            "type": "string"
+          },
+          "includeSharedWorkers": {
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "observe",
+            "enum": [
+              "observe",
+              "armed"
+            ],
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "tab",
+              "browser"
+            ],
+            "type": "string"
+          },
+          "sharedWorkerUrls": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 16,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "workers": {
+            "type": "boolean"
           }
         },
         "required": [],
@@ -263,24 +520,90 @@
       "name": "ruyi_debug_enable"
     },
     {
-      "description": "按 actor 展开暂停现场中的对象，突破 preview 上限。只能在暂停时调用。",
+      "description": "Evaluate a focused native paused-frame expression; side effects disabled by default.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "actor": {
-            "description": "RemoteObject actor id",
+          "allowSideEffects": {
+            "type": "boolean"
+          },
+          "expression": {
             "type": "string"
           },
-          "depth": {
-            "default": 1,
-            "type": "number"
+          "frameActor": {
+            "type": "string"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "timeout": {
+            "maximum": 15,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_evaluate"
+    },
+    {
+      "description": "List native event categories or set their exact IDs.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "targetId": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_event_breakpoints"
+    },
+    {
+      "description": "Page native object property descriptors without invoking getters.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "properties",
+              "release"
+            ],
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
           },
           "maxItems": {
-            "default": 80,
-            "type": "number"
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
           },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "pauseId": {
+            "type": "string"
+          },
+          "property": {
+            "type": "string"
+          },
+          "start": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "targetId": {
+            "type": "string"
           }
         },
         "required": [
@@ -291,17 +614,24 @@
       "name": "ruyi_debug_expand_object"
     },
     {
-      "description": "读取当前调用栈。只能在暂停状态下调用。",
+      "description": "Read synchronous and saved async frames, preserving live/suspended status.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "count": {
-            "default": 50,
-            "description": "最多帧数，默认 50",
-            "type": "number"
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
           },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "pauseId": {
+            "type": "string"
+          },
+          "start": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "targetId": {
+            "type": "string"
           }
         },
         "required": [],
@@ -310,12 +640,15 @@
       "name": "ruyi_debug_get_frames"
     },
     {
-      "description": "读取当前暂停快照与有界调用栈。未暂停时 paused=false。",
+      "description": "Read the current pause and bounded stack.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "pauseId": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
           }
         },
         "required": [],
@@ -324,21 +657,29 @@
       "name": "ruyi_debug_get_paused_info"
     },
     {
-      "description": "读取某一帧的作用域变量（默认到函数边界，不含全局）。对象以 remoteObject actor 返回，用 ruyi_debug_expand_object 展开。只能在暂停时调用。",
+      "description": "Read the current lexical and closure scope chain; global is excluded by default.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "frameActor": {
-            "description": "frame actor；默认当前暂停帧",
             "type": "string"
           },
-          "includeParents": {
-            "default": false,
-            "description": "包含闭包与全局",
+          "includeGlobal": {
             "type": "boolean"
           },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "includeParents": {
+            "type": "boolean"
+          },
+          "maxDepth": {
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
           }
         },
         "required": [],
@@ -347,15 +688,14 @@
       "name": "ruyi_debug_get_scopes"
     },
     {
-      "description": "列出 JS 引擎已加载的源（含内联 script、blob、eval）。这是 debugger 源表，不是 DOM script[src]。",
+      "description": "List engine-loaded source actors in the selected target.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "targetId": {
+            "type": "string"
           },
           "urlContains": {
-            "description": "只返回 URL 含该子串的源",
             "type": "string"
           }
         },
@@ -365,12 +705,164 @@
       "name": "ruyi_debug_list_sources"
     },
     {
-      "description": "立即暂停 JS 执行。",
+      "description": "Load an explicit local/data/remote source map. Remote reads omit credentials and reject redirects.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "allowRemote": {
+            "type": "boolean"
+          },
+          "map": {
+            "type": "object"
+          },
+          "mapUrl": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sourceActor": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceActor"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_load_source_map"
+    },
+    {
+      "description": "Read bounded native logpoint and console events.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_logpoints"
+    },
+    {
+      "description": "Disable breakpoint pauses and resume the current native pauses.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_observe"
+    },
+    {
+      "description": "Map an original source breakpoint to validated native generated locations.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "condition": {
+            "type": "string"
+          },
+          "line": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "logValue": {
+            "type": "string"
+          },
+          "mapId": {
+            "type": "string"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mapId",
+          "source",
+          "line"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_original_breakpoint"
+    },
+    {
+      "description": "Map a generated position to an original source position.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "line": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mapId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mapId",
+          "line"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_original_location"
+    },
+    {
+      "description": "Read a bounded embedded original source window; never fetch missing originals implicitly.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "length": {
+            "maximum": 65536,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "mapId": {
+            "type": "string"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mapId",
+          "source"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_original_source"
+    },
+    {
+      "description": "Arm and interrupt the selected native target.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "targetId": {
+            "type": "string"
           }
         },
         "required": [],
@@ -379,20 +871,15 @@
       "name": "ruyi_debug_pause"
     },
     {
-      "description": "异常抛出时自动暂停。默认忽略会被 catch 接住的异常。",
+      "description": "Configure native caught/uncaught exception pauses.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "enabled": {
-            "default": true,
             "type": "boolean"
           },
           "ignoreCaught": {
-            "default": true,
             "type": "boolean"
-          },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
           }
         },
         "required": [],
@@ -401,12 +888,74 @@
       "name": "ruyi_debug_pause_on_exception"
     },
     {
-      "description": "从当前暂停恢复执行。",
+      "description": "Return native breakable line/column positions.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "endColumn": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "endLine": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "sourceActor": {
+            "type": "string"
+          },
+          "startColumn": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "startLine": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_possible_breakpoints"
+    },
+    {
+      "description": "Restart a live synchronous call frame. Previous side effects are not undone.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "frameActor": {
+            "type": "string"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_restart_frame"
+    },
+    {
+      "description": "Resume a current pause, invalidating its frame and object handles.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "pauseId": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
           }
         },
         "required": [],
@@ -415,47 +964,89 @@
       "name": "ruyi_debug_resume"
     },
     {
-      "description": "在指定源 URL 或 sourceActor 的指定行下原生断点（debugger 自己下端点）。行号从 1 开始；省略 column 时自动取该行第一个可断点列。condition 为真才暂停；条件抛异常仍会暂停（why=breakpointConditionThrown）。",
+      "description": "Set a temporary native breakpoint and resume; remove it at the next pause.",
       "inputSchema": {
-        "oneOf": [
-          {
-            "required": [
-              "url",
-              "line"
-            ]
-          },
-          {
-            "required": [
-              "sourceActor",
-              "line"
-            ]
-          }
-        ],
+        "additionalProperties": false,
         "properties": {
           "column": {
-            "description": "列号；省略则自动解析",
             "minimum": 0,
-            "type": "number"
+            "type": "integer"
           },
           "condition": {
-            "description": "条件表达式，在断点所在帧求值",
             "type": "string"
           },
           "line": {
-            "description": "行号，从 1 开始",
             "minimum": 1,
-            "type": "number"
+            "type": "integer"
           },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "logValue": {
+            "type": "string"
+          },
+          "pauseId": {
+            "type": "string"
           },
           "sourceActor": {
-            "description": "无 URL 的 eval/blob/inline source actor（与 url 二选一）",
+            "type": "string"
+          },
+          "targetId": {
             "type": "string"
           },
           "url": {
-            "description": "源 URL，需与 ruyi_debug_list_sources 一致，可用后缀匹配",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_run_to"
+    },
+    {
+      "description": "Select an exact native target, including iframe or worker.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "targetId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "targetId"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_debug_select_target"
+    },
+    {
+      "description": "Set exact sourceActor or pending URL breakpoint. condition and logValue use native RDP.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "condition": {
+            "type": "string"
+          },
+          "line": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "logValue": {
+            "type": "string"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "sourceActor": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "url": {
             "type": "string"
           }
         },
@@ -467,29 +1058,32 @@
       "name": "ruyi_debug_set_breakpoint"
     },
     {
-      "description": "查询 debugger 是否已启动、是否暂停、以及当前暂停快照。",
+      "description": "Read native session, target and pause identity without attaching.",
       "inputSchema": {
-        "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
-          }
-        },
+        "additionalProperties": false,
+        "properties": {},
         "required": [],
         "type": "object"
       },
       "name": "ruyi_debug_status"
     },
     {
-      "description": "单步：over 跳过、into 进入、out 跳出。只能在暂停状态下调用。",
+      "description": "Step over, into or out and wait for the next pause.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "pauseId": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
+          },
+          "timeout": {
+            "maximum": 120,
+            "minimum": 0,
+            "type": "integer"
           },
           "type": {
-            "default": "over",
             "enum": [
               "over",
               "into",
@@ -504,19 +1098,34 @@
       "name": "ruyi_debug_step"
     },
     {
-      "description": "等待下一次暂停。触发断点的 BiDi/点击必须放在其他调用里，暂停期间不要 run_js。",
+      "description": "List exact frame and worker targets. IDs expire when targets are destroyed.",
       "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_debug_targets"
+    },
+    {
+      "description": "Wait for a live pause; never return a resumed historical pause.",
+      "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "afterPauseId": {
+            "type": "string"
+          },
+          "pauseId": {
+            "type": "string"
+          },
+          "targetId": {
+            "type": "string"
           },
           "timeout": {
             "default": 30,
-            "description": "秒，默认 30；0 表示立即轮询",
             "maximum": 120,
             "minimum": 0,
-            "type": "number"
+            "type": "integer"
           }
         },
         "required": [],
@@ -527,6 +1136,7 @@
     {
       "description": "删除 cookies。不传 name 则清除所有 cookies。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "name": {
             "description": "要删除的 cookie 名称。不传则清除全部。",
@@ -546,6 +1156,7 @@
     {
       "description": "点击 DOM 元素。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "frameContextId": {
             "description": "可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。",
@@ -570,6 +1181,7 @@
     {
       "description": "读取 DOM 元素的文本内容、HTML、表单值和指定属性。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "attribute": {
             "description": "要读取的属性名（如 href, src, data-*）",
@@ -598,6 +1210,7 @@
     {
       "description": "向 DOM 元素输入文本或上传文件。支持普通文本输入和文件路径上传。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "clear": {
             "default": true,
@@ -632,6 +1245,7 @@
     {
       "description": "在页面中定位 DOM 元素。支持 CSS 选择器、XPath、标签名、文本内容等多种定位方式。格式: \"#id\" / \"css:.class\" / \"xpath://div\" / \"tag:input\" / \"text:登录\"",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "frameContextId": {
             "description": "可选 frame browsing context ID；不匹配当前标签页时会报错，不会回退到顶层页面。",
@@ -661,6 +1275,7 @@
     {
       "description": "模拟浏览器地理位置（经纬度）。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "accuracy": {
             "default": 100,
@@ -691,6 +1306,7 @@
     {
       "description": "模拟浏览器语言/区域。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "locale": {
             "description": "语言区域代码，如 \"en-US\", \"zh-CN\"",
@@ -711,6 +1327,7 @@
     {
       "description": "模拟浏览器时区。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -731,6 +1348,7 @@
     {
       "description": "模拟浏览器 UserAgent 字符串。覆盖 navigator.userAgent。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -751,6 +1369,7 @@
     {
       "description": "在浏览器页面中执行 JavaScript 函数并返回 JSON-safe 结果。用于读 DOM、触发翻页或采集所需的最小页面脚本，不是源码调试器。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "frameContextId": {
             "description": "可选 frame browsing context ID；必须来自同一 pageIdx 当前的 ruyi_list_frames/ruyi_select_frame 结果。",
@@ -783,8 +1402,31 @@
       "name": "ruyi_evaluate_script"
     },
     {
+      "description": "执行搜索目录中的任一工具，严格校验目标工具 schema，复用原始会话和 handler。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "arguments"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_execute_tool"
+    },
+    {
       "description": "导出 browser-session-handoff.v1。默认仅导出 Cookie；Storage 只有显式请求时才作为 observation-only evidence 写盘，RuyiTrace v1 不支持 Storage import。MCP 响应仅返回带 evidence-pointer.v1 的脱敏 handoff。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "browserPath": {
             "description": "Firefox 可执行文件绝对路径；attach 模式无法自动发现时必填，用于版本、BuildID 与 SHA-256 校验。",
@@ -837,6 +1479,7 @@
     {
       "description": "获取当前页面的所有 cookies。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -852,6 +1495,7 @@
     {
       "description": "注入 fetch/XHR Proxy 以捕获后续 JS 请求的调用栈。注入后通过 ruyi_list_network_requests 可看到带 initiator 的请求。⚠ 只能捕获注入后发起的 JS 请求；调用栈为 Error().stack 字符串格式。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -866,6 +1510,7 @@
     {
       "description": "获取指定 URL 脚本的源码片段。支持行号范围或字符偏移。",
       "inputSchema": {
+        "additionalProperties": false,
         "oneOf": [
           {
             "required": [
@@ -922,6 +1567,7 @@
     {
       "description": "获取已注入 Proxy 后收集的 WebSocket 消息。返回每连接的 url、sent、received 消息列表及时间戳。设置 clear=true 可在读取后清空缓冲区。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "clear": {
             "default": false,
@@ -941,6 +1587,7 @@
     {
       "description": "自动处理 Cloudflare Turnstile 验证（5s 盾）。通过 BiDi 查找 CF iframe 并在内部触发点击，绕过 closed shadow root 限制。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "checkInterval": {
             "default": 2,
@@ -965,6 +1612,7 @@
     {
       "description": "模拟人类鼠标点击。使用 windmouse/bezier 算法生成自然轨迹。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "algorithm": {
             "default": "windmouse",
@@ -997,6 +1645,7 @@
     {
       "description": "执行原子的拟人鼠标拖拽：move → hold → wait → human_move → wait → release。ruyiPage 会把按下到释放合并为单次 BiDi input.performActions，适合滑块、排序和 drag-and-drop 场景。source/target 可用选择器或 viewport 坐标。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "algorithm": {
             "default": "bezier",
@@ -1040,6 +1689,7 @@
             "type": "string"
           },
           "sourcePoint": {
+            "additionalProperties": false,
             "description": "起点 viewport 坐标；与 source 二选一",
             "properties": {
               "x": {
@@ -1071,6 +1721,7 @@
             "type": "string"
           },
           "targetPoint": {
+            "additionalProperties": false,
             "description": "终点 viewport 坐标；与 target 二选一",
             "properties": {
               "x": {
@@ -1095,6 +1746,7 @@
     {
       "description": "模拟人类逐字输入文本（带延迟）。避免被检测为自动化输入。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "delayMs": {
             "default": 50,
@@ -1129,6 +1781,7 @@
     {
       "description": "模拟人类鼠标移动到目标元素。支持 bezier 曲线和 windmouse 算法。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "algorithm": {
             "default": "bezier",
@@ -1174,6 +1827,7 @@
     {
       "description": "使用 Firefox 原生 wheel action 做单方向、小步、随机间隔滚动。不会定位元素或自动回滚，适合阅读式下滑和翻页按钮渐进进入视口。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "direction": {
             "default": "down",
@@ -1235,6 +1889,7 @@
     {
       "description": "开始拦截 HTTP 请求（beforeRequestSent 阶段）。支持 URL 模式过滤。拦截的请求用 ruyi_intercept_wait 消费。可修改/拦截/模拟请求（未来版本）。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -1266,6 +1921,7 @@
     {
       "description": "开始拦截 HTTP 响应（responseStarted 阶段）。支持 URL 模式过滤。拦截的响应用 ruyi_intercept_wait 消费。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -1297,6 +1953,7 @@
     {
       "description": "停止所有网络拦截。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -1311,6 +1968,7 @@
     {
       "description": "等待并消费一个拦截到的请求/响应。队列模式：每次调用返回一个。Bridge 会在取样后立即 continue，避免 MCP 把浏览器请求永久卡住。默认只返回脱敏 metadata；body 只会写入显式指定的本地 JSONL 文件。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "bodyReadTimeout": {
             "default": 1,
@@ -1354,12 +2012,12 @@
       "name": "ruyi_intercept_wait"
     },
     {
-      "description": "列出当前 debugger 原生断点。",
+      "description": "List native code, logpoint, request and DOM breakpoints owned by this session.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "pageIdx": {
-            "description": "仅列出指定标签页的断点",
-            "type": "number"
+          "targetId": {
+            "type": "string"
           }
         },
         "required": [],
@@ -1370,6 +2028,7 @@
     {
       "description": "读取浏览器控制台日志消息。支持按类型筛选。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "limit": {
             "default": 50,
@@ -1394,6 +2053,7 @@
     {
       "description": "列出当前页面中的所有 iframe/frame（包括嵌套子 frame）。返回每个 frame 的 contextId、url、isCrossOrigin 信息。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -1409,6 +2069,7 @@
     {
       "description": "列出最近的网络请求。基于 performance API 获取资源加载信息。需要更详细信息时，使用 ruyi_capture_start 主动抓包。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "limit": {
             "default": 50,
@@ -1432,6 +2093,7 @@
     {
       "description": "列出所有打开的标签页。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object"
@@ -1439,15 +2101,15 @@
       "name": "ruyi_list_pages"
     },
     {
-      "description": "列出所有已注入的 preload 脚本。每个脚本有 scriptId 和内容摘要。",
+      "description": "列出本会话已安装的 BiDi preload 脚本。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
-            "default": 0,
-            "type": "number"
+            "minimum": 0,
+            "type": "integer"
           }
         },
-        "required": [],
         "type": "object"
       },
       "name": "ruyi_list_preload_scripts"
@@ -1455,6 +2117,7 @@
     {
       "description": "列出页面中加载的所有 JavaScript 脚本 URL。支持 URL 筛选。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "filter": {
             "description": "URL 筛选字符串（不区分大小写）",
@@ -1473,6 +2136,7 @@
     {
       "description": "导航已有标签页到新 URL，或执行刷新/前进/后退。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -1508,6 +2172,7 @@
     {
       "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。国内机器使用 Cliproxy 时，浏览器代理只能指向已验证的本机 Cliproxy chained sidecar listener，不能直连 provider endpoint。首次调用自动启动 Firefox 浏览器。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "container": {
             "default": false,
@@ -1527,7 +2192,7 @@
             "type": "string"
           },
           "debuggerAutoResumeAfter": {
-            "description": "暂停看门狗秒数，默认 60；0 表示关闭。",
+            "description": "兼容字段；原生调试看门狗由 ruyi_debug_enable 配置，默认 30 秒。",
             "maximum": 3600,
             "minimum": 0,
             "type": "number"
@@ -1539,10 +2204,11 @@
             "type": "number"
           },
           "enableDebugger": {
-            "description": "启动 Firefox DevTools RDP（--start-debugger-server）供 page.debugger 下断点。必须在 launch 时打开，启动后无法补开。debug/all toolset 默认 true，automation 默认 false。",
+            "description": "启动 Firefox DevTools RDP listener，默认 true；不会自动 attach，断点工具按需连接。",
             "type": "boolean"
           },
           "fingerprint": {
+            "additionalProperties": false,
             "description": "智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。",
             "properties": {
               "firefoxVersion": {
@@ -1639,6 +2305,11 @@
             "description": "导航超时（秒），默认 30",
             "type": "number"
           },
+          "traceEnabled": {
+            "default": false,
+            "description": "从启动开始记录 browser 级 BiDi 操作时间线，不是 C++ DOMTrace。",
+            "type": "boolean"
+          },
           "url": {
             "description": "目标 URL（必填）",
             "type": "string"
@@ -1652,16 +2323,38 @@
       "name": "ruyi_new_page"
     },
     {
-      "description": "移除指定原生断点。",
+      "description": "对当前页做一次 Gecko 可见节点编号快照。返回 role/name/ops 表与 snapshotId。后续 ruyi_act 必须带同一 snapshotId 和下标；过期快照返回 miss，不盲着重试。这是控制环观察，不是 RuyiTrace browser fact。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
-          "breakpointId": {
-            "description": "断点 ID",
+          "frameContextId": {
+            "description": "可选 frame browsing context ID；快照只扫该 frame。",
             "type": "string"
+          },
+          "maxNodes": {
+            "default": 250,
+            "description": "编号上限，默认 250",
+            "maximum": 250,
+            "minimum": 1,
+            "type": "number"
           },
           "pageIdx": {
             "default": 0,
             "type": "number"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ruyi_observe"
+    },
+    {
+      "description": "Remove exactly one session-owned native breakpoint.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "breakpointId": {
+            "type": "string"
           }
         },
         "required": [
@@ -1674,6 +2367,7 @@
     {
       "description": "保存脚本完整源码到本地文件。JSON 结果用 .json 扩展名，其他用 .js。",
       "inputSchema": {
+        "additionalProperties": false,
         "oneOf": [
           {
             "required": [
@@ -1716,6 +2410,7 @@
     {
       "description": "在页面已加载的 JS 源码中搜索字符串或正则表达式。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "caseSensitive": {
             "default": false,
@@ -1751,8 +2446,38 @@
       "name": "ruyi_search_in_sources"
     },
     {
+      "description": "按名称或能力搜索完整工具目录，按需返回匹配工具的完整输入 schema。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 5,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_search_tools"
+    },
+    {
       "description": "选择指定的 iframe/frame。contextId（从 ruyi_list_frames 获取）最稳定；也可传 selector，由 ruyiPage 通过 iframe.contentWindow 精确映射 srcdoc 或同 URL frame。返回的 contextId 不是隐式全局状态；后续 evaluate、DOM 与 human 工具必须显式传入 frameContextId。",
       "inputSchema": {
+        "additionalProperties": false,
         "oneOf": [
           {
             "required": [
@@ -1788,6 +2513,7 @@
     {
       "description": "切换活跃标签页。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "description": "标签页索引",
@@ -1802,27 +2528,33 @@
       "name": "ruyi_select_page"
     },
     {
-      "description": "在已加载源码中搜索文本并下原生断点。不再注入 debugger;。默认自动化 toolset 不暴露此工具。",
+      "description": "Search loaded source and set a native breakpoint at an explicit occurrence.",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "condition": {
-            "description": "断点条件表达式",
             "type": "string"
           },
-          "pageIdx": {
-            "default": 0,
-            "type": "number"
+          "logValue": {
+            "type": "string"
+          },
+          "occurrence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pauseId": {
+            "type": "string"
           },
           "sourceActor": {
-            "description": "仅搜索指定 source actor（适用于 eval/blob/inline）",
+            "type": "string"
+          },
+          "targetId": {
             "type": "string"
           },
           "text": {
-            "description": "要匹配的源码文本",
             "type": "string"
           },
           "urlFilter": {
-            "description": "仅搜索 URL 含该子串的源",
             "type": "string"
           }
         },
@@ -1836,6 +2568,7 @@
     {
       "description": "控制浏览器缓存行为。可选：default（默认）、bypass（跳过缓存）、force_cache（强制缓存）。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "mode": {
             "default": "default",
@@ -1862,6 +2595,7 @@
     {
       "description": "设置 cookies。传入 cookie 对象数组，每个对象需包含 name 和 value。可选字段：domain, path, secure, httpOnly, sameSite, expiry。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "cookies": {
             "description": "Cookie 对象数组 [{name, value, domain?, path?, ...}]",
@@ -1886,6 +2620,7 @@
     {
       "description": "通过 Firefox WebDriver BiDi 配置原生下载策略。allow 会将下载直接保存到绝对目录，无需 Firefox 保存确认；deny 会阻止下载。只控制本地浏览器，不影响站点授权或访问控制。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "behavior": {
             "description": "下载策略",
@@ -1923,6 +2658,7 @@
     {
       "description": "为所有后续请求附加额外的 HTTP Headers。用于注入认证 token、自定义 UA 等。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "headers": {
             "description": "Key-value 键值对，如 {\"X-Token\": \"abc123\", \"X-Device-Id\": \"device1\"}",
@@ -1943,12 +2679,14 @@
     {
       "description": "对当前页面应用指纹伪装。可独立设置地理位置、时区、语言、UserAgent、viewport、outer window、screen 与 CSP 绕过。ruyipage 支持 22 维硬件指纹随机化（需在 ruyi_new_page 时通过 fingerprint 参数配置）。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "bypassCsp": {
             "description": "绕过 CSP 限制",
             "type": "boolean"
           },
           "geolocation": {
+            "additionalProperties": false,
             "description": "地理位置模拟",
             "properties": {
               "accuracy": {
@@ -1974,6 +2712,7 @@
             "type": "number"
           },
           "screenOrientation": {
+            "additionalProperties": false,
             "properties": {
               "angle": {
                 "default": 0,
@@ -1991,6 +2730,7 @@
             "type": "object"
           },
           "screenSize": {
+            "additionalProperties": false,
             "description": "独立覆盖 screen.width/screen.height/screen.avail*；不调整 outer window 或 viewport。devicePixelRatio 仅为旧客户端兼容保留且不会经 screen 操作应用。",
             "properties": {
               "devicePixelRatio": {
@@ -2021,6 +2761,7 @@
             "type": "string"
           },
           "viewport": {
+            "additionalProperties": false,
             "description": "仅设置 viewport；与 windowSize 互斥",
             "properties": {
               "devicePixelRatio": {
@@ -2043,6 +2784,7 @@
             "type": "object"
           },
           "windowSize": {
+            "additionalProperties": false,
             "description": "仅设置 Firefox outer window；inner/viewport 由 Firefox 原生计算，与 viewport 互斥。devicePixelRatio 仅为旧客户端兼容保留且不会应用；DPR 请使用 viewport.devicePixelRatio。",
             "properties": {
               "devicePixelRatio": {
@@ -2073,6 +2815,7 @@
     {
       "description": "⚠ 代理必须在 ruyi_new_page 时通过 proxy 参数设置。浏览器启动后无法切换代理。此工具仅返回说明和当前代理状态。国内机器使用 Cliproxy 时只传已验证的本机 chained sidecar listener；主 Clash http://127.0.0.1:7897 不会自动转到 Cliproxy，且不得直填 Cliproxy endpoint 或账密 URL。如需切换代理，请先 ruyi_browser_quit，再用新代理调用 ruyi_new_page。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "proxyUrl": {
             "description": "代理 URL（仅供参考，不会实际切换；Cliproxy 场景应为已验证的本机 chained sidecar listener，不能是 provider endpoint）",
@@ -2087,6 +2830,7 @@
     {
       "description": "对当前页面截图。可保存到文件或返回 base64 编码（PNG）。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "filePath": {
             "description": "保存路径（PNG，绝对路径；拒绝相对路径、.. 段、UNC 与根目录直写；如配置 RUYI_MCP_WORKSPACE_ROOT 则路径必须位于其下）。不提供则返回 base64。",
@@ -2108,8 +2852,128 @@
       "name": "ruyi_take_screenshot"
     },
     {
+      "description": "经 RuyiTrace owner 的现有 BiDi session 执行有界页面操作，保留 trace ownership。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "navigate",
+              "query",
+              "click",
+              "fill",
+              "press",
+              "scroll",
+              "wait",
+              "screenshot"
+            ],
+            "type": "string"
+          },
+          "deltaX": {
+            "type": "number"
+          },
+          "deltaY": {
+            "type": "number"
+          },
+          "key": {
+            "type": "string"
+          },
+          "maxElements": {
+            "maximum": 250,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "milliseconds": {
+            "maximum": 10000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "present",
+              "visible",
+              "hidden"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "timeoutMs": {
+            "maximum": 30000,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "ruyi_trace_control"
+    },
+    {
+      "description": "Deprecated alias：请使用 ruyi_bidi_trace_*。浏览器级 BiDi 命令、事件与错误时间线；所有 tab 共享缓冲，不是页面 JS trace 或 C++ DOMTrace。读取有界最近记录。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 50,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "pageIdx": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ruyi_trace_get_results"
+    },
+    {
+      "description": "Deprecated alias：请使用 ruyi_bidi_trace_*。浏览器级 BiDi 命令、事件与错误时间线；所有 tab 共享缓冲，不是页面 JS trace 或 C++ DOMTrace。开始记录，可指定停止时输出路径。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "outputFile": {
+            "description": "完整 JSON 输出的绝对路径",
+            "type": "string"
+          },
+          "pageIdx": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ruyi_trace_start"
+    },
+    {
+      "description": "Deprecated alias：请使用 ruyi_bidi_trace_*。浏览器级 BiDi 命令、事件与错误时间线；所有 tab 共享缓冲，不是页面 JS trace 或 C++ DOMTrace。停止并返回摘要；完整数据按显式路径保存。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "pageIdx": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "ruyi_trace_stop"
+    },
+    {
       "description": "注入 WebSocket Proxy 以捕获后续 WebSocket 连接的消息。注入后，新创建的 WebSocket 连接的 send/receive 消息会记录到 window.__ruyi_ws_messages。⚠ 只能捕获注入后创建的 WebSocket 连接。binary 帧以 \"[binary]\" 标记。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,

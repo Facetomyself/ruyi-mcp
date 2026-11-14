@@ -5,6 +5,9 @@
  */
 
 import { PythonBridge } from './bridge/python.js';
+import { BorrowedTraceSession } from './borrowed-session.js';
+import type { NativeDebuggerManager } from './rdp/manager.js';
+import { DebugEvidence } from './debug-evidence.js';
 
 export interface PageInfo {
   pageIdx: number;
@@ -57,6 +60,9 @@ function createInitialState(): SessionState {
 
 export class RuyiContext {
   private bridge: PythonBridge;
+  private debuggerManager: NativeDebuggerManager | undefined;
+  borrowedSession: BorrowedTraceSession | undefined;
+  readonly debugEvidence = new DebugEvidence();
   state: SessionState = createInitialState();
 
   constructor(bridge: PythonBridge) {
@@ -64,7 +70,59 @@ export class RuyiContext {
   }
 
   get bridgeInstance(): PythonBridge {
+    if (this.borrowedSession) {
+      throw new Error('This operation needs an owned automation session; use ruyi_trace_control for the borrowed trace session');
+    }
     return this.bridge;
+  }
+
+  setDebugger(manager: NativeDebuggerManager): void {
+    this.debuggerManager = manager;
+  }
+
+  async debuggerCall(operation: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    if (!this.debuggerManager) throw new Error('Native debugger unavailable');
+    this.debugEvidence.configure(this.state.lastLaunchParams ?? {});
+    const result = await this.debuggerManager.call(operation, args);
+    const evidence = this.debugEvidence.record(operation, result);
+    return evidence && result && typeof result === 'object' && !Array.isArray(result) ? { ...result, evidence } : result;
+  }
+
+  async getNativeDebugSession() {
+    if (this.borrowedSession) {
+      const descriptor = await this.borrowedSession.currentDescriptor();
+      if (!descriptor.rdp) return null;
+      return {
+        host: descriptor.rdp.host, port: descriptor.rdp.port, contextId: descriptor.rdp.browsingContextId, browserId: descriptor.rdp.browserId,
+        runId: descriptor.runId, pid: descriptor.browser.pid, owner: 'external' as const,
+        runtime: { version: descriptor.runtime.firefoxVersion || descriptor.runtime.version, buildId: descriptor.runtime.buildId, sha256: descriptor.runtime.binarySha256 },
+        lease: this.borrowedSession.debuggerLease(),
+      };
+    }
+    const status = await this.bridge.call('browser.status', { pageIdx: this.getActivePageIdx() }) as Record<string, unknown>;
+    if (status.alive !== true || !Number.isInteger(status.debuggerPort)) return null;
+    return {
+      host: '127.0.0.1', port: Number(status.debuggerPort), contextId: status.contextId as string | undefined,
+      pid: status.browserPid as number | undefined, owner: status.attached ? 'external' as const : 'owned' as const,
+    };
+  }
+
+  async attachBorrowedSession(sessionPath: string): Promise<Record<string, unknown>> {
+    if (this.borrowedSession || this.state.browserLaunched) throw new Error('A session is already active; quit or detach first');
+    this.borrowedSession = await BorrowedTraceSession.attach(sessionPath);
+    this.state.alive = true;
+    return this.borrowedSession.status();
+  }
+
+  async releaseBorrowedSession(): Promise<void> {
+    if (!this.borrowedSession) return;
+    await this.debuggerManager?.close();
+    try {
+      await this.borrowedSession.release();
+    } finally {
+      this.borrowedSession = undefined;
+      this.state = createInitialState();
+    }
   }
 
   // ------------------------------------------------------------------
@@ -72,6 +130,8 @@ export class RuyiContext {
   // ------------------------------------------------------------------
 
   async launch(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.borrowedSession) throw new Error('Detach the borrowed trace session before launching another browser');
+    this.debugEvidence.configure(params);
     const result = (await this.bridge.call('browser.launch', params)) as Record<string, unknown>;
 
     this.state.browserLaunched = true;
@@ -93,6 +153,11 @@ export class RuyiContext {
   }
 
   async quit(): Promise<void> {
+    await this.debuggerManager?.close();
+    if (this.borrowedSession) {
+      await this.releaseBorrowedSession();
+      return;
+    }
     try {
       await this.bridge.call('browser.quit', {}, 10000);
     } catch {
@@ -102,6 +167,7 @@ export class RuyiContext {
   }
 
   async status(): Promise<Record<string, unknown>> {
+    if (this.borrowedSession) return this.borrowedSession.status();
     try {
       const result = (await this.bridge.call('browser.status')) as Record<string, unknown>;
       this.state.alive = result.alive as boolean;

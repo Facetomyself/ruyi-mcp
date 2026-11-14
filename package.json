@@ -1,17 +1,19 @@
 {
   "name": "ruyi-mcp",
-  "version": "0.3.0-reverse-env.2",
-  "description": "Private reverse_ENV adapter for ruyiPage Firefox automation and native JS debugger",
-  "private": true,
+  "version": "0.4.0",
+  "description": "Firefox automation and native RDP debugging for Trace159",
   "license": "MIT",
   "type": "module",
   "main": "build/src/index.js",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1256.py scripts/runtime_capture_lifecycle.py scripts/runtime_attach_lifecycle.py scripts/runtime_download_behavior.py scripts/runtime_debugger.py scripts/runtime_agent_loop.py",
-    "check:debugger-runtime": "python scripts/runtime_debugger.py",
-    "check:debugger-mcp-runtime": "node scripts/runtime_mcp_debugger.mjs",
+    "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1256.py scripts/runtime_capture_lifecycle.py scripts/runtime_attach_lifecycle.py scripts/runtime_download_behavior.py scripts/runtime_debugger.py scripts/runtime_agent_loop.py scripts/runtime_bidi_trace.py scripts/run-automation-gates.py",
+    "check:debugger-runtime": "node scripts/rdp-runtime.mjs",
+    "check:debugger-mcp-runtime": "node scripts/rdp-runtime.mjs",
+    "check:rdp": "node --test scripts/rdp-transport.test.mjs scripts/rdp-source-maps.test.mjs",
+    "check:rdp-runtime": "node scripts/rdp-runtime.mjs",
+    "check:rdp-intervention": "node scripts/rdp-intervention.mjs",
     "check:contract": "python scripts/contract_bridge.py",
     "check:runtime": "python scripts/runtime_ruyipage_1256.py",
     "check:capture-runtime": "python scripts/runtime_capture_lifecycle.py",
@@ -20,8 +22,8 @@
     "check:agent-runtime": "python scripts/runtime_agent_loop.py",
     "smoke": "node scripts/smoke-list-tools.mjs",
     "snapshot:tools": "npm run build && node scripts/smoke-list-tools.mjs --update-snapshot",
-    "check:lifecycle": "node --test scripts/server-contract.test.mjs scripts/bridge-lifecycle.test.mjs scripts/stdio-lifecycle.test.mjs",
-    "check": "npm run typecheck && npm run check:python && npm run check:contract && npm run build && npm run smoke && npm run check:lifecycle",
+    "check:lifecycle": "node --test scripts/server-contract.test.mjs scripts/bridge-lifecycle.test.mjs scripts/stdio-lifecycle.test.mjs scripts/tool-registry.test.mjs scripts/borrowed-session.test.mjs scripts/debug-evidence.test.mjs",
+    "check": "npm run typecheck && npm run check:python && npm run check:contract && npm run build && npm run smoke && npm run check:lifecycle && npm run check:rdp",
     "start": "node build/src/index.js",
     "dev": "tsc && node build/src/index.js"
   },
@@ -37,7 +39,9 @@
     "session-handoff"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@jridgewell/trace-mapping": "0.3.31",
+    "ajv": "8.17.1"
   },
   "overrides": {
     "fast-uri": "3.1.5",
@@ -53,10 +57,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Facetomyself/ruyi-mcp-reverse-env.git"
+    "url": "git+https://github.com/Facetomyself/ruyi-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/Facetomyself/ruyi-mcp-reverse-env/issues"
+    "url": "https://github.com/Facetomyself/ruyi-mcp/issues"
   },
-  "homepage": "https://github.com/Facetomyself/ruyi-mcp-reverse-env#readme"
+  "homepage": "https://github.com/Facetomyself/ruyi-mcp#readme"
 }

@@ -129,10 +129,9 @@ function assertControlPlaneLogs(serverStderr) {
   );
 }
 
-const retiredTraceTools = new Set([
-  'ruyi_trace_start',
-  'ruyi_trace_stop',
-  'ruyi_trace_get_results',
+const compactListed = await listTools('compact');
+assert.deepEqual(compactListed.result.tools.map((tool) => tool.name).sort(), [
+  'ruyi_act', 'ruyi_browser_status', 'ruyi_execute_tool', 'ruyi_observe', 'ruyi_search_tools',
 ]);
 
 const automation = await listTools('automation');
@@ -177,9 +176,8 @@ const listed = await listTools('all');
 assertControlPlaneLogs(listed.serverStderr);
 assert.match(listed.serverStderr, /\[ruyi-mcp\] Toolset: all/);
 const result = listed.result;
-const unexpectedTraceTool = result.tools.find((tool) => retiredTraceTools.has(tool.name));
-if (unexpectedTraceTool) {
-  throw new Error(`${unexpectedTraceTool.name} must remain retired from the control plane`);
+for (const name of ['ruyi_bidi_trace_start', 'ruyi_bidi_trace_stop', 'ruyi_bidi_trace_get_results', 'ruyi_trace_start', 'ruyi_trace_stop', 'ruyi_trace_get_results']) {
+  assert.ok(result.tools.some((tool) => tool.name === name), `${name} must remain callable`);
 }
 const humanDrag = result.tools.find((tool) => tool.name === 'ruyi_human_drag');
 if (!humanDrag) {
@@ -230,9 +228,7 @@ for (const name of EXPERT_ONLY_TOOLS) {
   }
 }
 for (const name of AGENT_LOOP_TOOLS) {
-  if (names.includes(name)) {
-    throw new Error(`${name} must stay off the all toolset snapshot in P0`);
-  }
+  assert.ok(names.includes(name), `${name} must be included in the complete toolset`);
 }
 
 const agentListed = await listTools('agent');

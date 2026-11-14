@@ -27,6 +27,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
           address: { type: 'string', description: '监听地址，默认 127.0.0.1', default: '127.0.0.1' },
           port: { type: 'number', description: 'Firefox --remote-debugging-port', minimum: 1, maximum: 65535 },
           profilePath: { type: 'string', description: '现有 Firefox profile 绝对路径（可选；外部数据，Bridge 不会创建或删除）' },
+          debuggerPort: { type: 'integer', minimum: 1, maximum: 65535, description: '现有 loopback RDP 端口，仅登记，不自动 attach。' },
         },
         required: ['port'],
       },
@@ -46,6 +47,8 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
         port: args.port,
         profilePath: args.profilePath,
         closeOnExit: false,
+        enableDebugger: args.debuggerPort !== undefined,
+        debuggerPort: args.debuggerPort,
       });
 
       return {
@@ -84,8 +87,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
           enableDebugger: {
             type: 'boolean',
             description:
-              '启动 Firefox DevTools RDP（--start-debugger-server）供 page.debugger 下断点。' +
-              '必须在 launch 时打开，启动后无法补开。debug/all toolset 默认 true，automation 默认 false。',
+              '启动 Firefox DevTools RDP listener，默认 true；不会自动 attach，断点工具按需连接。',
           },
           debuggerPort: {
             type: 'number',
@@ -95,7 +97,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
           },
           debuggerAutoResumeAfter: {
             type: 'number',
-            description: '暂停看门狗秒数，默认 60；0 表示关闭。',
+            description: '兼容字段；原生调试看门狗由 ruyi_debug_enable 配置，默认 30 秒。',
             minimum: 0,
             maximum: 3600,
           },
@@ -111,6 +113,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
             type: 'string',
             description: 'debug evidence runId；省略时由 Bridge 生成。',
           },
+          traceEnabled: { type: 'boolean', default: false, description: '从启动开始记录 browser 级 BiDi 操作时间线，不是 C++ DOMTrace。' },
           fingerprint: {
             type: 'object',
             description: '智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。',
@@ -162,7 +165,6 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
           enableDebugger,
         });
         let result: Record<string, unknown>;
-        let debuggerResult: Record<string, unknown> | undefined;
         try {
           result = await ctx.bridgeInstance.call('page.navigate', {
             pageIdx: ctx.getActivePageIdx(),
@@ -170,15 +172,6 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
             timeout,
           }) as Record<string, unknown>;
 
-          // Firefox invalidates the initial RDP thread actor during
-          // navigation. The bridge enables the server at launch, but attaches
-          // the debugger only after the first document is ready.
-          if (enableDebugger) {
-            debuggerResult = await ctx.bridgeInstance.call('debug.enable', {
-              pageIdx: ctx.getActivePageIdx(),
-              autoResumeAfter: args.debuggerAutoResumeAfter,
-            }) as Record<string, unknown>;
-          }
         } catch (error) {
           await ctx.quit().catch(() => {});
           throw error;
@@ -193,7 +186,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
               created: true,
               launched: true,
               ...result,
-              ...(debuggerResult ? { debugger: debuggerResult } : {}),
+              debugger: { serverEnabled: enableDebugger, started: false, mode: 'observe' },
             }),
           }],
         };
@@ -263,6 +256,10 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
     },
     handler: (async (args) => {
       const navType = (args.type as string) || 'url';
+      if (ctx.borrowedSession) {
+        if (navType !== 'url' || !args.url) throw new Error('Borrowed navigation requires type=url and url');
+        return { content: [{ type: 'text', text: jsonResult(await ctx.borrowedSession.command('navigate', { url: args.url }, Math.min(Number(args.timeout ?? 30) * 1000, 30000))) }] };
+      }
       const pageIdx = getPageIdx(args, ctx);
 
       let result: Record<string, unknown>;

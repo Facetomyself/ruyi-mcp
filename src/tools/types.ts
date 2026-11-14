@@ -4,6 +4,7 @@
 
 export interface ToolProperty {
   type: string;
+  additionalProperties?: boolean | ToolProperty;
   description?: string;
   enum?: string[];
   default?: unknown;
@@ -28,6 +29,7 @@ export interface ToolDef {
     properties: Record<string, ToolProperty>;
     required?: string[];
     oneOf?: Array<{ required: string[] }>;
+    additionalProperties?: boolean;
   };
 }
 

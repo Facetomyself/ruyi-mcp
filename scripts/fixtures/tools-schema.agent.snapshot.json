@@ -4,6 +4,7 @@
     {
       "description": "对最近一次 ruyi_observe 的编号节点执行 CLICK / TYPE_TEXT / SELECT / SCROLL_* / WAIT。CLICK 使用快照活引用的几何，不接受调用方 CSS/XPath。节点消失返回 miss。P0 不含 Jev；宿主自己选 op 和 index。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "frameContextId": {
             "description": "可选 frame browsing context ID，必须与 observe 同一 frame。",
@@ -59,11 +60,18 @@
     {
       "description": "通过 Firefox WebDriver BiDi 端口接管已启动的浏览器，不新建进程、不导航页面，MCP 退出或 bridge 超时时保留外部浏览器。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "address": {
             "default": "127.0.0.1",
             "description": "监听地址，默认 127.0.0.1",
             "type": "string"
+          },
+          "debuggerPort": {
+            "description": "现有 loopback RDP 端口，仅登记，不自动 attach。",
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
           },
           "port": {
             "description": "Firefox --remote-debugging-port",
@@ -86,6 +94,7 @@
     {
       "description": "关闭由 MCP 启动的浏览器并清理状态；端口接管的外部浏览器只断开连接，不关闭进程。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object"
@@ -95,6 +104,7 @@
     {
       "description": "获取浏览器当前状态：是否存活、当前 URL、页面数量、断点数、preload 脚本数。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object"
@@ -104,6 +114,7 @@
     {
       "description": "导出 browser-session-handoff.v1。默认仅导出 Cookie；Storage 只有显式请求时才作为 observation-only evidence 写盘，RuyiTrace v1 不支持 Storage import。MCP 响应仅返回带 evidence-pointer.v1 的脱敏 handoff。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "browserPath": {
             "description": "Firefox 可执行文件绝对路径；attach 模式无法自动发现时必填，用于版本、BuildID 与 SHA-256 校验。",
@@ -156,6 +167,7 @@
     {
       "description": "自动处理 Cloudflare Turnstile 验证（5s 盾）。通过 BiDi 查找 CF iframe 并在内部触发点击，绕过 closed shadow root 限制。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "checkInterval": {
             "default": 2,
@@ -180,6 +192,7 @@
     {
       "description": "导航已有标签页到新 URL，或执行刷新/前进/后退。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "pageIdx": {
             "default": 0,
@@ -215,6 +228,7 @@
     {
       "description": "在 ruyipage 指纹浏览器中打开新标签页并导航到目标 URL。支持配置代理、指纹伪装、无头模式、隐私模式。国内机器使用 Cliproxy 时，浏览器代理只能指向已验证的本机 Cliproxy chained sidecar listener，不能直连 provider endpoint。首次调用自动启动 Firefox 浏览器。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "container": {
             "default": false,
@@ -234,7 +248,7 @@
             "type": "string"
           },
           "debuggerAutoResumeAfter": {
-            "description": "暂停看门狗秒数，默认 60；0 表示关闭。",
+            "description": "兼容字段；原生调试看门狗由 ruyi_debug_enable 配置，默认 30 秒。",
             "maximum": 3600,
             "minimum": 0,
             "type": "number"
@@ -246,10 +260,11 @@
             "type": "number"
           },
           "enableDebugger": {
-            "description": "启动 Firefox DevTools RDP（--start-debugger-server）供 page.debugger 下断点。必须在 launch 时打开，启动后无法补开。debug/all toolset 默认 true，automation 默认 false。",
+            "description": "启动 Firefox DevTools RDP listener，默认 true；不会自动 attach，断点工具按需连接。",
             "type": "boolean"
           },
           "fingerprint": {
+            "additionalProperties": false,
             "description": "智能指纹配置（smart_fingerprint）。UA 跟随真实 Firefox 主版本；Canvas/Audio seed 由内核生成。",
             "properties": {
               "firefoxVersion": {
@@ -346,6 +361,11 @@
             "description": "导航超时（秒），默认 30",
             "type": "number"
           },
+          "traceEnabled": {
+            "default": false,
+            "description": "从启动开始记录 browser 级 BiDi 操作时间线，不是 C++ DOMTrace。",
+            "type": "boolean"
+          },
           "url": {
             "description": "目标 URL（必填）",
             "type": "string"
@@ -361,6 +381,7 @@
     {
       "description": "对当前页做一次 Gecko 可见节点编号快照。返回 role/name/ops 表与 snapshotId。后续 ruyi_act 必须带同一 snapshotId 和下标；过期快照返回 miss，不盲着重试。这是控制环观察，不是 RuyiTrace browser fact。",
       "inputSchema": {
+        "additionalProperties": false,
         "properties": {
           "frameContextId": {
             "description": "可选 frame browsing context ID；快照只扫该 frame。",

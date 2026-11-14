@@ -38,6 +38,9 @@ export function registerAgentTools(register: ToolRegistrar, ctx: RuyiContext): v
       },
     },
     handler: (async (args) => {
+      if (ctx.borrowedSession) {
+        return { content: [{ type: 'text', text: jsonResult(await ctx.borrowedSession.observe(Number(args.maxNodes ?? 250))) }] };
+      }
       const pageIdx = getPageIdx(args, ctx);
       const result = await ctx.bridgeInstance.call('page.snapshot', {
         pageIdx,
@@ -105,6 +108,9 @@ export function registerAgentTools(register: ToolRegistrar, ctx: RuyiContext): v
       },
     },
     handler: (async (args) => {
+      if (ctx.borrowedSession) {
+        return { content: [{ type: 'text', text: jsonResult(await ctx.borrowedSession.act(args)) }] };
+      }
       const pageIdx = getPageIdx(args, ctx);
       const result = await ctx.bridgeInstance.call('page.act', {
         pageIdx,

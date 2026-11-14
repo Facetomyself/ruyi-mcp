@@ -1,21 +1,21 @@
 # Web reverse contract snapshots
 
 This directory vendors the exact v1 contract snapshots consumed by this
-Private control-plane adapter so its standalone CI does not depend on a parent
+unified control-plane adapter so its standalone CI does not depend on a parent
 checkout. The canonical source remains
 `reverse_ENV/contracts/web-reverse/`.
 
 - `browser-session-handoff.v1.schema.json` canonical SHA-256:
-  `9a759a8a5a9af92ae6958a06975bbd58a0d20f67aeb87543100548f36b9ea240`
+  `fc3576c227159e391ad38a06f6c07192909aa8f3228e36108f5e1d2d12e7dae8`
 - `evidence-pointer.v1.schema.json` canonical SHA-256:
-  `a5ff2a90b807b0568830f4f3d2e38f26f68ab0f1278d15bb64272619fd1e16aa`
+  `891b19ceefcfff2793490580cc7a5b53d3ddaa59d247d8024f4b622f247e725d`
 
 Handoff v1 supports Cookie import. A Storage pointer is observation-only;
 non-empty local/session Storage import is unsupported and consumers must fail
 closed. The canonical valid fixture is therefore Cookie-only and never
 advertises `storage-import`.
 
-Native Firefox debugger observations use the private control-plane contracts
+Native Firefox debugger observations use the control-plane contracts
 `debugger-observation.v1.schema.json` and `debugger-pointer.v1.schema.json`.
 They are deliberately separate from the shared `evidence-pointer.v1` schema:
 the `ruyi-debug` plane stores only bounded, redacted metadata and source/value

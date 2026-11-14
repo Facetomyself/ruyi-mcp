@@ -45,8 +45,8 @@ DEBUGGER_OBSERVATION_SCHEMA_PATH = REPO_ROOT / "contracts" / "debugger-observati
 DEBUGGER_POINTER_SCHEMA_PATH = REPO_ROOT / "contracts" / "debugger-pointer.v1.schema.json"
 HANDOFF_FIXTURE_PATH = REPO_ROOT / "contracts" / "fixtures" / "browser-session-handoff.valid.json"
 LIVE_COOKIE_FIXTURE_PATH = REPO_ROOT / "scripts" / "fixtures" / "cookies-domainless.live-shape.json"
-HANDOFF_SCHEMA_SHA256 = "9a759a8a5a9af92ae6958a06975bbd58a0d20f67aeb87543100548f36b9ea240"
-POINTER_SCHEMA_SHA256 = "14535a0c20d9e383870b5ff7da312d8c27c7658ba679038071c8df01414cf08c"
+HANDOFF_SCHEMA_SHA256 = "fc3576c227159e391ad38a06f6c07192909aa8f3228e36108f5e1d2d12e7dae8"
+POINTER_SCHEMA_SHA256 = "891b19ceefcfff2793490580cc7a5b53d3ddaa59d247d8024f4b622f247e725d"
 
 
 def load_bridge_module():
@@ -156,6 +156,10 @@ class FakeLaunchOptions:
         self.debugger_port = port
         if on_off:
             self.arguments.append("--start-debugger-server")
+        return self
+
+    def enable_trace(self, enabled=True):
+        self.trace_enabled = bool(enabled)
         return self
 
     def smart_fingerprint(self, **kwargs):
@@ -1101,10 +1105,9 @@ class RuyiBridgeContractTests(unittest.TestCase):
             "page.act",
             "session.export",
             "download.set_behavior",
-            "debug.enable",
-            "debug.set_breakpoint",
-            "debug.wait_paused",
-            "debug.scope",
+            "bidi_trace.start",
+            "bidi_trace.stop",
+            "bidi_trace.results",
         }
         self.assertTrue(expected_handlers.issubset(bridge._handlers))
         self.assertTrue(
@@ -3136,7 +3139,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
         self.assertEqual(response, {"id": 99, "result": {"shutdown": True}})
         self.assertIn("[ruyi_bridge] Shutdown complete", stderr.getvalue())
 
-    def test_launch_enable_debugger_starts_rdp_and_native_breakpoints(self):
+    def test_launch_opens_rdp_listener_without_attaching_python_debugger(self):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict(
@@ -3160,7 +3163,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
                     }
                 )
                 self.assertNotIn("error", launch, launch)
-                self.assertTrue(launch["result"]["debuggerEnabled"])
+                self.assertFalse(launch["result"]["debuggerEnabled"])
                 self.assertEqual(launch["result"]["debuggerPort"], 60123)
                 # RDP is intentionally enabled at launch but attached only
                 # after the first navigation, because Firefox replaces the
@@ -3179,68 +3182,9 @@ class RuyiBridgeContractTests(unittest.TestCase):
                         "params": {"pageIdx": 0},
                     }
                 )
-                self.assertNotIn("error", enabled, enabled)
-                self.assertTrue(enabled["result"]["started"])
-                self.assertTrue(bridge.page.debugger.started)
-                self.assertEqual(
-                    bridge.page.debugger.start_calls[-1]["auto_resume_after"], 60
-                )
-                mismatched_port = bridge.handle(
-                    {
-                        "id": 402,
-                        "method": "debug.enable",
-                        "params": {"pageIdx": 0, "debuggerPort": 60124},
-                    }
-                )
-                self.assertIn("error", mismatched_port)
-                self.assertIn("different port", mismatched_port["error"]["message"])
-
-                planted = bridge.handle(
-                    {
-                        "id": 41,
-                        "method": "debug.set_breakpoint_on_text",
-                        "params": {"pageIdx": 0, "text": "var y = x + 1"},
-                    }
-                )
-                self.assertNotIn("error", planted, planted)
-                self.assertEqual(planted["result"]["type"], "native")
-                self.assertEqual(planted["result"]["line"], 2)
-                self.assertNotIn("debugger;", json.dumps(planted))
-
-                paused = bridge.handle(
-                    {
-                        "id": 42,
-                        "method": "debug.wait_paused",
-                        "params": {"pageIdx": 0, "timeout": 1},
-                    }
-                )
-                self.assertNotIn("error", paused, paused)
-                self.assertTrue(paused["result"]["paused"])
-                self.assertEqual(paused["result"]["state"]["why"], "breakpoint")
-                self.assertEqual(paused["result"]["state"]["line"], 2)
-
-                scope = bridge.handle(
-                    {"id": 43, "method": "debug.scope", "params": {"pageIdx": 0}}
-                )
-                self.assertNotIn("error", scope, scope)
-                self.assertEqual(scope["result"]["scope"]["x"], 41)
-
-                xhr = bridge.handle(
-                    {
-                        "id": 44,
-                        "method": "debug.break_on_xhr",
-                        "params": {"pageIdx": 0, "url": "/missing-endpoint"},
-                    }
-                )
-                self.assertNotIn("error", xhr, xhr)
-                self.assertEqual(xhr["result"]["reason"], "xhr-breakpoint-unresolved")
-                self.assertTrue(xhr["result"]["heuristic"])
-
-                listed = bridge.handle(
-                    {"id": 45, "method": "debug.list_breakpoints", "params": {}}
-                )
-                self.assertEqual(listed["result"]["breakpoints"][0]["type"], "native")
-
+                self.assertEqual(enabled["error"]["code"], -32601)
+                self.assertFalse(bridge.page.debugger.started)
+                self.assertEqual(bridge.page.debugger.start_calls, [])
                 bridge.handle({"id": 46, "method": "browser.quit", "params": {}})
 
     def test_debug_enable_without_launch_flag_fails_closed(self):
@@ -3252,135 +3196,20 @@ class RuyiBridgeContractTests(unittest.TestCase):
             {"id": 47, "method": "debug.enable", "params": {"pageIdx": 0}}
         )
         self.assertIn("error", response)
-        self.assertIn("enableDebugger=true", response["error"]["message"])
+        self.assertEqual(response["error"]["code"], -32601)
 
-    def test_debugger_breakpoint_registry_routes_by_page(self):
+    def test_python_registry_does_not_own_native_debugger(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
-        page0 = FakeLaunchPage(FakeLaunchOptions())
-        page1 = FakeLaunchPage(FakeLaunchOptions())
-        bridge.page = page0
-        bridge.pages = {0: page0, 1: page1}
-        bridge._debugger_enabled = True
-        bridge._debugger_server_enabled = True
-        bridge._debugger_port = 60123
+        self.assertFalse(any(name.startswith("debug.") for name in bridge._handlers))
+        for method in ("debug.set_breakpoint", "debug.scope", "debug.resume", "debug.break_on_xhr"):
+            response = bridge.handle({"id": 50, "method": method, "params": {}})
+            self.assertEqual(response["error"]["code"], -32601)
 
-        planted = bridge.handle(
-            {
-                "id": 50,
-                "method": "debug.set_breakpoint",
-                "params": {"pageIdx": 1, "url": "http://x/app.js", "line": 2},
-            }
-        )
-        self.assertNotIn("error", planted, planted)
-        breakpoint_id = planted["result"]["breakpointId"]
-        self.assertEqual(planted["result"]["pageIdx"], 1)
-
-        wrong_page = bridge.handle(
-            {
-                "id": 51,
-                "method": "debug.remove_breakpoint",
-                "params": {"pageIdx": 0, "breakpointId": breakpoint_id},
-            }
-        )
-        self.assertIn("error", wrong_page)
-        self.assertEqual(len(page1.debugger.breakpoints), 1)
-
-        removed = bridge.handle(
-            {
-                "id": 52,
-                "method": "debug.remove_breakpoint",
-                "params": {"breakpointId": breakpoint_id},
-            }
-        )
-        self.assertNotIn("error", removed, removed)
-        self.assertEqual(len(page1.debugger.breakpoints), 0)
-
-    def test_debugger_source_actor_and_offset_contracts(self):
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        page = FakeLaunchPage(FakeLaunchOptions())
-        page.debugger = FakeActorDebugger()
-        page.debugger._sources = [
-            SimpleNamespace(
-                actor="eval-source",
-                url="",
-                introduction_type="eval",
-                is_black_boxed=False,
-            )
-        ]
-        page.debugger._source_text = "zero\nmarker\nthird\n"
-        bridge.page = page
-        bridge.pages = {0: page}
-        bridge._debugger_enabled = True
-        bridge._debugger_server_enabled = True
-        bridge._debugger_port = 60123
-
-        source = bridge.handle(
-            {
-                "id": 53,
-                "method": "debug.source_text",
-                "params": {
-                    "pageIdx": 0,
-                    "sourceActor": "eval-source",
-                    "offset": 5,
-                    "maxChars": 6,
-                },
-            }
-        )
-        self.assertNotIn("error", source, source)
-        self.assertEqual(source["result"]["source"], "marker")
-        self.assertEqual(source["result"]["sourceActor"], "eval-source")
-
-        ambiguous = bridge.handle(
-            {
-                "id": 531,
-                "method": "debug.source_text",
-                "params": {
-                    "pageIdx": 0,
-                    "url": "http://fixture.invalid/app.js",
-                    "sourceActor": "eval-source",
-                },
-            }
-        )
-        self.assertIn("error", ambiguous)
-        self.assertIn("mutually exclusive", ambiguous["error"]["message"])
-
-        breakpoint_ = bridge.handle(
-            {
-                "id": 54,
-                "method": "debug.set_breakpoint",
-                "params": {
-                    "pageIdx": 0,
-                    "sourceActor": "eval-source",
-                    "line": 2,
-                },
-            }
-        )
-        self.assertNotIn("error", breakpoint_, breakpoint_)
-        request = page.debugger.connection.calls[-1]
-        self.assertEqual(request[0], "thread-actor")
-        self.assertEqual(request[1], "setBreakpoint")
-        self.assertEqual(request[2]["location"]["sourceId"], "eval-source")
-
-    def test_debugger_values_are_json_safe_and_disable_clears_state(self):
+    def test_wire_values_are_json_safe(self):
         self.assertEqual(BRIDGE_MODULE._debugger_value(float("nan")), "NaN")
         self.assertEqual(BRIDGE_MODULE._debugger_value(float("inf")), "Infinity")
         payload = {"value": BRIDGE_MODULE._debugger_value(float("-inf"))}
         json.dumps(payload, allow_nan=False)
-
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        page = FakeLaunchPage(FakeLaunchOptions())
-        page.debugger.started = True
-        bridge.page = page
-        bridge.pages = {0: page}
-        bridge._debugger_enabled = True
-        bridge._debugger_server_enabled = True
-        bridge._debugger_port = 60123
-        bridge._native_breakpoints = [{"breakpointId": "1", "pageIdx": 0, "native": object()}]
-        disabled = bridge.handle({"id": 55, "method": "debug.disable", "params": {}})
-        self.assertNotIn("error", disabled, disabled)
-        self.assertEqual(disabled["result"]["breakpointCount"], 0)
-        self.assertEqual(bridge._native_breakpoints, [])
-        self.assertFalse(bridge._debugger_enabled)
 
         wire_bridge = BRIDGE_MODULE.RuyiBridge()
         wire_bridge.handle = lambda request: {
@@ -3405,7 +3234,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
         response = json.loads(stdout.getvalue().splitlines()[0])
         self.assertEqual(response["result"], {"nan": "NaN", "infinity": "Infinity"})
 
-    def test_debugger_port_and_watchdog_boundaries(self):
+    def test_debugger_port_is_only_advertised_for_enabled_listener(self):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.dict(
@@ -3431,35 +3260,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
                 )
                 self.assertNotIn("error", launch, launch)
                 self.assertIsNone(bridge._debugger_auto_resume_after)
-                enabled = bridge.handle(
-                    {
-                        "id": 57,
-                        "method": "debug.enable",
-                        "params": {"pageIdx": 0, "autoResumeAfter": 0},
-                    }
-                )
-                self.assertNotIn("error", enabled, enabled)
-                self.assertIsNone(bridge.page.debugger._auto_resume_after)
-                bridge.page.debugger.paused = True
-                enabled_again = bridge.handle(
-                    {
-                        "id": 571,
-                        "method": "debug.enable",
-                        "params": {"pageIdx": 0, "autoResumeAfter": 5},
-                    }
-                )
-                self.assertNotIn("error", enabled_again, enabled_again)
-                self.assertEqual(bridge.page.debugger.watchdog_arm_calls, 1)
-                disabled_watchdog = bridge.handle(
-                    {
-                        "id": 572,
-                        "method": "debug.enable",
-                        "params": {"pageIdx": 0, "autoResumeAfter": 0},
-                    }
-                )
-                self.assertNotIn("error", disabled_watchdog, disabled_watchdog)
-                self.assertEqual(bridge.page.debugger.watchdog_disarm_calls, 1)
-                self.assertIsNone(bridge.page.debugger._watchdog)
+                self.assertEqual(launch["result"]["debuggerPort"], 60126)
+                self.assertFalse(launch["result"]["debuggerStarted"])
                 bridge.handle({"id": 58, "method": "browser.quit", "params": {}})
 
                 disabled_launch = BRIDGE_MODULE.RuyiBridge()
@@ -3496,38 +3298,7 @@ class RuyiBridgeContractTests(unittest.TestCase):
             }
         )
         self.assertIn("error", response)
-        self.assertIn("server was not started", response["error"]["message"])
-
-    def test_native_xhr_breakpoint_is_used_when_upstream_supports_it(self):
-        bridge = BRIDGE_MODULE.RuyiBridge()
-        page = FakeLaunchPage(FakeLaunchOptions())
-        page.debugger = NativeXhrDebugger()
-        bridge.page = page
-        bridge.pages = {0: page}
-        bridge._debugger_enabled = True
-        bridge._debugger_server_enabled = True
-        bridge._debugger_port = 60128
-        planted = bridge.handle(
-            {
-                "id": 63,
-                "method": "debug.break_on_xhr",
-                "params": {"pageIdx": 0, "url": "/api/login", "method": "POST"},
-            }
-        )
-        self.assertNotIn("error", planted, planted)
-        self.assertFalse(planted["result"]["heuristic"])
-        self.assertTrue(planted["result"]["verifiedRequestBreakpoint"])
-        self.assertEqual(page.debugger.xhr_calls[0], ("set", "/api/login", "POST"))
-        breakpoint_id = planted["result"]["breakpoints"][0]["breakpointId"]
-        removed = bridge.handle(
-            {
-                "id": 64,
-                "method": "debug.remove_breakpoint",
-                "params": {"breakpointId": breakpoint_id},
-            }
-        )
-        self.assertNotIn("error", removed, removed)
-        self.assertEqual(page.debugger.xhr_calls[-1], ("remove", "/api/login", "POST"))
+        self.assertEqual(response["error"]["code"], -32601)
 
     def test_debug_evidence_is_redacted_and_schema_valid(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3565,20 +3336,29 @@ class RuyiBridgeContractTests(unittest.TestCase):
             redacted_remote = BRIDGE_MODULE._redact_debug_value({"object": remote})
             self.assertNotIn("nested-secret", json.dumps(redacted_remote))
 
-    def test_bridge_dispatches_wait_and_resume_concurrently(self):
+    def test_bridge_dispatches_navigation_without_blocking_status(self):
         bridge = BRIDGE_MODULE.RuyiBridge()
-        page = BlockingLaunchPage(FakeLaunchOptions())
-        bridge.page = page
-        bridge.pages = {0: page}
-        bridge._debugger_enabled = True
-        bridge._debugger_server_enabled = True
-        bridge._debugger_port = 60123
+        navigation_started = threading.Event()
+        navigation_released = threading.Event()
+
+        def navigate(params):
+            navigation_started.set()
+            self.assertTrue(navigation_released.wait(timeout=2))
+            return {"navigated": True}
+
+        def status(params):
+            self.assertTrue(navigation_started.wait(timeout=2))
+            navigation_released.set()
+            return {"alive": True}
+
+        bridge._handlers["page.navigate"] = navigate
+        bridge._handlers["browser.status"] = status
         bridge._quit = Mock(return_value={})
         stdin = io.StringIO(
             "\n".join(
                 [
-                    json.dumps({"id": 60, "method": "debug.wait_paused", "params": {"timeout": 5}}),
-                    json.dumps({"id": 61, "method": "debug.resume", "params": {}}),
+                    json.dumps({"id": 60, "method": "page.navigate", "params": {"url": "http://fixture.invalid"}}),
+                    json.dumps({"id": 61, "method": "browser.status", "params": {}}),
                     json.dumps({"id": 62, "method": "__shutdown__", "params": {}}),
                     "",
                 ]
@@ -3596,8 +3376,8 @@ class RuyiBridgeContractTests(unittest.TestCase):
         by_id = {item["id"]: item for item in responses}
         self.assertNotIn("error", by_id[60])
         self.assertNotIn("error", by_id[61])
-        self.assertEqual(by_id[60]["result"]["paused"], True)
-        self.assertEqual(by_id[61]["result"]["paused"], False)
+        self.assertEqual(by_id[60]["result"]["navigated"], True)
+        self.assertEqual(by_id[61]["result"]["alive"], True)
 
 
 if __name__ == "__main__":

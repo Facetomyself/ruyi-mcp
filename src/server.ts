@@ -10,7 +10,9 @@ import {
 
 import { PythonBridge } from './bridge/python.js';
 import { RuyiContext } from './ruyi-context.js';
-import { ToolDef, ToolHandler } from './tools/types.js';
+import { ToolRegistry } from './tool-registry.js';
+import { NativeDebuggerManager } from './rdp/manager.js';
+import { registerNativeDebugTools } from './tools/native-debug.js';
 import { registerPageTools } from './tools/page.js';
 import { registerRuntimeTools } from './tools/runtime.js';
 import { registerAntiDetectTools } from './tools/antidetect.js';
@@ -18,7 +20,9 @@ import { registerDomTools } from './tools/dom.js';
 import { registerSessionTools } from './tools/session.js';
 import { registerScriptTools } from './tools/script.js';
 import { registerNetworkTools } from './tools/network.js';
-import { registerDebugTools } from './tools/debug.js';
+import { registerPreloadTools } from './tools/preload.js';
+import { registerTraceTools } from './tools/trace.js';
+import { registerBorrowedSessionTools } from './tools/borrowed-session.js';
 import { registerHumanTools } from './tools/human.js';
 import { registerNetEnhanceTools } from './tools/netenhance.js';
 import { registerUtilTools } from './tools/util.js';
@@ -30,20 +34,16 @@ import { registerAgentTools } from './tools/agent.js';
 import {
   AGENT_LOOP_TOOLS,
   AGENT_TOOLS,
+  COMPACT_TOOLS,
   EXPERT_ONLY_TOOLS,
   resolveToolset,
 } from './tools/toolset.js';
 
-export const SERVER_VERSION = '0.3.0-reverse-env.2';
+export const SERVER_VERSION = '0.4.0';
 
 // ---------------------------------------------------------------------------
 // Tool registry
 // ---------------------------------------------------------------------------
-
-interface RegisteredTool {
-  tool: ToolDef;
-  handler: ToolHandler;
-}
 
 type ServerCleanup = () => Promise<void>;
 
@@ -65,14 +65,20 @@ export function cleanupServer(server: Server): Promise<void> {
 
 export async function createServer(bridge: PythonBridge): Promise<Server> {
   const ctx = new RuyiContext(bridge);
-  const toolHandlers = new Map<string, RegisteredTool>();
-
-  const register = (entry: { tool: ToolDef; handler: ToolHandler }): void => {
-    if (toolHandlers.has(entry.tool.name)) {
-      throw new Error(`Duplicate tool registration: ${entry.tool.name}`);
-    }
-    toolHandlers.set(entry.tool.name, entry);
-  };
+  const manager = new NativeDebuggerManager(() => ctx.getNativeDebugSession());
+  ctx.setDebugger(manager);
+  const registry = new ToolRegistry();
+  const register = registry.register;
+  for (const event of ['paused', 'resumed', 'target', 'target-destroyed', 'invalidated', 'diagnostic']) {
+    manager.on(event, (payload: unknown) => {
+      try {
+        ctx.debugEvidence.configure(ctx.state.lastLaunchParams ?? {});
+        ctx.debugEvidence.record(`debug.${event}`, payload);
+      } catch {
+        console.error('[ruyi-mcp] Debugger evidence write failed');
+      }
+    });
+  }
 
   // Register tools from all modules
   registerPageTools(register, ctx);
@@ -84,35 +90,34 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
   registerCookieTools(register, ctx);
   registerNetworkTools(register, ctx);
   registerInterceptTools(register, ctx);
-  registerDebugTools(register, ctx);
+  registerNativeDebugTools((entry) => register({
+    tool: entry.tool,
+    handler: async (args) => {
+      ctx.debugEvidence.configure(ctx.state.lastLaunchParams ?? {});
+      const result = await entry.handler(args);
+      const evidence = ctx.debugEvidence.record(entry.tool.name, result);
+      return evidence ? { ...result, content: [...result.content, { type: 'text', text: JSON.stringify({ evidence }) }] } : result;
+    },
+  }), manager);
+  registerPreloadTools(register, ctx);
+  registerTraceTools(register, ctx);
+  registerBorrowedSessionTools(register, ctx);
   registerHumanTools(register, ctx);
   registerNetEnhanceTools(register, ctx);
   registerDownloadTools(register, ctx);
   registerWebSocketTools(register, ctx);
   registerUtilTools(register, ctx);
   registerAgentTools(register, ctx);
+  registry.registerDiscovery();
 
   const toolset = resolveToolset();
-  if (toolset === 'automation') {
-    for (const name of EXPERT_ONLY_TOOLS) {
-      toolHandlers.delete(name);
-    }
-    for (const name of AGENT_LOOP_TOOLS) {
-      toolHandlers.delete(name);
-    }
-  } else if (toolset === 'agent') {
-    for (const name of Array.from(toolHandlers.keys())) {
-      if (!AGENT_TOOLS.has(name)) {
-        toolHandlers.delete(name);
-      }
-    }
-  } else {
-    for (const name of AGENT_LOOP_TOOLS) {
-      toolHandlers.delete(name);
-    }
-  }
-
-  const tools = Array.from(toolHandlers.values()).map((h) => h.tool);
+  const tools = [...registry.entries.values()].map((entry) => entry.tool).filter((tool) => {
+    if (toolset === 'compact') return COMPACT_TOOLS.has(tool.name);
+    if (toolset === 'agent') return AGENT_TOOLS.has(tool.name);
+    if (toolset === 'automation') return !EXPERT_ONLY_TOOLS.has(tool.name) && !tool.name.startsWith('ruyi_debug_') && !AGENT_LOOP_TOOLS.has(tool.name);
+    if (toolset === 'debug') return !AGENT_LOOP_TOOLS.has(tool.name);
+    return true;
+  });
 
   const server = new Server(
     {
@@ -134,7 +139,7 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
   // Call tool
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const entry = toolHandlers.get(name);
+    const entry = registry.entries.get(name);
 
     if (!entry) {
       return {
@@ -144,7 +149,7 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
     }
 
     try {
-      const result = await entry.handler((args || {}) as Record<string, unknown>);
+      const result = await registry.execute(name, args ?? {});
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -162,6 +167,8 @@ export async function createServer(bridge: PythonBridge): Promise<Server> {
       // Defer execution by one microtask so cleanupPromise is assigned before
       // another close path can re-enter this function.
       cleanupPromise = Promise.resolve().then(async () => {
+        await manager.close().catch(() => {});
+        await ctx.releaseBorrowedSession().catch(() => {});
         console.error('[ruyi-mcp] Server closing, cleaning up...');
         if (bridge.isRunning()) {
           await ctx.quit().catch(() => {});

@@ -60,7 +60,7 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
       }
 
       try {
-        const debugSources = await ctx.bridgeInstance.call('debug.sources', {
+        const debugSources = await ctx.debuggerCall('debug.sources', {
           pageIdx,
           filter,
         }) as Record<string, unknown>;
@@ -181,7 +181,7 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
       }`;
 
       try {
-        const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+        const debugSource = await ctx.debuggerCall('debug.source_text', {
           pageIdx,
           url,
           sourceActor,
@@ -278,7 +278,7 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
       const safeFilePath = pathCheck.resolved as string;
 
       try {
-        const debugSource = await ctx.bridgeInstance.call('debug.source_text', {
+        const debugSource = await ctx.debuggerCall('debug.source_text', {
           pageIdx,
           url,
           sourceActor,
@@ -402,7 +402,7 @@ export function registerScriptTools(register: ToolRegistrar, ctx: RuyiContext): 
 
       if (!isRegex) {
         try {
-          const debugSearch = await ctx.bridgeInstance.call('debug.search', {
+          const debugSearch = await ctx.debuggerCall('debug.search', {
             pageIdx,
             query,
             urlFilter,

@@ -3,6 +3,13 @@
  * registered when RUYI_MCP_TOOLSET=debug|all|expert|full. The indexed
  * observe/act loop is a separate experimental agent surface.
  */
+export const COMPACT_TOOLS = new Set([
+    'ruyi_browser_status',
+    'ruyi_observe',
+    'ruyi_act',
+    'ruyi_search_tools',
+    'ruyi_execute_tool',
+]);
 export const EXPERT_ONLY_TOOLS = new Set([
     'ruyi_break_on_xhr',
     'ruyi_debug_disable',
@@ -44,7 +51,10 @@ export const AGENT_TOOLS = new Set([
     'ruyi_handle_cloudflare',
 ]);
 export function resolveToolset(raw = process.env.RUYI_MCP_TOOLSET) {
-    const value = String(raw || 'automation').trim().toLowerCase();
+    const value = String(raw || 'compact').trim().toLowerCase();
+    if (value === 'compact') {
+        return 'compact';
+    }
     if (value === 'debug') {
         return 'debug';
     }
@@ -54,9 +64,12 @@ export function resolveToolset(raw = process.env.RUYI_MCP_TOOLSET) {
     if (value === 'agent') {
         return 'agent';
     }
-    return 'automation';
+    if (value === 'automation') {
+        return 'automation';
+    }
+    throw new Error(`Unknown RUYI_MCP_TOOLSET: ${value}`);
 }
 export function debuggerEnabledByDefault(toolset = resolveToolset()) {
-    return toolset !== 'automation' && toolset !== 'agent';
+    return true;
 }
 //# sourceMappingURL=toolset.js.map
