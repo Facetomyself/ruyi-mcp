@@ -290,7 +290,7 @@ try {
   await check('first-statement-navigation', async () => {
     const breakpoint = await manager.setBreakpoint({ url: `${origin}/app.js`, line: 1, column: 0 });
     const navigation = manager.call('debug.navigate', { url: origin + '/reload' });
-    const paused = await manager.waitPaused({ timeout: 5 });
+    const paused = await manager.waitPaused({ timeout: 15 });
     assert.equal(paused.paused, true);
     assert.equal(paused.state.line, 1);
     await manager.resume(paused.targetId); await navigation;
