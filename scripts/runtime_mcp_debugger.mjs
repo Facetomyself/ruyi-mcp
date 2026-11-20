@@ -14,18 +14,18 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { requireGateFirefox } from './runtime-firefox.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const nodeExe = process.env.RUYI_MCP_NODE || process.execPath;
-const pythonExe = process.env.RUYI_MCP_PYTHON || process.env.PYTHON || 'python';
-const firefoxPath = process.env.RUYI_FIREFOX_PATH
-  || resolve(root, '..', '..', 'tools', 'ruyipage', 'runtimes', '151-proxy', 'firefox', 'firefox.exe');
+const pythonExe = process.env.RUYI_MCP_PYTHON || process.env.PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+const firefoxPath = await requireGateFirefox();
 const configuredProfileRoot = process.env.RUYI_MCP_PROFILE_ROOT;
 const profileRoot = configuredProfileRoot
-  || join(root, '..', '..', 'temp', `ruyi-mcp-debug-profiles-${process.pid}`);
+  || join(root, 'artifacts', `mcp-debug-profiles-${process.pid}`);
 const ownsProfileRoot = !configuredProfileRoot;
 const evidenceRoot = process.env.RUYI_MCP_DEBUG_EVIDENCE_ROOT
-  || join(root, '..', '..', 'temp', `ruyi-mcp-debug-evidence-${process.pid}`);
+  || join(root, 'artifacts', `mcp-debug-evidence-${process.pid}`);
 const runId = `debug_${Date.now()}_${process.pid}`;
 
 const html = '<!doctype html><html><head><title>debug gate</title></head>'

@@ -18,6 +18,8 @@ npm run check
 
 Configure your MCP host to execute `node /absolute/path/to/ruyi-mcp/build/src/index.js`. Set `RUYI_MCP_PYTHON`, `RUYI_FIREFOX_PATH`, `RUYI_MCP_PROFILE_ROOT`, and `RUYI_MCP_TOOLSET=compact`. Do not let the ruyiPage installer silently replace the pinned Firefox build. Runtime binaries, profiles, credentials, and captured data are not distributed in this repository.
 
+The [`linux` branch](https://github.com/Facetomyself/ruyi-mcp/tree/linux) maintains the complete project in the same repository. See the [Linux port notes](docs/linux-port.md) for standalone setup, verification, and runtime prerequisites.
+
 ## Tools and behavior
 
 - Automation retains pages, DOM, precise frames, cookies, humanized input, proxy/fingerprint configuration, capture/interception, WebSockets, downloads, session handoff, and observe/act.

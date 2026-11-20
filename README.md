@@ -33,6 +33,8 @@ npm run check
 
 设置 `RUYI_FIREFOX_PATH` 指向已校验的 Firefox159 可执行文件。不要用 `python -m ruyipage install` 静默替换锁定运行时。仓库跟踪构建产物，开发后执行 `npm run build`。
 
+Linux 在同一仓库的 [`linux` 分支](https://github.com/Facetomyself/ruyi-mcp/tree/linux) 维护完整项目。独立部署、已验证范围和真机验收命令见 [Linux 迁移说明](docs/linux-port.md)。
+
 ## MCP 配置
 
 ```json

@@ -6,10 +6,11 @@ import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NativeDebuggerManager } from '../build/src/rdp/index.js';
+import { requireGateFirefox } from './runtime-firefox.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const evidenceRoot = process.env.RUYI_RDP_EVIDENCE_ROOT || resolve(root, '../../temp/agent-runs/ruyi-unification-20261114/rdp');
-const firefox = process.env.RUYI_FIREFOX_PATH || resolve(root, '../../storage/web-runtimes/ruyitrace/3.5.0/RuyiTrace-3.5.0-win64/resources/kernel/firefox.exe');
+const firefox = await requireGateFirefox();
+const evidenceRoot = process.env.RUYI_RDP_EVIDENCE_ROOT || join(root, 'artifacts', 'rdp');
 const fixtureId = `gate-${Date.now()}`;
 const output = join(evidenceRoot, fixtureId);
 await mkdir(output, { recursive: true });

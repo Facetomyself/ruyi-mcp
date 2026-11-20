@@ -156,21 +156,14 @@ def run_gate(firefox_path: Path, headless: bool) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    reverse_env_root = Path(__file__).resolve().parents[3]
-    default_firefox = reverse_env_root / "tools" / "ruyipage" / "runtimes" / "151-proxy" / "firefox" / "firefox.exe"
-    parser.add_argument(
-        "--firefox",
-        default=os.environ.get(
-            "RUYI_FIREFOX_PATH",
-            str(default_firefox),
-        ),
-    )
+    parser.add_argument("--firefox", default=os.environ.get("RUYI_FIREFOX_PATH"))
     parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
+    if not args.firefox:
+        parser.error("set RUYI_FIREFOX_PATH or pass --firefox with an absolute Firefox executable path")
     firefox = Path(args.firefox)
-    if not firefox.exists():
-        print(json.dumps({"ok": False, "error": "firefox missing", "path": str(firefox)}))
-        return 2
+    if not firefox.is_absolute() or not firefox.is_file() or not os.access(firefox, os.X_OK):
+        parser.error(f"Firefox must be an absolute executable file: {firefox}")
     result = run_gate(firefox, args.headless)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("ok") else 1

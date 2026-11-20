@@ -11,7 +11,7 @@
     "check:python": "python -m py_compile bridge/ruyi_bridge.py scripts/runtime_ruyipage_1256.py scripts/runtime_capture_lifecycle.py scripts/runtime_attach_lifecycle.py scripts/runtime_download_behavior.py scripts/runtime_debugger.py scripts/runtime_agent_loop.py scripts/runtime_bidi_trace.py scripts/run-automation-gates.py",
     "check:debugger-runtime": "node scripts/rdp-runtime.mjs",
     "check:debugger-mcp-runtime": "node scripts/rdp-runtime.mjs",
-    "check:rdp": "node --test scripts/rdp-transport.test.mjs scripts/rdp-source-maps.test.mjs",
+    "check:rdp": "node --test scripts/rdp-transport.test.mjs scripts/rdp-source-maps.test.mjs scripts/runtime-firefox.test.mjs",
     "check:rdp-runtime": "node scripts/rdp-runtime.mjs",
     "check:rdp-intervention": "node scripts/rdp-intervention.mjs",
     "check:contract": "python scripts/contract_bridge.py",

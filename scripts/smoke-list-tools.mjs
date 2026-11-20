@@ -83,7 +83,7 @@ const EXPERT_ONLY_TOOLS = [
   'ruyi_set_breakpoint_on_text',
 ];
 
-async function listTools(toolset) {
+async function listTools(toolset, checkBridge = false) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [resolve(root, 'build/src/index.js')],
@@ -100,6 +100,12 @@ async function listTools(toolset) {
   try {
     await client.connect(transport);
     const result = await client.listTools();
+    if (checkBridge) {
+      const status = await client.callTool({ name: 'ruyi_browser_status', arguments: {} });
+      assert.equal(status.isError ?? false, false);
+      assert.deepEqual(JSON.parse(status.content[0].text), { alive: false });
+      assert.match(serverStderr, /\[ruyi-mcp\] Python bridge ready/, 'cold status must use the real Python bridge');
+    }
     return { result, serverStderr };
   } finally {
     await client.close();
@@ -129,7 +135,7 @@ function assertControlPlaneLogs(serverStderr) {
   );
 }
 
-const compactListed = await listTools('compact');
+const compactListed = await listTools('compact', true);
 assert.deepEqual(compactListed.result.tools.map((tool) => tool.name).sort(), [
   'ruyi_act', 'ruyi_browser_status', 'ruyi_execute_tool', 'ruyi_observe', 'ruyi_search_tools',
 ]);
