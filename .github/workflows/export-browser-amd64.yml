@@ -1,6 +1,11 @@
 name: Export AMD64 browser dependencies
 
 on:
+  push:
+    branches: [linux]
+    paths:
+      - .github/workflows/export-browser-amd64.yml
+      - Dockerfile
   workflow_dispatch:
 
 permissions:
