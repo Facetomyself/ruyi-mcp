@@ -20,11 +20,17 @@ COPY src/ src/
 COPY bridge/ bridge/
 COPY contracts/ contracts/
 COPY scripts/ scripts/
-RUN npm run check && npm prune --omit=dev --ignore-scripts
+ARG RUYI_MCP_REVISION
+ENV RUYI_MCP_LOCAL_HEAD=${RUYI_MCP_REVISION}
+RUN printf '%s\n' "$RUYI_MCP_LOCAL_HEAD" | grep -Eq '^[0-9a-f]{40}$' \
+    && npm run check && npm prune --omit=dev --ignore-scripts
 
 FROM python AS core
+ARG RUYI_MCP_REVISION
+LABEL org.opencontainers.image.revision=${RUYI_MCP_REVISION}
 WORKDIR /app
-ENV NODE_ENV=production \
+ENV RUYI_MCP_LOCAL_HEAD=${RUYI_MCP_REVISION} \
+    NODE_ENV=production \
     PYTHONDONTWRITEBYTECODE=1 \
     HOME=/tmp \
     RUYI_MCP_PYTHON=/opt/venv/bin/python \

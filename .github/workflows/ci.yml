@@ -44,11 +44,12 @@ jobs:
           node-version: "24"
       - name: Build and verify the core image
         run: |
-          docker build --platform linux/${{ matrix.arch }} --target core -t ruyi-mcp:ci-core .
+          docker build --platform linux/${{ matrix.arch }} --target core --build-arg "RUYI_MCP_REVISION=$GITHUB_SHA" -t ruyi-mcp:ci-core .
           test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' ruyi-mcp:ci-core)" = 'linux/${{ matrix.arch }}'
+          test "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' ruyi-mcp:ci-core)" = "$GITHUB_SHA"
           node scripts/container-smoke.mjs ruyi-mcp:ci-core
       - name: Verify the browser layer with stock Firefox ESR
         if: matrix.arch == 'amd64'
         run: |
-          docker build --platform linux/amd64 --target browser-test -t ruyi-mcp:ci-firefox .
+          docker build --platform linux/amd64 --target browser-test --build-arg "RUYI_MCP_REVISION=$GITHUB_SHA" -t ruyi-mcp:ci-firefox .
           node scripts/container-smoke.mjs ruyi-mcp:ci-firefox browser

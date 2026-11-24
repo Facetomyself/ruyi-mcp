@@ -35,14 +35,15 @@
 ### 构建、烟测和客户端配置
 
 ```bash
-docker build --platform linux/amd64 --target core -t ruyi-mcp:core .
+revision=$(git rev-parse HEAD)
+docker build --platform linux/amd64 --target core --build-arg "RUYI_MCP_REVISION=$revision" -t ruyi-mcp:core .
 node scripts/container-smoke.mjs ruyi-mcp:core
-docker build --platform linux/amd64 --target browser -t ruyi-mcp:browser .
+docker build --platform linux/amd64 --target browser --build-arg "RUYI_MCP_REVISION=$revision" -t ruyi-mcp:browser .
 # FIREFOX_DIR 指向已按发布收据验过的完整 Linux AMD64 目录。
 node scripts/container-smoke.mjs ruyi-mcp:browser browser "$FIREFOX_DIR"
 ```
 
-`core` 烟测覆盖 MCP 握手、工具列表、真实 Python 桥接、非 root UID 以及 stdin EOF/SIGTERM 两条关闭路径。`browser` 烟测另外用封闭网络下的本地 `data:` fixture 验证真实 Firefox 导航、状态与退出。CI 的 `browser-test` 使用 Debian Firefox ESR，仅是参考浏览器，不代替 Trace 制品联验。发布镜像尚未上传到注册表。
+从干净检出构建；`RUYI_MCP_REVISION` 写入 OCI revision 标签及容器内的证据溯源信息，镜像层无需携带 `.git`。`core` 烟测覆盖 MCP 握手、工具列表、真实 Python 桥接、非 root UID 以及 stdin EOF/SIGTERM 两条关闭路径。`browser` 烟测另外用封闭网络下的本地 `data:` fixture 验证真实 Firefox 导航、状态与退出。CI 的 `browser-test` 使用 Debian Firefox ESR，仅是参考浏览器，不代替 Trace 制品联验。发布镜像尚未上传到注册表。
 
 宿主先建证据目录，并让容器中 UID 10001 有写权限（rootless 采用实际 UID 映射）。替换以下两个绝对路径后，客户端用刚构建的本地标签启动。
 
