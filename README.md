@@ -21,17 +21,21 @@
 
 ## 安装与运行时
 
-需要 Node.js ≥20、Python ≥3.10 和 `ruyiPage==1.2.68`。统一版的首个验收运行时为 RuyiTrace 3.5.0 Firefox159 / BuildID `20261101193257`。运行其他 Firefox build 前需重新验证能力；历史 151 gate 不代表 159 已通过。
+**本仓独立部署 MCP。RuyiTrace 是可选集成，仅借用 Trace 活会话时需要。** [`Dockerfile`](Dockerfile) 默认构建 `core`：Node MCP、Python bridge 和依赖，可直接完成 stdio 握手、列工具和查询状态，无需 Firefox。让 MCP 自启浏览器时，使用 `browser` 目标并只读挂载兼容的 Firefox；借用会话时，另行启动 Trace CLI，由 Trace 持有 Firefox，再把 `descriptorPath` 传给 MCP。两个生产镜像均未内置 Firefox、Trace CLI 或 Electron。
+
+从源码安装需要 Node.js ≥20、Python ≥3.10 和 `ruyiPage==1.2.68`。
 
 ```bash
-git clone https://github.com/Facetomyself/ruyi-mcp.git
+git clone --branch linux https://github.com/Facetomyself/ruyi-mcp.git
 cd ruyi-mcp
+python3 -m venv .venv
+. .venv/bin/activate
 npm ci
 python -m pip install -r requirements.txt
 npm run check
 ```
 
-设置 `RUYI_FIREFOX_PATH` 指向已校验的 Firefox159 可执行文件。不要用 `python -m ruyipage install` 静默替换锁定运行时。仓库跟踪构建产物，开发后执行 `npm run build`。
+仅在 MCP 自启 Firefox 时设置 `RUYI_FIREFOX_PATH`，指向已校验的可执行文件。浏览器能力按实际构建分别验收。仓库跟踪构建产物，修改 TypeScript 后执行 `npm run build`。
 
 Linux 在同一仓库的 [`linux` 分支](https://github.com/Facetomyself/ruyi-mcp/tree/linux) 维护完整项目。独立部署、已验证范围和真机验收命令见 [Linux 迁移说明](docs/linux-port.md)；镜像分层、stdio 容器拓扑和验收顺序见 [Docker 设计](docs/docker-design.md)。
 
