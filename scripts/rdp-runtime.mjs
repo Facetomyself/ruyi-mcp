@@ -63,6 +63,7 @@ const profile = join(output, 'profile');
 await mkdir(profile);
 await writeFile(join(profile, 'user.js'), [
   ['devtools.debugger.remote-enabled', true], ['devtools.chrome.enabled', true], ['devtools.debugger.prompt-connection', false], ['devtools.debugger.remote-port', port], ['devtools.debugger.force-local', true], ['browser.shell.checkDefaultBrowser', false], ['browser.startup.page', 0], ['browser.tabs.warnOnClose', false], ['dom.serviceWorkers.testing.enabled', true],
+  ['browser.aboutwelcome.enabled', false], ['browser.startup.homepage_override.mstone', 'ignore'], ['datareporting.policy.dataSubmissionPolicyBypassNotification', true],
 ].map(([key, value]) => `user_pref(${JSON.stringify(key)}, ${JSON.stringify(value)});`).join('\n'), 'utf8');
 const browser = spawn(firefox, ['-no-remote', '-profile', profile, '-headless', '--start-debugger-server', String(port), 'about:blank'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
 let outputText = '';
@@ -322,10 +323,14 @@ try {
   });
   await check('target-identity-and-reconnect', async () => {
     await assert.rejects(manager.attach({ browserId: 999999 }), error => error.code === 'SESSION_ACTIVE');
-    const epoch = manager.status().epoch;
+    const before = manager.status();
+    const contextId = before.targets.find(target => target.targetId === before.selectedTarget)?.contextId;
+    assert.match(String(contextId), /^\d+$/, 'selected top-level context must have an exact identity');
     await manager.close();
-    await manager.attach({ scope: 'browser', includeSharedWorkers: true, sharedWorkerUrls: [`${origin}/shared.js`], autoResumeAfter: 1 });
-    assert.notEqual(manager.status().epoch, epoch);
+    await manager.attach({ contextId, scope: 'browser', includeSharedWorkers: true, sharedWorkerUrls: [`${origin}/shared.js`], autoResumeAfter: 1 });
+    const after = manager.status();
+    assert.notEqual(after.epoch, before.epoch);
+    assert.equal(after.targets.find(target => target.targetId === after.selectedTarget)?.contextId, contextId);
     await manager.arm();
     const source = (await manager.sources({ urlContains: '/app.js' })).sources[0];
     const breakpoint = await manager.setBreakpoint({ sourceActor: source.actor, line: 3 });
