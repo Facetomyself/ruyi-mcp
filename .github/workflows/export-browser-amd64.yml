@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/export-browser-amd64.yml
       - Dockerfile
+      - src/rdp/transport.ts
   workflow_dispatch:
 
 permissions:

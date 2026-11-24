@@ -47,6 +47,24 @@ test('actor FIFO, events and UTF8 fragmented frames remain distinct', async () =
   } finally { transport.close(); await fixture.close(); }
 });
 
+test('forwarding cancellation cannot consume the pending root getTab reply', async () => {
+  const tab = { actor: 'descriptor', browserId: 9, browsingContextID: 10 };
+  const retirement = { from: 'root', type: 'forwardingCancelled', prefix: 'process5' };
+  const fixture = await server((packet, send) => {
+    assert.equal(packet.type, 'getTab');
+    send(retirement);
+    send({ from: 'root', tab });
+  });
+  const transport = new RdpTransport();
+  try {
+    await transport.open('127.0.0.1', fixture.port);
+    const events = [];
+    transport.on('event', event => events.push(event));
+    assert.deepEqual(await transport.request('root', 'getTab', { browserId: 9 }), { from: 'root', tab });
+    assert.deepEqual(events, [retirement]);
+  } finally { transport.close(); await fixture.close(); }
+});
+
 test('timeout destroys epoch and cannot consume a late reply', async () => {
   const fixture = await server(() => {});
   const transport = new RdpTransport();

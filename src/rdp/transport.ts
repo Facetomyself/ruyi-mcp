@@ -14,6 +14,9 @@ export class RdpError extends Error {
 const EVENTS = new Set([
   'paused', 'resumed', 'newSource', 'tabListChanged', 'workerListChanged',
   'serviceWorkerRegistrationListChanged', 'processListChanged', 'addonListChanged',
+  // A navigation can retire a forwarded process while the root actor is
+  // answering getTab. This notification is separate from the root reply.
+  'forwardingCancelled',
   'target-available-form', 'target-destroyed-form', 'descriptor-destroyed',
   'resources-available-array', 'resources-updated-array', 'resources-destroyed-array',
   'frameUpdate', 'tabNavigated', 'willNavigate', 'navigate', 'documentEvent',

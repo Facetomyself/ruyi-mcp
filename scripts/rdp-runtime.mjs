@@ -87,7 +87,16 @@ try {
     }
     throw lastError;
   });
-  await check('navigate', async () => { await manager.call('debug.navigate', { url: origin }); await delay(600); return manager.status(); });
+  await check('navigate', async () => {
+    await manager.call('debug.navigate', { url: origin });
+    const deadline = Date.now() + 8_000;
+    do {
+      const status = manager.status();
+      if (status.targets.some(target => target.type === 'frame' && target.url === `${origin}/`)) return status;
+      await delay(100);
+    } while (Date.now() < deadline);
+    throw new Error('fixture main target missing after bounded wait');
+  });
   const targets = manager.status().targets;
   const main = targets.find(target => target.type === 'frame' && target.url?.startsWith(origin));
   assert.ok(main, 'fixture main target missing');
