@@ -1,13 +1,13 @@
 # ruyi-mcp Linux Docker 设计
 
-**建议先做 `core` 控制面镜像，再做带原生 Firefox 的 `browser` 镜像。** 浏览器上线后，默认由同一个容器里的 MCP 持有浏览器。RuyiTrace 借用会话是另一条运行链，等原生 Trace 内核就绪后单独验收。本文是设计稿；目前尚未提交 Dockerfile、构建或发布镜像。宿主机已通过的检查见 [Linux 迁移与验收](linux-port.md)。
+当前 Dockerfile 提供 `core` 控制面和 `browser` 依赖层。Firefox 以只读挂载交付，默认由同容器内的 MCP 持有。RuyiTrace 已有经单独验收的 AMD64 原生制品；挂载其内核启动新会话，与接管 Trace owner 的活会话是两条运行链。命令和门禁见下文，宿主验证见 [Linux 迁移与验收](linux-port.md)。
 
 ## 1. 三个交付物，按能力独立升级
 
 | 交付物 | 内容 | 通过后能声明的能力 |
 | --- | --- | --- |
 | `core` OCI 镜像 | Node、已构建 MCP、Python 虚拟环境、ruyiPage | MCP `initialize`、工具发现、真实 Python 桥接、无浏览器启动状态；工具存在与实际能力是两回事 |
-| `browser` OCI 镜像 | 基于同一 `core`，添加目标架构的 Linux Firefox 运行目录及系统依赖 | 使用该 Firefox 构建在本地 fixture 验收 BiDi、下载、回收、RDP；记录实际通过的能力 |
+| `browser` OCI 镜像 | 基于同一 `core` 添加系统依赖，通过只读挂载提供目标架构的 Firefox 目录 | 使用挂载的 Firefox 构建在本地 fixture 验收 BiDi、下载、回收、RDP；记录实际通过的能力 |
 | RuyiTrace Linux 运行时 | Trace 项目交付内核与 owner，含实际 Firefox BuildID、架构、运行目录和校验清单 | Trace owner 同会话、DOMTrace 和输出封存；普通 Firefox 结果与此分开记录 |
 
 开发调试可先把经校验的**完整浏览器目录**只读挂载到 `/opt/firefox`，并确保镜像层已有匹配的系统动态库。正式发布使用架构匹配的浏览器镜像层，选定基础镜像 digest 与浏览器制品版本并记录校验结果，避免容器启动时下载或切换内核。Windows `.exe` 与 Linux ELF 属于不同 ABI，`--platform` 选择的是镜像架构，无法把 Windows 内核变成 Linux 内核。
@@ -32,9 +32,19 @@
 - 当前 `ruyi_new_page` 的 `headless` 默认是 `false`。容器首次建页时显式传 `headless: true`，避免依赖 X11/Wayland。是否加 Xvfb 放在确有 headed 验收需求后。
 - 运行 MCP 客户端的宿主进程需要 Docker 启动权限。优先专用账号与 rootless Docker；应用容器内只运行 MCP、桥接和由它管理的浏览器进程。
 
-### 客户端配置草案
+### 构建、烟测和客户端配置
 
-下面的镜像、用户和目录是**设计约定**，以镜像实现和发布为前提。宿主先建证据目录，并让容器中 UID 10001 有写权限（rootless 采用实际 UID 映射）。面向专用 fixture 的运行可以额外传 `--network=none`。
+```bash
+docker build --platform linux/amd64 --target core -t ruyi-mcp:core .
+node scripts/container-smoke.mjs ruyi-mcp:core
+docker build --platform linux/amd64 --target browser -t ruyi-mcp:browser .
+# FIREFOX_DIR 指向已按发布收据验过的完整 Linux AMD64 目录。
+node scripts/container-smoke.mjs ruyi-mcp:browser browser "$FIREFOX_DIR"
+```
+
+`core` 烟测覆盖 MCP 握手、工具列表、真实 Python 桥接、非 root UID 以及 stdin EOF/SIGTERM 两条关闭路径。`browser` 烟测另外用封闭网络下的本地 `data:` fixture 验证真实 Firefox 导航、状态与退出。CI 的 `browser-test` 使用 Debian Firefox ESR，仅是参考浏览器，不代替 Trace 制品联验。发布镜像尚未上传到注册表。
+
+宿主先建证据目录，并让容器中 UID 10001 有写权限（rootless 采用实际 UID 映射）。替换以下两个绝对路径后，客户端用刚构建的本地标签启动。
 
 ```json
 {
@@ -48,12 +58,9 @@
         "--shm-size", "256m", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges=true",
         "--mount", "type=bind,src=/absolute/host/ruyi-evidence,dst=/evidence",
-        "-e", "HOME=/tmp",
-        "-e", "RUYI_MCP_PYTHON=/opt/venv/bin/python",
-        "-e", "RUYI_MCP_PROFILE_ROOT=/tmp/ruyi-profiles",
-        "-e", "RUYI_FIREFOX_PATH=/opt/firefox/firefox",
+        "--mount", "type=bind,src=/absolute/host/trace-kernel,dst=/opt/firefox,readonly",
         "-e", "RUYI_MCP_TOOLSET=compact",
-        "[browser-image@sha256:digest]"
+        "ruyi-mcp:browser"
       ]
     }
   }
@@ -83,4 +90,18 @@
 | P1：`browser` | 原生架构文件/hash/BuildID 校验；同容器本地 fixture 通过自动化、下载、RDP、Firefox 退出与 profile 回收；并发两个容器验证目录隔离 | ELF 架构、动态库、目录权限、共享内存、容器/Firefox 沙箱 |
 | P2：Trace 同会话 | Linux Trace owner 留有有效 descriptor；验收 attach、暂停、恢复、detach、回收 lease、owner flush 和 DOMTrace 输出 | loopback 命名空间、目录共享、owner 状态、内核或 runtime 身份 |
 
-容器化首个 PR 只交付 **P0 的 Dockerfile、`.dockerignore`、构建/启动说明与 CI smoke**，保留浏览器层接口。这样即使 Linux Trace 内核仍在迁移，镜像交付和 stdio 生命周期也能先独立通过验收。
+P1 的完整 runtime 门禁使用挂载后的同一个内核执行。以下命令在容器内部建立 loopback fixture，工作目录在 tmpfs；脚本和报告目录单独挂载。执行前完成 Firefox 架构、BuildID 和制品哈希校验。这里的 RDP 测试针对本地 fixture；Trace owner 租约不由此覆盖。
+
+```bash
+docker run --rm --init --network=none --read-only \
+  --tmpfs /tmp:rw,nosuid,nodev,size=1g,mode=1777 --shm-size=256m \
+  --cap-drop=ALL --security-opt=no-new-privileges=true \
+  --mount "type=bind,src=$FIREFOX_DIR,dst=/opt/firefox,readonly" \
+  --mount "type=bind,src=$PWD/scripts,dst=/app/scripts,readonly" \
+  --mount "type=bind,src=$RUYI_EVIDENCE_DIR,dst=/evidence" \
+  -e RUYI_RDP_EVIDENCE_ROOT=/evidence/rdp \
+  --entrypoint /bin/sh ruyi-mcp:browser -ec '
+    /opt/venv/bin/python /app/scripts/runtime_download_behavior.py
+    node /app/scripts/rdp-runtime.mjs
+  '
+```

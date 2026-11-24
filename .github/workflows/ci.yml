@@ -24,3 +24,31 @@ jobs:
       - run: npm run check
       - run: git diff --exit-code -- build
       - run: npm audit --omit=dev
+
+  container:
+    name: Container (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Build and verify the core image
+        run: |
+          docker build --platform linux/${{ matrix.arch }} --target core -t ruyi-mcp:ci-core .
+          test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' ruyi-mcp:ci-core)" = 'linux/${{ matrix.arch }}'
+          node scripts/container-smoke.mjs ruyi-mcp:ci-core
+      - name: Verify the browser layer with stock Firefox ESR
+        if: matrix.arch == 'amd64'
+        run: |
+          docker build --platform linux/amd64 --target browser-test -t ruyi-mcp:ci-firefox .
+          node scripts/container-smoke.mjs ruyi-mcp:ci-firefox browser

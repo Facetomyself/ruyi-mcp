@@ -1,0 +1,17 @@
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!requirements.txt
+!requirements-container.txt
+!tsconfig.json
+!src/
+!src/**
+!bridge/
+!bridge/**
+!contracts/
+!contracts/**
+!scripts/
+!scripts/**
+**/__pycache__/
+**/*.pyc
