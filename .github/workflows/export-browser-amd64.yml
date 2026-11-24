@@ -7,6 +7,9 @@ on:
       - .github/workflows/export-browser-amd64.yml
       - Dockerfile
       - src/rdp/transport.ts
+      - src/rdp/index.ts
+      - src/borrowed-session.ts
+      - src/ruyi-context.ts
       - scripts/rdp-runtime.mjs
   workflow_dispatch:
 

@@ -64,7 +64,14 @@ export class BorrowedTraceSession {
     async currentDescriptor() {
         const current = await readDescriptor(this.sessionPath);
         BorrowedTraceSession.validate(current);
-        if (current.runId !== this.descriptor.runId || current.browser.pid !== this.descriptor.browser.pid || current.browser.creationTime !== this.descriptor.browser.creationTime || current.runtime.binarySha256 !== this.descriptor.runtime.binarySha256 || current.control.endpoint !== this.descriptor.control.endpoint) {
+        const previous = this.descriptor;
+        if (current.runId !== previous.runId || current.browser.pid !== previous.browser.pid ||
+            current.browser.creationTime !== previous.browser.creationTime || current.browser.executablePath !== previous.browser.executablePath ||
+            current.runtime.binarySha256 !== previous.runtime.binarySha256 || current.runtime.buildId !== previous.runtime.buildId ||
+            current.bidi.contextId !== previous.bidi.contextId || current.control.endpoint !== previous.control.endpoint ||
+            current.control.token !== previous.control.token || current.rdp?.host !== previous.rdp?.host ||
+            current.rdp?.port !== previous.rdp?.port || current.rdp?.transport !== previous.rdp?.transport ||
+            current.rdp?.browserId !== previous.rdp?.browserId || current.rdp?.browsingContextId !== previous.rdp?.browsingContextId) {
             throw new Error('Trace session identity changed; detach and attach the new descriptor');
         }
         this.descriptor = current;

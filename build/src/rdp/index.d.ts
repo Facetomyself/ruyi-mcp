@@ -77,6 +77,7 @@ export declare class NativeDebuggerManager extends EventEmitter {
     status(): Packet;
     private updateConfiguration;
     arm(): Promise<Packet>;
+    private pausedTargetsNewestFirst;
     observe(): Promise<Packet>;
     sources(args?: Packet): Promise<Packet>;
     private source;

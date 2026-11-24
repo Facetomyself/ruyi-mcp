@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'node:net';
 import test from 'node:test';
+import { NativeDebuggerManager } from '../build/src/rdp/index.js';
 import { RdpTransport } from '../build/src/rdp/transport.js';
 
 const encode = packet => { const body = Buffer.from(JSON.stringify(packet)); return Buffer.concat([Buffer.from(`${body.length}:`), body]); };
@@ -85,3 +87,63 @@ test('disconnect rejects concurrent actors', async () => {
     assert.ok(results.every(result => result.status === 'rejected'));
   } finally { transport.close(); await fixture.close(); }
 });
+
+test('native owner IPC correlates replies before accepting lease state', async () => {
+  const seen = [];
+  const owner = createHttpServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    seen.push(body.requestId);
+    const packet = seen.length === 1 ? { requestId: body.requestId, ok: true, result: { accepting: true } } :
+      seen.length === 2 ? { requestId: seen[0], ok: true, result: { leaseId: 'stale' } } :
+      { requestId: body.requestId, ok: false, error: { code: 'LEASE_BUSY', message: 'Lease already in use' } };
+    response.setHeader('content-type', 'application/json');
+    response.end(JSON.stringify(packet));
+  });
+  await new Promise(resolve => owner.listen(0, '127.0.0.1', resolve));
+  const descriptor = { port: 1, lease: { endpoint: `http://127.0.0.1:${owner.address().port}`, target: 'bidi-context' } };
+  const manager = new NativeDebuggerManager(async () => descriptor);
+  try {
+    await manager.configure(descriptor);
+    assert.deepEqual(await manager.lease('status'), { accepting: true });
+    await assert.rejects(manager.attach(), { code: 'LEASE_RESPONSE_MISMATCH' });
+    await assert.rejects(manager.attach(), { code: 'LEASE_BUSY' });
+    assert.equal(new Set(seen).size, 3);
+  } finally {
+    await manager.close();
+    owner.closeAllConnections();
+    await new Promise(resolve => owner.close(resolve));
+  }
+});
+
+for (const resumeFails of [false, true]) {
+  test(`native close resumes nested pauses by event order (${resumeFails ? 'resume fails' : 'resume succeeds'})`, async () => {
+    const operations = [];
+    const fixture = await server((packet, send) => {
+      operations.push(`${packet.to}:${packet.type}`);
+      if (resumeFails && packet.to === 'first') send({ from: packet.to, error: 'wrongOrder' });
+      else send({ from: packet.to });
+    });
+    const transport = new RdpTransport();
+    const manager = new NativeDebuggerManager(async () => null);
+    try {
+      await transport.open('127.0.0.1', fixture.port);
+      transport.on('closed', () => operations.push('transport:closed'));
+      manager.transport = transport;
+      manager.mode = 'armed';
+      manager.ownsLease = true;
+      manager.lease = async (action, args) => { operations.push([action, args]); };
+      for (const thread of ['first', 'second']) {
+        manager.targets.set(thread, { id: thread, thread, grips: new Map() });
+      }
+      manager.handleEvent({ from: 'second', type: 'paused' });
+      manager.handleEvent({ from: 'first', type: 'paused' });
+      assert.deepEqual(operations.splice(0), [['lease.pause', { paused: true }], ['lease.pause', { paused: true }]]);
+      await manager.close();
+      assert.deepEqual(operations, [
+        'first:resume', 'second:resume', 'transport:closed', ['lease.release', { resumed: !resumeFails }],
+      ]);
+    } finally { await manager.close(); transport.close(); await fixture.close(); }
+  });
+}

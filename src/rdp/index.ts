@@ -22,6 +22,7 @@ interface Target {
   type: string;
   paused?: Packet;
   pauseId?: string;
+  pauseSequence?: number;
   watchdog?: NodeJS.Timeout;
   grips: Map<string, string>;
   ready: Promise<void>;
@@ -113,12 +114,14 @@ export class NativeDebuggerManager extends EventEmitter {
     if (!lease) return null;
     const endpoint = new URL(lease.endpoint);
     if (!['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname)) throw new RdpError('LEASE_ENDPOINT', 'Owner IPC must use loopback');
+    const requestId = randomUUID();
     const response = await fetch(new URL('/command', endpoint), {
-      method: 'POST', signal: AbortSignal.timeout(2000), headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ requestId: randomUUID(), target: lease.target, action, args, timeoutMs: 1500, token: lease.token, leaseId: lease.leaseId }),
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(2000), headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requestId, target: lease.target, action, args, timeoutMs: 1500, token: lease.token, leaseId: lease.leaseId }),
     });
-    const packet = await response.json() as Packet;
-    if (!response.ok || !packet.ok) throw new RdpError(packet.error?.code ?? 'LEASE_FAILED', packet.error?.message ?? 'Owner command failed');
+    const packet = await response.json() as Packet | null;
+    if (packet?.requestId !== requestId) throw new RdpError('LEASE_RESPONSE_MISMATCH', 'Owner response requestId does not match the command');
+    if (!response.ok || packet.ok !== true) throw new RdpError(packet.error?.code ?? 'LEASE_FAILED', packet.error?.message ?? 'Owner command failed');
     return packet.result;
   }
 
@@ -184,7 +187,8 @@ export class NativeDebuggerManager extends EventEmitter {
     try {
       if (this.descriptor.lease && !this.descriptor.lease.leaseId) {
         const leased = await this.lease('lease.acquire', { seconds: 120 });
-        this.descriptor.lease.leaseId = leased?.leaseId;
+        if (typeof leased?.leaseId !== 'string' || !leased.leaseId) throw new RdpError('LEASE_FAILED', 'Owner did not return a lease ID');
+        this.descriptor.lease.leaseId = leased.leaseId;
         this.ownsLease = true;
       }
       await transport.open(this.descriptor.host ?? '127.0.0.1', this.descriptor.port);
@@ -238,7 +242,7 @@ export class NativeDebuggerManager extends EventEmitter {
   }
 
   private invalidate(error: Error): void {
-    for (const target of this.targets.values()) { clearTimeout(target.watchdog); target.grips.clear(); target.paused = undefined; target.pauseId = undefined; }
+    for (const target of this.targets.values()) { clearTimeout(target.watchdog); target.grips.clear(); target.paused = undefined; target.pauseId = undefined; target.pauseSequence = undefined; }
     for (const waiter of this.evaluationWaiters.values()) { clearTimeout(waiter.timer); waiter.reject(error); }
     this.evaluationWaiters.clear();
     this.evaluationResults.clear();
@@ -378,12 +382,13 @@ export class NativeDebuggerManager extends EventEmitter {
     const target = [...this.targets.values()].find(item => item.thread === packet.from);
     if (!target) return;
     if (packet.type === 'resumed') {
-      clearTimeout(target.watchdog); target.paused = undefined; target.pauseId = undefined; target.grips.clear();
-      void this.lease('lease.pause', { paused: [...this.targets.values()].some(item => Boolean(item.paused)) }).catch(() => {});
+      clearTimeout(target.watchdog); target.paused = undefined; target.pauseId = undefined; target.pauseSequence = undefined; target.grips.clear();
+      if (!this.closing) void this.lease('lease.pause', { paused: [...this.targets.values()].some(item => Boolean(item.paused)) }).catch(() => {});
       this.emit('resumed', { targetId: target.id });
     } else if (packet.type === 'paused') {
       clearTimeout(target.watchdog);
-      target.pauseId = `${this.transport!.epoch}:${++this.sequence}`;
+      target.pauseSequence = ++this.sequence;
+      target.pauseId = `${this.transport!.epoch}:${target.pauseSequence}`;
       target.paused = packet;
       target.grips.clear();
       this.rememberGrips(target, packet);
@@ -441,10 +446,17 @@ export class NativeDebuggerManager extends EventEmitter {
     return this.status();
   }
 
+  private pausedTargetsNewestFirst(): Target[] {
+    // Firefox requires nested debugger event loops to resume in pause order,
+    // newest first. Target registration order is independent of pause order.
+    return [...this.targets.values()].filter(target => target.paused)
+      .sort((a, b) => (b.pauseSequence ?? 0) - (a.pauseSequence ?? 0));
+  }
+
   async observe(): Promise<Packet> {
     await this.updateConfiguration({ skipBreakpoints: true, shouldPauseOnDebuggerStatement: false, pauseOnExceptions: false });
     this.mode = 'observe';
-    for (const target of [...this.targets.values()].reverse()) if (target.paused) await this.resume(target.id);
+    for (const target of this.pausedTargetsNewestFirst()) if (target.paused) await this.resume(target.id);
     return this.status();
   }
 
@@ -579,7 +591,7 @@ export class NativeDebuggerManager extends EventEmitter {
       params.frameActorID = frameActor;
     }
     await this.connection().request(target.thread, 'resume', params);
-    if (target.pauseId === pauseId) { clearTimeout(target.watchdog); target.paused = undefined; target.pauseId = undefined; target.grips.clear(); }
+    if (target.pauseId === pauseId) { clearTimeout(target.watchdog); target.paused = undefined; target.pauseId = undefined; target.pauseSequence = undefined; target.grips.clear(); }
     return { resumed: true, invalidatedPauseId: pauseId, targetId: target.id, ...this.pauseSummary(target) };
   }
 
@@ -822,14 +834,18 @@ export class NativeDebuggerManager extends EventEmitter {
   private async closeInternal(): Promise<void> {
     clearInterval(this.leaseTimer);
     this.leaseTimer = undefined;
-    if (this.transport?.connected) {
-      for (const target of [...this.targets.values()].reverse()) {
-        clearTimeout(target.watchdog);
-        if (target.paused) await this.resume(target.id).catch(() => {});
-      }
-      this.transport.close();
+    const transport = this.transport;
+    let resumed = false;
+    for (const target of this.targets.values()) clearTimeout(target.watchdog);
+    if (transport?.connected) {
+      for (const target of this.pausedTargetsNewestFirst()) if (target.paused) await this.resume(target.id).catch(() => {});
+      resumed = transport.connected && this.pausedTargetsNewestFirst().length === 0;
+      transport.close();
     }
-    await this.lease(this.ownsLease ? 'lease.release' : 'lease.pause', this.ownsLease ? { resumed: true } : { paused: false }).catch(() => {});
+    // These are advisory notifications. Local socket destruction and an HTTP
+    // reply are not acknowledgements of remote RDP teardown by Firefox.
+    if (this.ownsLease) await this.lease('lease.release', { resumed }).catch(() => {});
+    else if (resumed) await this.lease('lease.pause', { paused: false }).catch(() => {});
     if (this.ownsLease && this.descriptor?.lease) this.descriptor.lease.leaseId = undefined;
     this.ownsLease = false;
     this.targets.clear(); this.breakpoints.clear(); this.sourceOwners.clear(); this.maps.clear();

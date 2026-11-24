@@ -91,7 +91,7 @@ export class RuyiContext {
   async getNativeDebugSession() {
     if (this.borrowedSession) {
       const descriptor = await this.borrowedSession.currentDescriptor();
-      if (!descriptor.rdp) return null;
+      if (!descriptor.rdp) throw new Error('Borrowed Trace owner has no RDP reservation');
       return {
         host: descriptor.rdp.host, port: descriptor.rdp.port, contextId: descriptor.rdp.browsingContextId, browserId: descriptor.rdp.browserId,
         runId: descriptor.runId, pid: descriptor.browser.pid, owner: 'external' as const,

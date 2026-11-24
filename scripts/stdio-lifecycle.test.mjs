@@ -97,7 +97,9 @@ test('closed MCP stdout is handled as EPIPE instead of an uncaught stream error'
     if (child.exitCode === null) child.kill('SIGKILL');
   });
 
-  const readyDeadline = Date.now() + 1500;
+  // Startup may share a loaded runner with native build jobs. Keep the strict
+  // exit deadline below independent of this startup allowance.
+  const readyDeadline = Date.now() + 5000;
   while (!stderr.includes('Ready. Waiting for MCP requests...') && Date.now() < readyDeadline) {
     await delay(10);
   }
