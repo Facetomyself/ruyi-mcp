@@ -1,0 +1,34 @@
+name: Export AMD64 browser dependencies
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and export the browser image without a kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ruyi-mcp:browser-amd64-${GITHUB_SHA:0:12}"
+          docker build --platform linux/amd64 --target browser --build-arg "RUYI_MCP_REVISION=$GITHUB_SHA" -t "$image" .
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = linux/amd64
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$GITHUB_SHA"
+          docker run --rm --network=none --entrypoint /bin/sh "$image" -ec 'test ! -e "$RUYI_FIREFOX_PATH"'
+          mkdir export
+          docker image inspect --format '{{.Id}}' "$image" > export/image-id.txt
+          docker save "$image" | gzip -1 > export/browser-amd64.tar.gz
+          (cd export && sha256sum browser-amd64.tar.gz image-id.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ruyi-mcp-browser-amd64
+          path: export/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
