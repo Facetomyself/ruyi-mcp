@@ -43,7 +43,7 @@ Unsupported native combinations are reported explicitly: worker outbound XHR/fet
 
 Discover the Trace-session tools and supply the absolute path to the owner's restricted `runtime/session.json`. Never expose its authentication material. The Trace worker remains the only BiDi and browser-lifecycle owner; automation uses its bounded navigate/query/click/fill/press/scroll/wait/screenshot interface, while RDP handles pause and resume independently.
 
-The default observation lease is 120 seconds with a 600-second total window. Stop or expiry restores execution and detaches before the owner closes Firefox, drains the writer, indexes evidence, and emits the receipt. Completed captures cannot provide historical live scopes that were never recorded.
+Use the exact `descriptorPath` reported by the Trace CLI. MCP requests a 120-second exclusive lease. In borrowed mode, `ruyi_browser_status.controlAvailable` reports control separately from owner liveness. `leaseState: "revoked"` is terminal for that attachment; `"unknown"` means the owner has not confirmed the lease. `observe` and `act` accept only page 0 and the published top-level BiDi context; a mismatched scope returns `UNSUPPORTED_SCOPE` before contacting the owner. Snapshots are specific to the run and context. Borrowed `quit` returns `effect: "lease_released"` only on owner acknowledgement, or `"lease_already_lost"` on confirmed loss; `browserDisposition: "retained_by_owner"` describes ownership, not a fresh liveness probe. Unconfirmed release failures are retryable. Run `npm run build && npm run check:borrowed-behaviors` for the stdio contract tests.
 
 ## Compatibility and data
 

@@ -32,15 +32,24 @@ export interface TraceSessionDescriptor {
         token: string;
     };
 }
+type BorrowedScope = {
+    pageIdx?: unknown;
+    frameContextId?: unknown;
+};
 export declare class BorrowedTraceSession {
     readonly sessionPath: string;
     private leaseId;
+    private leaseLost;
+    private controlConfirmed;
     private descriptor;
     private snapshot;
     private constructor();
     static attach(sessionPath: string): Promise<BorrowedTraceSession>;
     private static validate;
     currentDescriptor(): Promise<TraceSessionDescriptor>;
+    assertScope({ pageIdx, frameContextId }: BorrowedScope): void;
+    private loseControl;
+    private assertLease;
     command(action: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>>;
     status(): Promise<Record<string, unknown>>;
     private validateOwner;
@@ -50,7 +59,8 @@ export declare class BorrowedTraceSession {
         token: string;
         leaseId?: string;
     };
-    release(): Promise<void>;
-    observe(maxNodes?: number): Promise<Record<string, unknown>>;
+    release(): Promise<'lease_released' | 'lease_already_lost'>;
+    observe(maxNodes?: number, scope?: BorrowedScope): Promise<Record<string, unknown>>;
     act(args: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
+export {};

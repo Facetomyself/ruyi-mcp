@@ -22,7 +22,9 @@
     "check:agent-runtime": "python scripts/runtime_agent_loop.py",
     "smoke": "node scripts/smoke-list-tools.mjs",
     "snapshot:tools": "npm run build && node scripts/smoke-list-tools.mjs --update-snapshot",
-    "check:lifecycle": "node --test scripts/server-contract.test.mjs scripts/bridge-lifecycle.test.mjs scripts/stdio-lifecycle.test.mjs scripts/tool-registry.test.mjs scripts/borrowed-session.test.mjs scripts/debug-evidence.test.mjs",
+    "check:lifecycle": "node --test scripts/server-contract.test.mjs scripts/bridge-lifecycle.test.mjs scripts/stdio-lifecycle.test.mjs scripts/tool-registry.test.mjs scripts/borrowed-session.test.mjs scripts/debug-evidence.test.mjs && npm run check:borrowed-behaviors",
+    "check:borrowed-behaviors": "node --test scripts/borrowed-behaviors.test.mjs",
+    "check:borrowed-native": "node scripts/borrowed-behaviors-native.mjs",
     "check": "npm run typecheck && npm run check:python && npm run check:contract && npm run build && npm run smoke && npm run check:lifecycle && npm run check:rdp",
     "start": "node build/src/index.js",
     "dev": "tsc && node build/src/index.js"

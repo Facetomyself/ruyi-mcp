@@ -77,9 +77,17 @@ source map 解析支持 simple/indexed map、内联数据和本地文件；远�
 
 ## 借用 Trace 活会话
 
-使用 `ruyi_search_tools` 查找 Trace session 工具，提供原 owner 写入的本地 `runtime/session.json` 绝对路径。该文件含受控 IPC 凭据，不得粘贴到对话或提交 Git。
+将 Trace CLI `start --mcp --json` 返回的 `descriptorPath` 原样传给 `ruyi_attach_trace_session`。只传路径；文件内含进程私有 IPC 凭据。owner 提供 navigate/query/click/fill/press/scroll/wait/screenshot，RDP 独立处理暂停恢复。MCP 请求 120 秒排他租约，归还或到期只结束此次借用；Firefox 的关闭和采集收尾由 Trace 决定。
 
-原 owner 提供 navigate/query/click/fill/press/scroll/wait/screenshot；RDP 独立处理暂停恢复。租约默认 120 秒，总观察窗口最多 600 秒。租约到期或 stop 后恢复、detach，再由 owner 退出、flush、索引并生成 receipt。进入 flushing 后拒绝新的附着。
+| 借用态契约 | 调用方如何判定 |
+| --- | --- |
+| 控制权与存活分开 | `ruyi_browser_status` 返回 `sessionMode:"borrowed"`、`browserState`、`leaseState`、`controlAvailable`。owner 仍就绪而租约失效时，`alive:true`、`leaseState:"revoked"`、`controlAvailable:false`。owner 未确认租约时是 `unknown/false`。以 `controlAvailable` 判断能否操作；同一借用一旦确认失效，即使迟到的状态响应报 active，也须重新借用。 |
+| 页面范围严格匹配 | `ruyi_observe` / `ruyi_act` 只接受 `pageIdx:0` 和当前 owner 的顶层 BiDi `frameContextId`（两者均可省略）。其他范围返回 `UNSUPPORTED_SCOPE`，在发送任何 owner 请求前结束。`ruyi_navigate_page` 同样校验页号。快照携带 `runId` 与 `contextId`；重新借用后须重新 observe。 |
+| 退出按真实效果返回 | 成功归还：`{"quit":true,"effect":"lease_released","owner":"ruyitrace","browserDisposition":"retained_by_owner"}`。已经失效则为 `lease_already_lost`。未确认归还的通信故障返回工具错误，保留借用以便重试。`retained_by_owner` 表示生命周期仍归 Trace 管理，而非额外探测到的存活证明。 |
+
+复现协议回归：`npm ci && npm run build && npm run check:borrowed-behaviors`。该测试通过 SDK stdio 运行真实 MCP，以可计数的回环 owner 验证响应、请求数和页面副作用，默认包含在 `npm run check`。
+
+原生联验单独运行：在专用 Linux 容器中设置绝对路径 `TRACE_CLI`（已构建的 `bin/ruyitrace`）、`RUYI_FIREFOX_PATH`（同架构 R5 Firefox）、`TRACE_RECEIPT`（内核身份回执）和 `TRACE_ACCEPTANCE`（同包闸门验收回执）。构建 MCP 后执行 `npm run check:borrowed-native`。脚本创建本地测试页面，等待第二次借用的真实 120 秒租约耗尽，结果以 JSON 输出；正常回归不需要等待这个计时器。
 
 最终 trace 索引依赖正常收尾，不能承诺 completed 后仍有原 live scope。调试和求值干预单独记录，业务验收使用恢复正常执行的路径。
 

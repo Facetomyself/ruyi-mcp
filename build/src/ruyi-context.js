@@ -22,6 +22,7 @@ function createInitialState() {
 export class RuyiContext {
     bridge;
     debuggerManager;
+    borrowedRelease;
     borrowedSession;
     debugEvidence = new DebugEvidence();
     state = createInitialState();
@@ -73,16 +74,21 @@ export class RuyiContext {
         return this.borrowedSession.status();
     }
     async releaseBorrowedSession() {
-        if (!this.borrowedSession)
+        if (this.borrowedRelease)
+            return this.borrowedRelease;
+        const session = this.borrowedSession;
+        if (!session)
             return;
-        await this.debuggerManager?.close();
-        try {
-            await this.borrowedSession.release();
-        }
-        finally {
-            this.borrowedSession = undefined;
-            this.state = createInitialState();
-        }
+        this.borrowedRelease = Promise.resolve().then(async () => {
+            await this.debuggerManager?.close();
+            const effect = await session.release();
+            if (this.borrowedSession === session) {
+                this.borrowedSession = undefined;
+                this.state = createInitialState();
+            }
+            return effect;
+        }).finally(() => { this.borrowedRelease = undefined; });
+        return this.borrowedRelease;
     }
     // ------------------------------------------------------------------
     // Lifecycle
@@ -107,11 +113,13 @@ export class RuyiContext {
         return result;
     }
     async quit() {
-        await this.debuggerManager?.close();
-        if (this.borrowedSession) {
-            await this.releaseBorrowedSession();
+        if (this.borrowedSession || this.borrowedRelease) {
+            const effect = await this.releaseBorrowedSession();
+            if (effect)
+                return { quit: true, effect, owner: 'ruyitrace', browserDisposition: 'retained_by_owner' };
             return;
         }
+        await this.debuggerManager?.close();
         try {
             await this.bridge.call('browser.quit', {}, 10000);
         }

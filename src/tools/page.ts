@@ -257,6 +257,7 @@ export function registerPageTools(register: ToolRegistrar, ctx: RuyiContext): vo
     handler: (async (args) => {
       const navType = (args.type as string) || 'url';
       if (ctx.borrowedSession) {
+        ctx.borrowedSession.assertScope(args);
         if (navType !== 'url' || !args.url) throw new Error('Borrowed navigation requires type=url and url');
         return { content: [{ type: 'text', text: jsonResult(await ctx.borrowedSession.command('navigate', { url: args.url }, Math.min(Number(args.timeout ?? 30) * 1000, 30000))) }] };
       }

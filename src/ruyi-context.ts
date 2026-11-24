@@ -58,9 +58,19 @@ function createInitialState(): SessionState {
   };
 }
 
+type BorrowedReleaseEffect = Awaited<ReturnType<BorrowedTraceSession['release']>>;
+
+interface BorrowedQuitResult {
+  quit: true;
+  effect: BorrowedReleaseEffect;
+  owner: 'ruyitrace';
+  browserDisposition: 'retained_by_owner';
+}
+
 export class RuyiContext {
   private bridge: PythonBridge;
   private debuggerManager: NativeDebuggerManager | undefined;
+  private borrowedRelease: Promise<BorrowedReleaseEffect> | undefined;
   borrowedSession: BorrowedTraceSession | undefined;
   readonly debugEvidence = new DebugEvidence();
   state: SessionState = createInitialState();
@@ -114,15 +124,20 @@ export class RuyiContext {
     return this.borrowedSession.status();
   }
 
-  async releaseBorrowedSession(): Promise<void> {
-    if (!this.borrowedSession) return;
-    await this.debuggerManager?.close();
-    try {
-      await this.borrowedSession.release();
-    } finally {
-      this.borrowedSession = undefined;
-      this.state = createInitialState();
-    }
+  async releaseBorrowedSession(): Promise<BorrowedReleaseEffect | undefined> {
+    if (this.borrowedRelease) return this.borrowedRelease;
+    const session = this.borrowedSession;
+    if (!session) return;
+    this.borrowedRelease = Promise.resolve().then(async () => {
+      await this.debuggerManager?.close();
+      const effect = await session.release();
+      if (this.borrowedSession === session) {
+        this.borrowedSession = undefined;
+        this.state = createInitialState();
+      }
+      return effect;
+    }).finally(() => { this.borrowedRelease = undefined; });
+    return this.borrowedRelease;
   }
 
   // ------------------------------------------------------------------
@@ -152,12 +167,13 @@ export class RuyiContext {
     return result;
   }
 
-  async quit(): Promise<void> {
-    await this.debuggerManager?.close();
-    if (this.borrowedSession) {
-      await this.releaseBorrowedSession();
+  async quit(): Promise<BorrowedQuitResult | void> {
+    if (this.borrowedSession || this.borrowedRelease) {
+      const effect = await this.releaseBorrowedSession();
+      if (effect) return { quit: true, effect, owner: 'ruyitrace', browserDisposition: 'retained_by_owner' };
       return;
     }
+    await this.debuggerManager?.close();
     try {
       await this.bridge.call('browser.quit', {}, 10000);
     } catch {

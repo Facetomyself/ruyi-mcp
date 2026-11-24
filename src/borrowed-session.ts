@@ -28,13 +28,23 @@ async function readDescriptor(sessionPath: string): Promise<TraceSessionDescript
   if (!metadata.isFile() || metadata.size > 65536) throw new Error('Trace descriptor exceeds the 64 KiB limit');
   const content = await readFile(sessionPath, 'utf8');
   if (Buffer.byteLength(content, 'utf8') > 65536) throw new Error('Trace descriptor exceeds the 64 KiB limit');
-  return JSON.parse(content) as TraceSessionDescriptor;
+  try { return JSON.parse(content) as TraceSessionDescriptor; }
+  catch { throw new Error('Invalid Trace descriptor JSON'); }
 }
+
+class BorrowedOwnerError extends Error {
+  constructor(readonly code: string, message: string) { super(`Trace owner ${code}: ${message}`); }
+}
+
+const terminalLeaseError = (code: string) => ['LEASE_INVALID', 'LEASE_EXPIRED', 'LEASE_REVOKED', 'OWNER_EXPIRED'].includes(code);
+type BorrowedScope = { pageIdx?: unknown; frameContextId?: unknown };
 
 export class BorrowedTraceSession {
   private leaseId: string | undefined;
+  private leaseLost = false;
+  private controlConfirmed = false;
   private descriptor: TraceSessionDescriptor;
-  private snapshot: { id: string; elements: Array<Record<string, unknown>>; createdAt: number } | undefined;
+  private snapshot: { id: string; runId: string; contextId: string; elements: Array<Record<string, unknown>>; createdAt: number } | undefined;
 
   private constructor(readonly sessionPath: string, descriptor: TraceSessionDescriptor) {
     this.descriptor = descriptor;
@@ -51,6 +61,7 @@ export class BorrowedTraceSession {
     const lease = await session.command('lease.acquire', { seconds: 120 });
     if (typeof lease.leaseId !== 'string' || !lease.leaseId) throw new Error('Trace owner did not grant a lease');
     session.leaseId = lease.leaseId;
+    session.controlConfirmed = true;
     return session;
   }
 
@@ -62,7 +73,7 @@ export class BorrowedTraceSession {
       throw new Error('Incomplete RuyiTrace live-session descriptor');
     }
     endpoint(descriptor.control.endpoint);
-    if (descriptor.expiresAt && Date.parse(descriptor.expiresAt) <= Date.now()) throw new Error('Trace session descriptor expired');
+    if (descriptor.expiresAt !== undefined && !Number.isFinite(Date.parse(descriptor.expiresAt))) throw new Error('Invalid Trace descriptor expiry');
     if (!['capturing', 'observing'].includes(descriptor.phase)) throw new Error('Trace owner is no longer active');
     if (!/^[a-f0-9]{64}$/i.test(descriptor.runtime.binarySha256 || '') || !/^\d{14}$/.test(descriptor.runtime.buildId || '') || !descriptor.browser.creationTime || !isAbsolute(descriptor.browser.executablePath)) {
       throw new Error('Trace runtime identity is incomplete');
@@ -85,32 +96,78 @@ export class BorrowedTraceSession {
         current.rdp?.browserId !== previous.rdp?.browserId || current.rdp?.browsingContextId !== previous.rdp?.browsingContextId) {
       throw new Error('Trace session identity changed; detach and attach the new descriptor');
     }
+    if (current.expiresAt && Date.parse(current.expiresAt) <= Date.now()) {
+      if (this.leaseId) this.loseControl();
+      throw new BorrowedOwnerError('OWNER_EXPIRED', 'Trace publication has expired');
+    }
     this.descriptor = current;
     return current;
   }
 
+  assertScope({ pageIdx, frameContextId }: BorrowedScope): void {
+    if ((pageIdx !== undefined && pageIdx !== 0) ||
+        (frameContextId !== undefined && frameContextId !== this.descriptor.bidi.contextId)) {
+      throw new Error('UNSUPPORTED_SCOPE: borrowed sessions support only pageIdx 0 and the owner top-level BiDi context');
+    }
+  }
+
+  private loseControl(): void {
+    this.leaseLost = true;
+    this.snapshot = undefined;
+  }
+
+  private assertLease(): void {
+    if (this.leaseLost || !this.leaseId) throw new BorrowedOwnerError('LEASE_INVALID', 'Borrowed control is no longer available');
+    if (!this.controlConfirmed) throw new BorrowedOwnerError('CONTROL_UNCONFIRMED', 'Owner status has not confirmed control');
+  }
+
   async command(action: string, args: Record<string, unknown> = {}, timeoutMs = 10000): Promise<Record<string, unknown>> {
     const current = await this.currentDescriptor();
+    if (!['status', 'lease.acquire', 'lease.release'].includes(action)) this.assertLease();
     const requestId = randomUUID();
     const destination = new URL('/command', endpoint(current.control.endpoint));
     const response = await fetch(destination, {
-      method: 'POST',
+      method: 'POST', redirect: 'error',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ requestId, target: current.bidi.contextId, action, args, timeoutMs, token: current.control.token, leaseId: this.leaseId }),
       signal: AbortSignal.timeout(timeoutMs + 1000),
     });
     if (!response.ok) throw new Error(`Trace owner HTTP ${response.status}`);
-    const envelope = await response.json() as { requestId: string; ok: boolean; result?: Record<string, unknown>; error?: { code?: string; message?: string } };
-    if (envelope.requestId !== requestId) throw new Error('Trace owner response identity mismatch');
-    if (!envelope.ok) throw new Error(`Trace owner ${envelope.error?.code || 'COMMAND_FAILED'}: ${envelope.error?.message || 'Command failed'}`);
+    const envelope = await response.json().catch(() => { throw new Error('Invalid Trace owner response JSON'); }) as { requestId: string; ok: boolean; result?: Record<string, unknown>; error?: { code?: string } };
+    if (!envelope || envelope.requestId !== requestId) throw new Error('Trace owner response identity mismatch');
+    if (envelope.ok !== true) {
+      if (envelope.ok !== false) throw new Error('Invalid Trace owner response envelope');
+      const raw = envelope.error?.code;
+      const code = typeof raw === 'string' && /^[A-Z][A-Z_]{1,39}$/.test(raw) && raw !== this.leaseId && raw !== current.control.token ? raw : 'COMMAND_FAILED';
+      if (this.leaseId && terminalLeaseError(code)) this.loseControl();
+      // Owner messages are untrusted free text; they may include session credentials.
+      throw new BorrowedOwnerError(code, 'Owner declined the command');
+    }
+    if (!envelope.result || typeof envelope.result !== 'object' || Array.isArray(envelope.result) || envelope.error !== undefined) {
+      throw new Error('Invalid Trace owner acknowledgement');
+    }
     if (['navigate', 'click', 'fill', 'press', 'scroll'].includes(action)) this.snapshot = undefined;
     return envelope.result || {};
   }
 
   async status(): Promise<Record<string, unknown>> {
-    const result = await this.command('status');
+    let result: Record<string, unknown>;
+    try { result = await this.command('status'); }
+    catch (error) {
+      if (!(error instanceof BorrowedOwnerError && terminalLeaseError(error.code))) throw error;
+      return { alive: null, browserState: 'unknown', sessionMode: 'borrowed', borrowed: true, owner: 'ruyitrace',
+        runId: this.descriptor.runId, contextId: this.descriptor.bidi.contextId, leaseState: 'revoked', controlAvailable: false };
+    }
     this.validateOwner(result);
-    return { alive: result.accepting === true, borrowed: true, owner: 'ruyitrace', runId: this.descriptor.runId, runtime: this.descriptor.runtime, contextId: this.descriptor.bidi.contextId, phase: result.phase, pageCount: 1 };
+    const revoked = (result.lease as { revoked?: unknown } | undefined)?.revoked;
+    if (revoked === true) this.loseControl();
+    const leaseState = this.leaseLost ? 'revoked' : this.leaseId && revoked === false ? 'active' : 'unknown';
+    const accepting = result.accepting === true;
+    this.controlConfirmed = accepting && leaseState === 'active';
+    if (!this.controlConfirmed) this.snapshot = undefined;
+    return { alive: accepting, browserState: accepting ? 'alive' : 'unknown', borrowed: true, sessionMode: 'borrowed',
+      owner: 'ruyitrace', runId: this.descriptor.runId, runtime: this.descriptor.runtime, contextId: this.descriptor.bidi.contextId,
+      phase: result.phase, pageCount: 1, leaseState, controlAvailable: accepting && leaseState === 'active' };
   }
 
   private validateOwner(status: Record<string, unknown>): void {
@@ -122,37 +179,47 @@ export class BorrowedTraceSession {
   }
 
   debuggerLease(): { endpoint: string; target: string; token: string; leaseId?: string } {
+    this.assertLease();
     return { endpoint: this.descriptor.control.endpoint, target: this.descriptor.bidi.contextId, token: this.descriptor.control.token, leaseId: this.leaseId };
   }
 
-  async release(): Promise<void> {
-    if (!this.leaseId) return;
+  async release(): Promise<'lease_released' | 'lease_already_lost'> {
+    if (!this.leaseId) return 'lease_already_lost';
     try {
+      // Even after detecting loss, give the owner a chance to handle the original lease.
       await this.command('lease.release', { resumed: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/LEASE_INVALID|LEASE_EXPIRED|no longer active|descriptor expired|Incomplete RuyiTrace/.test(message)) throw error;
-    } finally {
-      this.leaseId = undefined;
-      this.snapshot = undefined;
+      const terminal = error instanceof BorrowedOwnerError &&
+        (terminalLeaseError(error.code) || error.code === 'OWNER_EXPIRED');
+      if (!this.leaseLost && !terminal) throw error;
+      this.leaseLost = true;
     }
+    this.leaseId = undefined;
+    this.snapshot = undefined;
+    return this.leaseLost ? 'lease_already_lost' : 'lease_released';
   }
 
-  async observe(maxNodes = 250): Promise<Record<string, unknown>> {
+  async observe(maxNodes = 250, scope: BorrowedScope = {}): Promise<Record<string, unknown>> {
+    this.assertScope(scope);
     const result = await this.command('query', { selector: 'button,a,input,select,textarea,[role="button"],[role="link"],[contenteditable="true"]', maxElements: Math.min(maxNodes, 250) });
     const elements = Array.isArray(result.elements) ? result.elements as Array<Record<string, unknown>> : [];
     const id = randomUUID();
-    this.snapshot = { id, elements, createdAt: Date.now() };
-    return { snapshotId: id, borrowed: true, nodes: elements.map((element, index) => ({ index, role: element.tag, name: element.text, value: element.value, visible: element.visible, rect: element.rect })), count: elements.length };
+    this.assertLease();
+    const runId = this.descriptor.runId, contextId = this.descriptor.bidi.contextId;
+    this.snapshot = { id, runId, contextId, elements, createdAt: Date.now() };
+    return { snapshotId: id, runId, contextId, borrowed: true, nodes: elements.map((element, index) => ({ index, role: element.tag, name: element.text, value: element.value, visible: element.visible, rect: element.rect })), count: elements.length };
   }
 
   async act(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+    this.assertScope(args);
+    this.assertLease();
     const op = String(args.op);
     if (op === 'DONE' || op === 'BLOCKED') return { status: op.toLowerCase(), borrowed: true };
     if (op === 'WAIT') return this.command('wait', { milliseconds: args.waitMs ?? 500 });
     if (op === 'SCROLL_UP' || op === 'SCROLL_DOWN') return this.command('scroll', { deltaY: op === 'SCROLL_UP' ? -500 : 500 });
     const snapshot = this.snapshot;
-    if (!snapshot || args.snapshotId !== snapshot.id || Date.now() - snapshot.createdAt > 30000) return { status: 'miss', reason: 'snapshot-stale', retried: false };
+    if (!snapshot || snapshot.runId !== this.descriptor.runId || snapshot.contextId !== this.descriptor.bidi.contextId ||
+        args.snapshotId !== snapshot.id || Date.now() - snapshot.createdAt > 30000) return { status: 'miss', reason: 'snapshot-stale', retried: false };
     const element = snapshot.elements[Number(args.index)];
     if (!element || typeof element.selector !== 'string') return { status: 'miss', reason: 'node-unavailable', retried: false };
     const checked = await this.command('query', { selector: element.selector, maxElements: 2 });

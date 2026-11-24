@@ -108,7 +108,7 @@ export function registerUtilTools(register: ToolRegistrar, ctx: RuyiContext): vo
   register({
     tool: {
       name: 'ruyi_browser_status',
-      description: '获取浏览器当前状态：是否存活、当前 URL、页面数量、断点数、preload 脚本数。',
+      description: '读取当前浏览器状态；借用 Trace 时以 controlAvailable 判断是否有控制权，leaseState 区分 active、revoked、unknown，alive 仅表示 owner 就绪。',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -130,7 +130,7 @@ export function registerUtilTools(register: ToolRegistrar, ctx: RuyiContext): vo
   register({
     tool: {
       name: 'ruyi_browser_quit',
-      description: '关闭由 MCP 启动的浏览器并清理状态；端口接管的外部浏览器只断开连接，不关闭进程。',
+      description: '关闭 MCP 自启浏览器；外部浏览器只断开。借用 Trace 时仅归还租约，effect 区分 lease_released 与 lease_already_lost，浏览器仍由 Trace 管理。',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -138,10 +138,10 @@ export function registerUtilTools(register: ToolRegistrar, ctx: RuyiContext): vo
       },
     },
     handler: (async () => {
-      await ctx.quit();
+      const result = await ctx.quit();
 
       return {
-        content: [{ type: 'text', text: jsonResult({ quit: true }) }],
+        content: [{ type: 'text', text: jsonResult(result ?? { quit: true }) }],
       };
     }) as ToolHandler,
   });

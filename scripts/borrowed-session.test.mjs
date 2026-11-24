@@ -16,6 +16,7 @@ test('borrowed session uses owner lease and never exposes descriptor token', asy
     calls.push(body);
     assert.equal(body.token, descriptor.control.token);
     let result = { accepting: true, phase: 'capturing', runId: descriptor.runId, target: descriptor.bidi.contextId, browser: descriptor.browser, runtime: descriptor.runtime };
+    if (body.action === 'status' && body.leaseId) result.lease = { revoked: false };
     if (body.action === 'lease.acquire') result = { leaseId: 'fixture-lease' };
     if (body.action === 'query') result = { count: 1, elements: [{ tag: 'button', text: 'Go', selector: 'html>body>button:nth-of-type(1)', visible: true }] };
     response.writeHead(200, { 'content-type': 'application/json' });

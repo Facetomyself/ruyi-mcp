@@ -24,7 +24,7 @@ export function registerAgentTools(register: ToolRegistrar, ctx: RuyiContext): v
           pageIdx: { type: 'number', default: 0 },
           frameContextId: {
             type: 'string',
-            description: '可选 frame browsing context ID；快照只扫该 frame。',
+            description: '可选 frame browsing context ID；借用 Trace 时只支持页 0 和 owner 的顶层 BiDi context，其他范围返回 UNSUPPORTED_SCOPE。',
           },
           maxNodes: {
             type: 'number',
@@ -39,7 +39,7 @@ export function registerAgentTools(register: ToolRegistrar, ctx: RuyiContext): v
     },
     handler: (async (args) => {
       if (ctx.borrowedSession) {
-        return { content: [{ type: 'text', text: jsonResult(await ctx.borrowedSession.observe(Number(args.maxNodes ?? 250))) }] };
+        return { content: [{ type: 'text', text: jsonResult(await ctx.borrowedSession.observe(Number(args.maxNodes ?? 250), args)) }] };
       }
       const pageIdx = getPageIdx(args, ctx);
       const result = await ctx.bridgeInstance.call('page.snapshot', {
@@ -94,7 +94,7 @@ export function registerAgentTools(register: ToolRegistrar, ctx: RuyiContext): v
           pageIdx: { type: 'number', default: 0 },
           frameContextId: {
             type: 'string',
-            description: '可选 frame browsing context ID，必须与 observe 同一 frame。',
+            description: '可选 frame browsing context ID，必须与 observe 同一 frame；借用 Trace 时只支持页 0 和 owner 的顶层 BiDi context。',
           },
           waitMs: {
             type: 'number',

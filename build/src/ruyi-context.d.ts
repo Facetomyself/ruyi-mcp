@@ -38,9 +38,17 @@ export interface SessionState {
     proxy: string | null;
     lastLaunchParams: Record<string, unknown> | null;
 }
+type BorrowedReleaseEffect = Awaited<ReturnType<BorrowedTraceSession['release']>>;
+interface BorrowedQuitResult {
+    quit: true;
+    effect: BorrowedReleaseEffect;
+    owner: 'ruyitrace';
+    browserDisposition: 'retained_by_owner';
+}
 export declare class RuyiContext {
     private bridge;
     private debuggerManager;
+    private borrowedRelease;
     borrowedSession: BorrowedTraceSession | undefined;
     readonly debugEvidence: DebugEvidence;
     state: SessionState;
@@ -79,9 +87,9 @@ export declare class RuyiContext {
         lease?: undefined;
     } | null>;
     attachBorrowedSession(sessionPath: string): Promise<Record<string, unknown>>;
-    releaseBorrowedSession(): Promise<void>;
+    releaseBorrowedSession(): Promise<BorrowedReleaseEffect | undefined>;
     launch(params: Record<string, unknown>): Promise<Record<string, unknown>>;
-    quit(): Promise<void>;
+    quit(): Promise<BorrowedQuitResult | void>;
     status(): Promise<Record<string, unknown>>;
     refreshPages(): Promise<PageInfo[]>;
     getActivePageIdx(): number;
@@ -93,3 +101,4 @@ export declare class RuyiContext {
     setCaptureActive(active: boolean, pattern?: string): void;
     reset(): void;
 }
+export {};
