@@ -1,6 +1,6 @@
 # ruyi-mcp Linux Docker 设计
 
-当前 Dockerfile 提供 `core` 控制面和 `browser` 依赖层。Firefox 以只读挂载交付，默认由同容器内的 MCP 持有。RuyiTrace 已有经单独验收的 AMD64 原生制品；挂载其内核启动新会话，与接管 Trace owner 的活会话是两条运行链。命令和门禁见下文，宿主验证见 [Linux 迁移与验收](linux-port.md)。
+本仓的默认交付是独立 MCP：省略 `--target` 时得到 `core`，入口只启动 Node MCP 服务。基础部署无需挂载浏览器、安装 Trace 或启动 Electron。只有执行浏览器任务时才需要 Firefox：MCP 自启模式只读挂载浏览器目录；借用模式则连接另行启动的 Trace owner。两种模式的进程所有权不同。宿主验证见 [Linux 迁移与验收](linux-port.md)。
 
 ## 1. 三个交付物，按能力独立升级
 
@@ -10,7 +10,7 @@
 | `browser` OCI 镜像 | 基于同一 `core` 添加系统依赖，通过只读挂载提供目标架构的 Firefox 目录 | 使用挂载的 Firefox 构建在本地 fixture 验收 BiDi、下载、回收、RDP；记录实际通过的能力 |
 | RuyiTrace Linux 运行时 | Trace 项目交付内核与 owner，含实际 Firefox BuildID、架构、运行目录和校验清单 | Trace owner 同会话、DOMTrace 和输出封存；普通 Firefox 结果与此分开记录 |
 
-开发调试可先把经校验的**完整浏览器目录**只读挂载到 `/opt/firefox`，并确保镜像层已有匹配的系统动态库。正式发布使用架构匹配的浏览器镜像层，选定基础镜像 digest 与浏览器制品版本并记录校验结果，避免容器启动时下载或切换内核。Windows `.exe` 与 Linux ELF 属于不同 ABI，`--platform` 选择的是镜像架构，无法把 Windows 内核变成 Linux 内核。
+`browser` 目标只添加系统动态库。部署时将经校验、与容器 CPU 架构匹配的**完整浏览器目录**只读挂载到 `/opt/firefox`；分别记录镜像 digest 与外部浏览器制品哈希。RuyiTrace 由其组件仓单独交付，联验时的挂载不会把它写入 MCP 镜像。Windows `.exe` 与 Linux ELF 属于不同 ABI，`--platform` 选择的是镜像架构，无法把 Windows 内核变成 Linux 内核。
 
 ## 2. 首版拓扑：MCP 客户端按需启动容器
 

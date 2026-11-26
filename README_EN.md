@@ -6,17 +6,21 @@ One maintained Firefox automation and native debugging MCP. Automation uses ruyi
 
 ## Setup
 
-Requirements: Node.js 20+, Python 3.10+, and `ruyiPage==1.2.68`. The initial unified runtime target is RuyiTrace 3.5.0 Firefox159, BuildID `20261101193257`. Other builds require their own capability and runtime checks; historical Firefox151 results are not Firefox159 verification.
+**Deploy this MCP independently. RuyiTrace is optional and is required only to borrow a live Trace session.** The [Dockerfile](Dockerfile) defaults to `core`, which serves MCP over stdio and runs the Python bridge without a browser. For an MCP-owned browser, build the `browser` target and mount a compatible Firefox installation read-only. To borrow a session, start the Trace CLI separately and pass its `descriptorPath` to MCP; Trace owns Firefox. Neither production target bundles Firefox, the Trace CLI, or Electron.
+
+Source requirements: Node.js 20+, Python 3.10+, and `ruyiPage==1.2.68`.
 
 ```bash
-git clone https://github.com/Facetomyself/ruyi-mcp.git
+git clone --branch linux https://github.com/Facetomyself/ruyi-mcp.git
 cd ruyi-mcp
+python3 -m venv .venv
+. .venv/bin/activate
 npm ci
 python -m pip install -r requirements.txt
 npm run check
 ```
 
-Configure your MCP host to execute `node /absolute/path/to/ruyi-mcp/build/src/index.js`. Set `RUYI_MCP_PYTHON`, `RUYI_FIREFOX_PATH`, `RUYI_MCP_PROFILE_ROOT`, and `RUYI_MCP_TOOLSET=compact`. Do not let the ruyiPage installer silently replace the pinned Firefox build. Runtime binaries, profiles, credentials, and captured data are not distributed in this repository.
+Configure your MCP host to execute `node /absolute/path/to/ruyi-mcp/build/src/index.js` and set `RUYI_MCP_PYTHON` to the virtual environment's Python. Set `RUYI_FIREFOX_PATH` to the verified executable only when launching Firefox from MCP; `RUYI_MCP_PROFILE_ROOT` selects the managed profile directory. The default toolset is `compact`. Runtime binaries, profiles, credentials, and captured data are not distributed in this repository.
 
 The [`linux` branch](https://github.com/Facetomyself/ruyi-mcp/tree/linux) maintains the complete project in the same repository. See the [Linux port notes](docs/linux-port.md) for standalone setup, verification, and runtime prerequisites, and the [Docker design](docs/docker-design.md) for proposed images, stdio deployment, and release gates (Chinese).
 
