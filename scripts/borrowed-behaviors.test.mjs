@@ -6,6 +6,7 @@ import { chmod, copyFile, link, mkdir, mkdtemp, readFile, readlink, rename, rm, 
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -54,12 +55,25 @@ async function processGeneration(pid) {
   return { pid, startTime: stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[19] };
 }
 
-async function disposableProcess(t, executable, args) {
-  const child = spawn(executable, args, { stdio: 'ignore' });
+async function disposableProcess(t, executable) {
+  // A renamed sleep/coreutils applet may exit immediately on a new distribution.
+  // Use only POSIX shell builtins and an open pipe; prove the actual child is
+  // ready before looking up its generation. No wall-clock sleep or grandchild.
+  const child = spawn(executable, ['-c', 'printf "ready\\n"; IFS= read -r line'],
+    { argv0: 'sh', stdio: ['pipe', 'pipe', 'ignore'] });
   const exited = once(child, 'exit');
-  const stop = async () => { child.kill('SIGKILL'); await exited; };
+  const lines = createInterface({ input: child.stdout });
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await exited;
+    lines.close();
+  };
   t.after(stop);
-  await once(child, 'spawn');
+  const [ready] = await Promise.race([
+    once(lines, 'line', { signal: AbortSignal.timeout(5000) }),
+    exited.then(() => { throw new Error('generation fixture exited before readiness'); }),
+  ]);
+  assert.equal(ready, 'ready');
   return { stop, identity: await processGeneration(child.pid) };
 }
 
@@ -200,9 +214,9 @@ async function openFixture(t, toolset = 'all') {
       const firefox = join(out, 'firefox-bin');
       await mkdir(out, { mode: 0o700 });
       await mkdir(control, { mode: 0o700 });
-      await copyFile('/bin/sleep', firefox);
-      const worker = await disposableProcess(t, firefox, ['30']);
-      const browser = await disposableProcess(t, firefox, ['30']);
+      await copyFile('/bin/sh', firefox);
+      const worker = await disposableProcess(t, firefox);
+      const browser = await disposableProcess(t, firefox);
       const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
       const pidNamespace = await readlink('/proc/self/ns/pid');
       sessionPath = join(control, 'session.json');
