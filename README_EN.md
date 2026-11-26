@@ -41,9 +41,11 @@ Unsupported native combinations are reported explicitly: worker outbound XHR/fet
 
 ## Borrowed Trace sessions
 
-Discover the Trace-session tools and supply the absolute path to the owner's restricted `runtime/session.json`. Never expose its authentication material. The Trace worker remains the only BiDi and browser-lifecycle owner; automation uses its bounded navigate/query/click/fill/press/scroll/wait/screenshot interface, while RDP handles pause and resume independently.
+Discover the Trace-session tools and supply the absolute path to the owner's private descriptor at `<run>/control/session.json`. Keep its authentication material private. The Trace worker remains the only BiDi and browser-lifecycle owner; automation uses its bounded navigate/query/click/fill/press/scroll/wait/screenshot interface, while RDP handles pause and resume independently.
 
 Use the exact `descriptorPath` reported by the Trace CLI. MCP requests a 120-second exclusive lease. In borrowed mode, `ruyi_browser_status.controlAvailable` reports control separately from owner liveness. `leaseState: "revoked"` is terminal for that attachment; `"unknown"` means the owner has not confirmed the lease. `observe` and `act` accept only page 0 and the published top-level BiDi context; a mismatched scope returns `UNSUPPORTED_SCOPE` before contacting the owner. Snapshots are specific to the run and context. Borrowed `quit` returns `effect: "lease_released"` only on owner acknowledgement, or `"lease_already_lost"` on confirmed loss; `browserDisposition: "retained_by_owner"` describes ownership, not a fresh liveness probe. Unconfirmed release failures are retryable. Run `npm run build && npm run check:borrowed-behaviors` for the stdio contract tests.
+
+If the descriptor goes missing, an attached client reports `publicationState: "missing"` and `controlAvailable: false`. Without proof of exit, the browser state is `"unknown"` and `quit` returns `ENOENT`, keeping the original lease available for retry. On Linux, when MCP verifies the original run’s private final receipts in the same user and PID namespace and both original process generations have exited, status reports `alive: false`, `browserState: "exited"`, and `leaseState: "revoked"`. Old page operations then return `OWNER_RETIRED`, and `quit` clears the local attachment with `lease_already_lost` so the same client can attach to a new run. Restarting MCP discards the local attachment; only an owner acknowledgement proves release.
 
 ## Compatibility and data
 

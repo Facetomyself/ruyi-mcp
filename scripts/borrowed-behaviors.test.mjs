@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, mkdir, mkdtemp, readFile, readlink, rename, rm, rmdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +41,26 @@ function assertQuit(reply, effect) {
 
 function scope(session) {
   return { pageIdx: 0, frameContextId: session.descriptor.bidi.contextId };
+}
+
+async function atomicJSON(path, value) {
+  const temporary = `${path}.${randomUUID()}`;
+  await writeFile(temporary, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+  await rename(temporary, path);
+}
+
+async function processGeneration(pid) {
+  const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+  return { pid, startTime: stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[19] };
+}
+
+async function disposableProcess(t, executable, args) {
+  const child = spawn(executable, args, { stdio: 'ignore' });
+  const exited = once(child, 'exit');
+  const stop = async () => { child.kill('SIGKILL'); await exited; };
+  t.after(stop);
+  await once(child, 'spawn');
+  return { stop, identity: await processGeneration(child.pid) };
 }
 
 async function openFixture(t, toolset = 'all') {
@@ -163,7 +184,7 @@ async function openFixture(t, toolset = 'all') {
   client = new Client({ name: 'borrowed-behaviors-test', version: '1.0.0' });
   await client.connect(transport);
 
-  async function addSession(label) {
+  async function addSession(label, production = false) {
     const descriptor = {
       schema: 'ruyitrace-live-session.v1', runId: `run-${label}`, phase: 'capturing',
       runtime: { version: '159', buildId: '20261101193257', binarySha256: 'a'.repeat(64) },
@@ -171,9 +192,44 @@ async function openFixture(t, toolset = 'all') {
       bidi: { contextId: `context-${label}` }, rdp: null,
       control: { endpoint: `http://127.0.0.1:${owner.address().port}`, token: randomBytes(32).toString('hex') },
     };
-    const sessionPath = join(directory, `${label}.json`);
+    let sessionPath = join(directory, `${label}.json`);
+    let run;
+    if (production) {
+      const out = join(directory, label), control = join(out, 'control');
+      const statePath = join(out, 'state.json'), resultPath = join(out, 'result.json');
+      const firefox = join(out, 'firefox-bin');
+      await mkdir(out, { mode: 0o700 });
+      await mkdir(control, { mode: 0o700 });
+      await copyFile('/bin/sleep', firefox);
+      const worker = await disposableProcess(t, firefox, ['30']);
+      const browser = await disposableProcess(t, firefox, ['30']);
+      const bootId = (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim();
+      const pidNamespace = await readlink('/proc/self/ns/pid');
+      sessionPath = join(control, 'session.json');
+      descriptor.runId = randomUUID();
+      descriptor.runtime.name = 'RuyiTrace';
+      descriptor.runtime.binarySha256 = createHash('sha256').update(await readFile(firefox)).digest('hex');
+      descriptor.browser = { pid: browser.identity.pid, creationTime: `linux:${bootId}:${browser.identity.startTime}`,
+        executablePath: await readlink(`/proc/${browser.identity.pid}/exe`), profilePath: join(out, 'profile') };
+      const state = {
+        schema: 2, out, profile: descriptor.browser.profilePath, runId: descriptor.runId, bootId, pidNamespace,
+        phase: 'running', ready: true, owner: worker.identity, browser: browser.identity,
+        mcp: { descriptorPath: sessionPath, contextId: descriptor.bidi.contextId },
+        runtime: { build_id: descriptor.runtime.buildId, executable_digests: { 'firefox-bin': descriptor.runtime.binarySha256 } },
+      };
+      const result = { schema: 2, out, runId: descriptor.runId, passed: false, exit: 137, completion: 'browser-exit',
+        browser: { code: null, signal: 'SIGKILL' }, message: privateDetail,
+        mcp: { leasesAcquired: 1, leasesReleased: 0, leasesExpired: 0, leasesRevoked: 1 } };
+      const publishFailure = async (statePatch = {}, resultPatch = {}, embeddedPatch = {}) => {
+        const receipt = { ...result, ...resultPatch };
+        await atomicJSON(resultPath, receipt);
+        await atomicJSON(statePath, { ...state, phase: 'failed', ...statePatch, result: { ...receipt, ...embeddedPatch } });
+      };
+      await atomicJSON(statePath, state);
+      run = { out, control, state, statePath, result, resultPath, publishFailure, worker, browser };
+    }
     const session = {
-      descriptor, sessionPath, leaseId: randomBytes(24).toString('hex'), leaseActive: false,
+      descriptor, sessionPath, run, leaseId: randomBytes(24).toString('hex'), leaseActive: false,
       statusLease: noLeaseOverride, releaseAcks: 0,
       page: { clicks: 0, text: 'initial text', scrollY: 0, url: 'about:blank', retained: true },
       node: { tag: 'input', text: `Page ${label}`, selector: `#input-${label}`, visible: true },
@@ -393,3 +449,131 @@ for (const [label, respond] of badReleases) {
     assert.equal(session.page.retained, true);
   });
 }
+
+const linuxOnly = { skip: process.platform !== 'linux' };
+const missingError = /\bENOENT: Trace session descriptor publication is missing\b/;
+const retiredError = /\bOWNER_RETIRED: Original Trace browser and owner have exited\b/;
+
+function assertMissingStatus(reply, proven = false) {
+  const { alive, browserState, leaseState, controlAvailable, publicationState } = success(reply);
+  assert.deepEqual({ alive, browserState, leaseState, controlAvailable, publicationState }, {
+    alive: proven ? false : null, browserState: proven ? 'exited' : 'unknown',
+    leaseState: proven ? 'revoked' : 'unknown', controlAvailable: false, publicationState: 'missing',
+  });
+}
+
+test('missing legacy publication is unconfirmed and the same lease can be retried', async (t) => {
+  const fixture = await openFixture(t);
+  const session = await fixture.addSession('legacy-missing');
+  await fixture.attach(session);
+  await unlink(session.sessionPath);
+  assertMissingStatus(await fixture.call(browserStatus));
+  const problem = failure(await fixture.call(browserQuit));
+  assert.match(problem, missingError);
+  assert.doesNotMatch(problem, leaseEffects);
+  assert.doesNotMatch(problem, /ruyi-borrowed-behaviors-/);
+  assert.equal(session.leaseActive, true);
+  await atomicJSON(session.sessionPath, session.descriptor);
+  assertQuit(await fixture.call(browserQuit), 'lease_released');
+  assert.equal(session.releaseAcks, 1);
+});
+
+for (const statusFirst of [true, false]) {
+  test(`original failed Trace run locally detaches by ${statusFirst ? 'status then quit' : 'quit alone'}`, linuxOnly, async (t) => {
+    const fixture = await openFixture(t);
+    const crashed = await fixture.addSession('retiring', true);
+    await fixture.attach(crashed);
+    await unlink(crashed.sessionPath);
+    await crashed.run.browser.stop();
+    // Exercise both the single-acquisition crash and reconciliation after prior leases.
+    await crashed.run.publishFailure({}, statusFirst ? {} : {
+      mcp: { leasesAcquired: 4, leasesReleased: 2, leasesExpired: 1, leasesRevoked: 1 },
+    });
+    await crashed.run.worker.stop();
+    await rmdir(crashed.run.control);
+    const before = fixture.count();
+    if (statusFirst) {
+      assertMissingStatus(await fixture.call(browserStatus), true);
+      assert.match(failure(await fixture.call(observe, scope(crashed))), retiredError);
+      const reused = { ...crashed.descriptor, phase: 'observing' };
+      await mkdir(crashed.run.control, { mode: 0o700 });
+      await atomicJSON(crashed.sessionPath, reused);
+      assertMissingStatus(await fixture.call(browserStatus), true); // The proven loss remains sticky.
+      await unlink(crashed.sessionPath);
+    }
+    assertQuit(await fixture.call(browserQuit), 'lease_already_lost');
+    assert.equal(fixture.count(), before, 'retirement never sends a release request or touches the old owner');
+    assert.equal(crashed.releaseAcks, 0);
+    assert.match(failure(await fixture.call('ruyi_attach_trace_session', { sessionPath: crashed.sessionPath })), missingError);
+    const next = await fixture.addSession('after-crash', true);
+    assert.equal((await fixture.attach(next)).runId, next.descriptor.runId);
+    assertQuit(await fixture.call(browserQuit), 'lease_released');
+    assert.equal(next.releaseAcks, 1);
+  });
+}
+
+test('retirement proof rejects live, mismatched, unsafe, and replayed publications', linuxOnly, async (t) => {
+  const fixture = await openFixture(t);
+  const session = await fixture.addSession('negative-retirement', true);
+  await fixture.attach(session);
+  const run = session.run;
+  await unlink(session.sessionPath);
+  const before = fixture.count();
+  async function remainsRetryable() {
+    assertMissingStatus(await fixture.call(browserStatus));
+    const problem = failure(await fixture.call(browserQuit));
+    assert.match(problem, missingError);
+    assert.doesNotMatch(problem, leaseEffects);
+    assert.equal(fixture.count(), before);
+  }
+  await remainsRetryable(); // Missing without any final receipt.
+  await run.publishFailure();
+  await remainsRetryable(); // Both original generations are still live.
+  await run.browser.stop();
+  await remainsRetryable(); // The original owner generation can still finish cleanup.
+  await run.worker.stop();
+  for (const [state, result, embedded] of [
+    [{ browser: { ...run.state.browser, startTime: '1' } }],
+    [{ owner: { ...run.state.owner, startTime: '1' } }],
+    [{ bootId: randomUUID() }],
+    [{ pidNamespace: 'pid:[1]' }],
+    [{ runtime: { ...run.state.runtime, build_id: '19990101123456' } }],
+    [{ runtime: { ...run.state.runtime, executable_digests: { 'firefox-bin': 'b'.repeat(64) } } }],
+    [{}, { runId: randomUUID() }],
+    [{}, { completion: 'requested-stop' }],
+    [{}, {}, { exit: 1 }],
+    [{}, { mcp: { ...run.result.mcp, leasesRevoked: 0 } }],
+  ]) {
+    await run.publishFailure(state, result, embedded);
+    await remainsRetryable();
+  }
+  await run.publishFailure();
+  const extra = join(run.out, 'other-result.json');
+  await rename(run.resultPath, extra);
+  await symlink(extra, run.resultPath);
+  await remainsRetryable();
+  await unlink(run.resultPath);
+  await link(extra, run.resultPath);
+  await remainsRetryable();
+  await unlink(run.resultPath);
+  await writeFile(run.resultPath, Buffer.alloc(4 * 1024 * 1024 + 1), { mode: 0o600 });
+  await remainsRetryable();
+  await run.publishFailure();
+  await chmod(run.statePath, 0o644);
+  await remainsRetryable();
+  await chmod(run.statePath, 0o600);
+
+  // A replacement out directory can contain byte-for-byte valid receipts with
+  // the original run ID, both of its old generations, and the same exact names.
+  const oldOut = `${run.out}-original`;
+  await rename(run.out, oldOut);
+  await mkdir(run.out, { mode: 0o700 });
+  await mkdir(run.control, { mode: 0o700 });
+  await run.publishFailure();
+  await remainsRetryable();
+  await rename(run.out, `${run.out}-replacement`);
+  await rename(oldOut, run.out);
+  assertMissingStatus(await fixture.call(browserStatus), true);
+  assertQuit(await fixture.call(browserQuit), 'lease_already_lost');
+  assert.equal(session.releaseAcks, 0);
+});

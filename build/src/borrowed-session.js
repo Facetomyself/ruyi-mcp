@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { closePinnedTraceRun, pinTraceRun, proveTraceRetirement } from './trace-retirement.js';
 function endpoint(raw) {
     const value = new URL(raw);
     if (value.protocol !== 'http:' || value.hostname !== '127.0.0.1' || value.username || value.password || !value.port) {
@@ -9,10 +10,18 @@ function endpoint(raw) {
     return value;
 }
 async function readDescriptor(sessionPath) {
-    const metadata = await stat(sessionPath);
-    if (!metadata.isFile() || metadata.size > 65536)
-        throw new Error('Trace descriptor exceeds the 64 KiB limit');
-    const content = await readFile(sessionPath, 'utf8');
+    let content;
+    try {
+        const metadata = await stat(sessionPath);
+        if (!metadata.isFile() || metadata.size > 65536)
+            throw new Error('Trace descriptor exceeds the 64 KiB limit');
+        content = await readFile(sessionPath, 'utf8');
+    }
+    catch (error) {
+        if (hasCode(error, 'ENOENT'))
+            throw new MissingPublicationError();
+        throw error;
+    }
     if (Buffer.byteLength(content, 'utf8') > 65536)
         throw new Error('Trace descriptor exceeds the 64 KiB limit');
     try {
@@ -21,6 +30,12 @@ async function readDescriptor(sessionPath) {
     catch {
         throw new Error('Invalid Trace descriptor JSON');
     }
+}
+function hasCode(error, code) {
+    return error?.code === code;
+}
+class MissingPublicationError extends Error {
+    constructor() { super('ENOENT: Trace session descriptor publication is missing'); }
 }
 class BorrowedOwnerError extends Error {
     code;
@@ -35,6 +50,9 @@ export class BorrowedTraceSession {
     leaseId;
     leaseLost = false;
     controlConfirmed = false;
+    retirement;
+    retirementCheck;
+    retirementProven = false;
     descriptor;
     snapshot;
     constructor(sessionPath, descriptor) {
@@ -51,12 +69,19 @@ export class BorrowedTraceSession {
         if (status.accepting !== true)
             throw new Error('Trace owner is not accepting control');
         session.validateOwner(status);
-        const lease = await session.command('lease.acquire', { seconds: 120 });
-        if (typeof lease.leaseId !== 'string' || !lease.leaseId)
-            throw new Error('Trace owner did not grant a lease');
-        session.leaseId = lease.leaseId;
-        session.controlConfirmed = true;
-        return session;
+        session.retirement = await pinTraceRun(sessionPath, descriptor);
+        try {
+            const lease = await session.command('lease.acquire', { seconds: 120 });
+            if (typeof lease.leaseId !== 'string' || !lease.leaseId)
+                throw new Error('Trace owner did not grant a lease');
+            session.leaseId = lease.leaseId;
+            session.controlConfirmed = true;
+            return session;
+        }
+        catch (error) {
+            await session.closeRetirement();
+            throw error;
+        }
     }
     static validate(descriptor) {
         if (descriptor.schema !== 'ruyitrace-live-session.v1' || !descriptor.runId || !descriptor.bidi?.contextId) {
@@ -78,7 +103,19 @@ export class BorrowedTraceSession {
         }
     }
     async currentDescriptor() {
-        const current = await readDescriptor(this.sessionPath);
+        if (this.retirementProven)
+            throw this.retiredError();
+        let current;
+        try {
+            current = await readDescriptor(this.sessionPath);
+        }
+        catch (error) {
+            if (error instanceof MissingPublicationError) {
+                this.controlConfirmed = false;
+                this.snapshot = undefined;
+            }
+            throw error;
+        }
         BorrowedTraceSession.validate(current);
         const previous = this.descriptor;
         if (current.runId !== previous.runId || current.browser.pid !== previous.browser.pid ||
@@ -106,9 +143,34 @@ export class BorrowedTraceSession {
     }
     loseControl() {
         this.leaseLost = true;
+        this.controlConfirmed = false;
         this.snapshot = undefined;
     }
+    retiredError() {
+        return new BorrowedOwnerError('OWNER_RETIRED', 'Original Trace browser and owner have exited');
+    }
+    checkRetirement() {
+        const run = this.retirement;
+        if (this.retirementProven || !run)
+            return Promise.resolve(this.retirementProven);
+        return this.retirementCheck ??= proveTraceRetirement(run, this.sessionPath).then(proven => {
+            if (proven) {
+                this.retirementProven = true;
+                this.loseControl();
+            }
+            return proven;
+        }).finally(() => { this.retirementCheck = undefined; });
+    }
+    async closeRetirement() {
+        const run = this.retirement;
+        this.retirement = undefined;
+        await this.retirementCheck;
+        if (run)
+            await closePinnedTraceRun(run);
+    }
     assertLease() {
+        if (this.retirementProven)
+            throw this.retiredError();
         if (this.leaseLost || !this.leaseId)
             throw new BorrowedOwnerError('LEASE_INVALID', 'Borrowed control is no longer available');
         if (!this.controlConfirmed)
@@ -148,17 +210,31 @@ export class BorrowedTraceSession {
             this.snapshot = undefined;
         return envelope.result || {};
     }
+    missingStatus() {
+        return { alive: this.retirementProven ? false : null, browserState: this.retirementProven ? 'exited' : 'unknown',
+            sessionMode: 'borrowed', borrowed: true, owner: 'ruyitrace', runId: this.descriptor.runId,
+            contextId: this.descriptor.bidi.contextId, leaseState: this.leaseLost ? 'revoked' : 'unknown',
+            controlAvailable: false, publicationState: 'missing' };
+    }
     async status() {
+        if (this.retirementProven)
+            return this.missingStatus();
         let result;
         try {
             result = await this.command('status');
         }
         catch (error) {
+            if (error instanceof MissingPublicationError || this.retirementProven) {
+                await this.checkRetirement();
+                return this.missingStatus();
+            }
             if (!(error instanceof BorrowedOwnerError && terminalLeaseError(error.code)))
                 throw error;
             return { alive: null, browserState: 'unknown', sessionMode: 'borrowed', borrowed: true, owner: 'ruyitrace',
                 runId: this.descriptor.runId, contextId: this.descriptor.bidi.contextId, leaseState: 'revoked', controlAvailable: false };
         }
+        if (this.retirementProven)
+            return this.missingStatus();
         this.validateOwner(result);
         const revoked = result.lease?.revoked;
         if (revoked === true)
@@ -186,19 +262,23 @@ export class BorrowedTraceSession {
     async release() {
         if (!this.leaseId)
             return 'lease_already_lost';
-        try {
-            // Even after detecting loss, give the owner a chance to handle the original lease.
-            await this.command('lease.release', { resumed: true });
-        }
-        catch (error) {
-            const terminal = error instanceof BorrowedOwnerError &&
-                (terminalLeaseError(error.code) || error.code === 'OWNER_EXPIRED');
-            if (!this.leaseLost && !terminal)
-                throw error;
-            this.leaseLost = true;
+        if (!this.retirementProven) {
+            try {
+                // After protocol-level loss, still let the owner handle the original lease.
+                await this.command('lease.release', { resumed: true });
+            }
+            catch (error) {
+                const terminal = error instanceof BorrowedOwnerError && terminalLeaseError(error.code);
+                if (error instanceof MissingPublicationError)
+                    await this.checkRetirement();
+                if (!this.leaseLost && !terminal)
+                    throw error;
+                this.loseControl();
+            }
         }
         this.leaseId = undefined;
         this.snapshot = undefined;
+        await this.closeRetirement();
         return this.leaseLost ? 'lease_already_lost' : 'lease_released';
     }
     async observe(maxNodes = 250, scope = {}) {

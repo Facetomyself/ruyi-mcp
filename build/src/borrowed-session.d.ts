@@ -41,6 +41,9 @@ export declare class BorrowedTraceSession {
     private leaseId;
     private leaseLost;
     private controlConfirmed;
+    private retirement;
+    private retirementCheck;
+    private retirementProven;
     private descriptor;
     private snapshot;
     private constructor();
@@ -49,8 +52,12 @@ export declare class BorrowedTraceSession {
     currentDescriptor(): Promise<TraceSessionDescriptor>;
     assertScope({ pageIdx, frameContextId }: BorrowedScope): void;
     private loseControl;
+    private retiredError;
+    private checkRetirement;
+    private closeRetirement;
     private assertLease;
     command(action: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<Record<string, unknown>>;
+    private missingStatus;
     status(): Promise<Record<string, unknown>>;
     private validateOwner;
     debuggerLease(): {

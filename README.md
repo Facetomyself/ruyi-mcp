@@ -85,6 +85,8 @@ source map 解析支持 simple/indexed map、内联数据和本地文件；远�
 | 页面范围严格匹配 | `ruyi_observe` / `ruyi_act` 只接受 `pageIdx:0` 和当前 owner 的顶层 BiDi `frameContextId`（两者均可省略）。其他范围返回 `UNSUPPORTED_SCOPE`，在发送任何 owner 请求前结束。`ruyi_navigate_page` 同样校验页号。快照携带 `runId` 与 `contextId`；重新借用后须重新 observe。 |
 | 退出按真实效果返回 | 成功归还：`{"quit":true,"effect":"lease_released","owner":"ruyitrace","browserDisposition":"retained_by_owner"}`。已经失效则为 `lease_already_lost`。未确认归还的通信故障返回工具错误，保留借用以便重试。`retained_by_owner` 表示生命周期仍归 Trace 管理，而非额外探测到的存活证明。 |
 
+描述文件消失时，已借用的客户端会报告 `publicationState:"missing"`、`controlAvailable:false`；缺少退出证据时，浏览器状态为 `unknown`，`quit` 返回 `ENOENT` 并保留原租约以便重试。Linux 上，只有在同一用户、同一 PID 命名空间内核实原运行的私有终态回执，且原 owner 与浏览器代际均已退出，状态才会显示 `alive:false`、`browserState:"exited"`、`leaseState:"revoked"`。此后旧页面操作返回 `OWNER_RETIRED`，`quit` 以 `lease_already_lost` 清除本地借用，同一客户端即可借用新的运行。单独重启 MCP 只会丢弃本地借用记录；owner 是否归还租约仍以其确认结果为准。
+
 复现协议回归：`npm ci && npm run build && npm run check:borrowed-behaviors`。该测试通过 SDK stdio 运行真实 MCP，以可计数的回环 owner 验证响应、请求数和页面副作用，默认包含在 `npm run check`。
 
 原生联验单独运行：在专用 Linux 容器中设置绝对路径 `TRACE_CLI`（已构建的 `bin/ruyitrace`）、`RUYI_FIREFOX_PATH`（同架构 R5 Firefox）、`TRACE_RECEIPT`（内核身份回执）和 `TRACE_ACCEPTANCE`（同包闸门验收回执）。构建 MCP 后执行 `npm run check:borrowed-native`。脚本创建本地测试页面，等待第二次借用的真实 120 秒租约耗尽，结果以 JSON 输出；正常回归不需要等待这个计时器。
